@@ -1,0 +1,309 @@
+# 5dive browser — changelog
+
+One plugin, one repo, one changelog. Entries before 2026-09-20 were carried over from
+`5dive-ai/5dive-plugins/CHANGES.md`, which browser shared with telegram, dashboard, buzz and
+voice — every two PRs to that file collided trivially, and splitting it is the reason this repo
+exists (DIVE-4661). Only the sections that named a `browser <version>` came across; the rest of
+that file stays where it is.
+
+## Released
+
+### Added — one snapshot per decision: `browser snapshot` (DIVE-4653), browser 1.8.0
+
+Before an agent acts on a page it reads the same three things: what it can click
+(`tree`), what the page says (`read`) and what it looks like (`shot`). Each of those
+is its own command, and each command is its own browser cycle — probe the session,
+open a browser at the profile, load the URL, do one thing, close. Three cycles and
+three loads of the same page, for one decision. `snapshot` is those three reads as
+ONE cycle: one navigation, one page-side walk that returns the refs *and* the
+document, and one screenshot of that same tab. On a served profile it runs inside
+the warm browser — the render op the DIVE-4621 daemon did not have.
+
+The second half is correctness, and a faster box does not fix it. Three cycles are
+three different page instants: a ref `tree` printed can be gone from the DOM `read`
+captured seconds later, and the PNG can show an overlay neither saw. Those files land
+in one artifact directory looking like one observation and nothing in them says
+otherwise. Here they come from one `page.evaluate` of one tab, so `page.meta.json`
+hashes the very bytes the refs were walked out of.
+
+The count is graded deterministically in the unit suite (one launch, one navigation,
+one read, against a control that shows the three verbs taking three of each). The wall
+clock comes from a rig that ships with the change — `tests/browser_snapshot_bench.sh`,
+which anyone can re-run — on a local static page, one box, two iterations, 2026-09-20:
+nothing served **6380 -> 3507 ms (1.8x)**, warm daemon **7687 -> 3006 ms (2.6x)**. The
+warm three-verb arm is the *slowest* of the four because two of those three verbs stop
+and restart the daemon to get the profile; `snapshot` never does. A local page makes
+this an upper bound on the ratio for this task shape, not a constant — a real
+application spends more time in the page and less in the launch, and the claim that
+survives there is the cycle count.
+
+`tree`, `read` and `shot` are unchanged and are still the right verb when one field is
+all you want; `read`'s independent `--dump-dom` capture keeps its own provenance.
+
+
+### Added — a warm browser session: `serve` holds one Chrome and commands attach to it (DIVE-4621), browser 1.7.0
+
+`serve` was an Xvfb and an abandoned Chrome. Because Chrome allows one instance per
+`--user-data-dir`, every command that needed the profile had to STOP it, launch a
+probe, launch the driver's browser, and start it again — four launches for an
+action that is three clicks.
+
+It is now a daemon holding `launchPersistentContext(<the 0700 profile>)` on the
+site's display, answering on a unix socket inside that same 0700 directory.
+`run` and `tree` attach to it. Never a `--remote-debugging-port`, and the launch
+refuses one: a loopback debug port is reachable by every seat on the box and CDP
+is full control of the browser holding the session.
+
+Measured by a rig that ships with the change — `tests/browser_session_bench.sh`,
+which anyone can re-run — on one box, same task, `run` = goto + fill + click +
+the out-of-band verify. A browser served with no daemon (the shape a customer is
+in) against the same command warm: **3.1x-6.4x** across three runs. The spread
+is box load, and it falls on one side only — the warm median was 1290-1381 ms in
+every run, while the served-no-daemon median moved 4047 -> 8656 ms as the box got
+busy. That is the point rather than a caveat: what the daemon removes is the
+launch, and the launch is the part that costs more the more the box is doing.
+Where nothing was being served at all it is 1.4x-2.7x. About 1.0 s of what is
+left warm is the liveness probe, not a launch,
+and the page is a local static file — a real web application spends more of its
+time in the page, so this is an upper bound for this task shape rather than a
+constant.
+
+`status` can also read a SERVED profile for the first time: it used to answer
+`UNKNOWN (served on :N)`, because probing a held profile needed CDP and CDP
+needed a port. The daemon is a third shape — a process that outlives the command
+— so the probe goes through it, in its own tab, which is then closed so nobody at
+the viewer is navigated away. That command is now ~1.0 s instead of 78 ms of a
+non-answer.
+
+The lease is still re-read from disk before every step, by the daemon: it
+outlives every caller and serves callers holding different tokens, so the token
+travels in the request and the file is what is trusted. A box without the pinned
+`playwright-core` still serves — `serve` falls back to launching Chrome directly
+and says so in one line. Losing the speed must not lose the browser.
+### Added — `5dive browser adblock`: turn ad filtering off for one site (DIVE-4516), browser 1.6.0
+
+Agent Chrome profiles on a managed box now carry exactly one extension — uBlock
+Origin Lite, pinned and force-installed by Chrome managed policy — and that same
+policy blocks every other extension from being added, including by a human at the
+one-time viewer. Some sites break under filtering, so there is a way to turn it off
+for one host without turning it off everywhere.
+
+- `5dive browser adblock status` / `sudo 5dive browser adblock off|on <site>`.
+- Root, and not by preference: Chrome policy on Linux is machine-level only, with
+  no per-user path, so the file belongs to root the way the profile store does.
+  `adblock` joins `setup` as the second verb a root caller is NOT dropped out of.
+- The mechanism is `ExtensionSettings.<id>.runtime_blocked_hosts`, measured on
+  Chrome 153 before it was built on: uBOL Lite filters through declarativeNetRequest
+  (the network stack), not through the content-script path that key is documented
+  against, and it turned out to stop BOTH. It is total for that host.
+- Both `*://host` and `*://*.host` are written. `*://*.example.com` does not match
+  `example.com`, so a wildcard-only off switch reports success and leaves the apex —
+  the host the seat actually typed — still filtered.
+- `/var/lib/5dive/browser/ubol/adblock-off` is the source of truth, not the policy
+  file: the nightly root converge re-renders that file, and a host living only there
+  would be silently re-filtered at 03:00.
+- Only fresh launches were measured, so `shot`/`read` pick a change up on their next
+  render and the verb SAYS a live `serve` may need a restart rather than promising it.
+
+### Fixed — a shared `XDG_CONFIG_HOME` made Chrome un-launchable for every seat but the first, and nothing said so (DIVE-4587), browser 1.6.1
+
+Reported from a customer box with ~37 seats (teal-fox, 2026-09-16): every Chrome launch by every seat
+but one aborted with `chrome_crashpad_handler: --database is required` and a core dump — rc 133, zero
+bytes — so `serve`, `status`, `run`, `shot` and `read` were all dead. Chrome keeps its crashpad
+database under `$XDG_CONFIG_HOME/google-chrome/Crash Reports` whatever `--user-data-dir` and
+`--crash-dumps-dir` say, and creates it `0700`; 5dive boxes export one shared `XDG_CONFIG_HOME` to
+every seat for `gh`/`gcloud`/`aws`, so the first seat to run Chrome owns that directory permanently.
+`bin/browser` and `bin/driver-playwright` now drop the variable before launching anything, which gives
+each seat its own crash directory under its own home. Dropping the shared export instead was not
+available — about twenty other shared configs reach their state through it — and widening the
+directory's mode breaks again at the next `0700` subdirectory Chrome creates.
+
+The second half is why it survived for months: `status` printed a quiet `UNKNOWN (probe did not load)`
+and exited **0**, the scheduled probe exited 0 without stamping anything, and `doctor` said nothing, so
+the box read healthy while the plugin was entirely dead. A probe failure is now classified before it is
+reported — the browser is asked for `about:blank` in a throwaway profile — and a browser that will not
+start is a loud `BROKEN` state: non-zero from `status`, a refusal at `run` and `shot`, and the one
+condition that fails the probe timer. A page that merely did not load stays quiet, as before: a network
+blip must not page a person, but a box fault that no amount of re-probing will clear must.
+
+### Fixed — the browser connect-site runbook now follows the shipped bound viewer flow (DIVE-4523), browser 1.5.3
+
+The Claude skill and harness-neutral AGENTS block now carry one byte-identical fenced workflow. It
+starts from the dashboard action that registers the relay bind and prefixes the box host, names the
+relay's `claude` seat and the upgrade-safe seat-local adapter store, keeps one-time links
+non-unfurling, and verifies a login only after revoke → stop → status. The old raw-CLI path could
+produce a path with no live bind, target the wrong seat, and poll forever while Chromium held the
+profile lock.
+
+The handoff step states DIVE-4493's guard concretely rather than by reference — on Telegram, `reply`
+with `format: 'markdownv2'` and the link in a MarkdownV2 code span; elsewhere that surface's
+non-unfurling code formatting — and keeps the copy-paste warning and the rule against recording a
+live link in a task body, PR, commit, log line or wiki page. `tests/browser_plugin_unit.sh` now
+guards those strings in BOTH surfaces, so a rewrite cannot drop them while the bash harness stays
+green; previously only `test/viewer-link-unfurl.test.ts` held them, and only for the skill.
+
+`plugins/browser/README.md` no longer says the customer-facing flow ships dark and unlogged-into:
+the dashboard tile went to production 2026-09-12 (DIVE-4355) and a human logged into real sites
+through real one-time viewers on a managed box 2026-09-14 (DIVE-4464). The RELAY-mode caveat below
+it is unchanged and still true.
+
+### Fixed — Telegram previewers spent one-time browser viewer links before the human could use them (DIVE-4493), browser 1.3.1 · telegram 0.5.53 · grok/agy 0.5.21 · codex 0.5.14 · opencode 0.5.12 · pi 0.1.12
+
+All six Telegram adapters now recognize the exact browser-viewer route at their Bot API
+`sendMessage`/`editMessageText` boundary. Plain text is sent with a `code` entity, markup output gets
+a code span, overlapping URL entities are removed, and previews are disabled. The transport also
+adds copy-paste/do-not-return guidance; ordinary URLs and nonce lookalikes are unchanged. The shared
+browser workflow carries the same rule for future chat adapters and records that a dashboard may
+offer copy-only UI but must never prefetch the credential.
+
+### Added — authenticated browser pages can be read as Markdown with a hash-bound evidence triple (DIVE-4515), browser 1.4.0
+
+`5dive browser read <site> <url>` now reuses the `shot` authentication and profile boundary, then
+captures one post-script DOM with Chrome `--dump-dom` and extracts the article through a vendored,
+exactly pinned Defuddle 0.19.3 bundle. It writes private `page.md`, `page.html`, and
+`page.meta.json` artifacts; the metadata binds the exact DOM bytes by SHA-256 and records URLs,
+article fields, links, images, schema.org data, extractor version, Chrome version, and capture
+method. `--json` returns metadata plus Markdown, while `browser links` uses the same capture and
+prints only the extracted links. Logged-out, cross-site, live-viewer, and profile-directory output
+attempts fail before producing evidence, and the read opens no CDP socket.
+
+### Fixed — the dashboard's `browser ls` refused on every box, so the Connect-a-site tile could never list sites (DIVE-4348), browser 1.1.1
+
+Two defects in `bin/browser`, both found on the first real box (exact-swallow, 2026-09-12):
+
+1. **A root caller refused every verb but setup.** The dashboard reaches the plugin through shelld's
+   whitelist, `sudo -n /usr/local/bin/5dive browser …` — root, with `SUDO_USER=claude`. `_seat`
+   resolved that to `claude`, but `_audit` compared the store's owner to `id -u` (0), so `ls`,
+   `status`, `serve`, `viewer` and `viewer-redeem` all exited 77 ("owned by uid 1000, not by you
+   (uid 0)") and `GET /server/browser/sites` read every box as unavailable. Root now re-executes as
+   the seat (`runuser -u $SUDO_USER`) before any store is touched; `setup` stays root's.
+2. **Every seat store was created 2700, and the audit wants 700.** `/var/lib/5dive` is 2750 on every
+   box, a directory made under it inherits setgid, and GNU `chmod 700` preserves that bit on a
+   directory. `setup` now uses the 5-digit form (`chmod 00700` / `00711`), which clears it. An
+   existing box heals on its next daily converge (`5dive-browser-stack-install` re-runs setup).
+
+
+### Added — browser server mode and a one-time re-auth viewer, so a managed box needs no ssh, no apt and no display (DIVE-4118), browser 1.1.0
+
+DIVE-4021 shipped `5dive browser auth` as "open a real Chromium, and REFUSE without a display". On a
+managed 5dive VM there is no display and there never will be, so the only route through that refusal
+was `ssh -X` plus `apt install chromium` plus a hand-written adapter JSON. lodar, 2026-09-09: *"thats
+too difficult for customers. the point was to make it easy to use for our paid customers on our
+managed vm"*.
+
+Server mode is the shape 4021's own design named as the DEFAULT and did not ship. The profile's
+Chrome now lives on a persistent Xvfb display owned by the seat, and a person reaches it — to log in
+the first time, and again when the site kills the session — through a viewer handed out as a one-time
+ticket:
+
+```
+5dive browser serve <site>                                   # persistent Chrome on its own Xvfb
+5dive browser viewer <site> --bind=<session> [--ttl=600]     # mint a one-time link
+5dive browser viewer-redeem <site> --nonce=- --session=<id>  # the relay's gate; consumes the link
+5dive browser viewer-revoke <site>                           # kill the view, keep the login
+```
+
+`auth` on a display-less box no longer dead-ends: it starts server mode and tells you to ask for a
+viewer link. The old refusal survives only where it is true — a box without the server-mode packages,
+which now says *which* ones it lacks instead of half-starting. The manifest version moves with the
+verbs (1.0.0 -> 1.1.0) because `plugin add` resolves a version-pinned cache path: a fix ships by being
+installable, not by being merged.
+
+#### The question 4021 left open: what protects the session WHILE the viewer is open
+
+A viewer onto a logged-in profile is not a screenshot. It is the credential with a keyboard attached,
+so the answer is five properties and every one of them fails closed.
+
+1. **Nothing listens off-box.** `Xvfb -nolisten tcp`, `x11vnc -localhost -once`, the websocket bridge
+   on `127.0.0.1`. Redemption hands the relay a loopback target; the customer arrives through the
+   box's already-authenticated relay, never a port we opened.
+2. **The ticket is a nonce we do not keep.** 32 bytes of urandom; the file stores only its SHA-256.
+   The raw value exists exactly once, in the line we print.
+3. **It is single-use, and the replay branch is a pure refusal.** The spent-state check runs *before*
+   the nonce compare, so a dead ticket is not an oracle — and that branch touches nothing, so a replay
+   carrying a garbage nonce cannot tear down the live viewer it was refused from.
+4. **It is bound to the session that asked.** `--bind` is mandatory; `--bind=local` is the named
+   escape for a hand-run. A wrong-session redemption is refused and does not spend the ticket for the
+   rightful holder.
+5. **The nonce never enters argv.** `/proc/<pid>/cmdline` is readable by other seats, so the nonce
+   arrives on stdin and `--nonce=<value>` is refused rather than accepted and hoped about.
+
+Killing the viewer does not kill the browser. The profile is the durable half; the view onto it is the
+ephemeral half, which is what lets the TTL be minutes.
+
+#### A link is never issued onto a bridge that is not accepting yet, and the ticket never outlives it
+
+The mint starts `x11vnc` and `websockify` in the background, so "started" and "accepting" are two
+different moments — and the product's whole shape is a one-time link handed to a relay that redeems it
+at once. `viewer` now waits (bounded, `VIEWER_BRIDGE_WAIT_S=10`) for both loopback ports to be
+accepting before it writes a ticket or prints a link, and on timeout reaps and refuses: no link at all
+costs a retry, a live link onto a dead port costs the customer their single redemption. The readiness
+probe READS `/proc/net/tcp` rather than connecting, because connecting would spend the `-once`
+admission the customer was promised. The previous ticket is revoked up front, since a mint that dies
+halfway has already killed the viewer that ticket pointed at.
+
+Both windows are then measured from **one clock, stamped before `x11vnc` starts**. `-timeout` is a
+length counted from launch; `expires_at` is an instant, and it used to be stamped *after* that wait —
+so on a slow bridge the ticket advertised up to ten seconds of life the VNC server had never been
+given, and the end of the advertised window was the dead-port failure again from the other end. The
+alternative fix (padding `-timeout` by the wait) was rejected on purpose: it leaves a VNC server
+accepting a client after its own ticket expired, which is a live credential with no authorization
+behind it.
+
+#### A profile directory that already exists is GRADED, not laundered
+
+`auth` ran `mkdir -p; chmod 700; _audit`, so on a directory that already existed the `chmod` repaired
+a group-readable profile a moment before the audit that exists to catch it — against the README's own
+rule that commands never repair. `_ensure_profile_dir` chmods only what it just created.
+
+#### Evidence
+
+`tests/browser_plugin_unit.sh`: **193 arms, 0 failed**, graded by **23 of 23 mutants killed** rather
+than by arm count. Every count below was re-derived in THIS repo at this head — the plugin changed
+repositories in DIVE-4202, so carrying forward numbers measured in the old one would be a claim about
+a tree that no longer exists.
+
+| mutant, i.e. the way the keyboard reaches the wrong person | suite |
+| --- | --- |
+| the ticket file keeps the raw nonce (compare adjusted so redemption still works: this isolates "the secret is on disk" from "redemption breaks") | 2 failed |
+| redemption does not consume the ticket (a leaked link replays) | 5 failed |
+| the expiry check is dropped | 2 failed |
+| the session binding is not checked (a pasted link works) | 3 failed |
+| a nonce in argv is accepted instead of refused | 2 failed |
+| an existing profile directory is chmod'ed instead of graded | 2 failed |
+| the package precondition is deleted | 4 failed |
+| `x11vnc` loses `-localhost` (it answers every seat on the box) | 1 failed |
+| `websockify` binds `0.0.0.0` instead of `127.0.0.1` | 1 failed |
+| `Xvfb` loses `-nolisten tcp` (the display becomes a remote keyboard) | 1 failed |
+| `x11vnc -timeout` goes back to a constant shorter than the minimum TTL | 3 failed |
+| `x11vnc -timeout` is a plausible constant (900) instead of derived from the TTL | 2 failed |
+| redemption prints the target but withholds the VNC password | 4 failed |
+| the nonce compare is moved AHEAD of the spent-state check (the oracle) | 3 failed |
+| `serve --stop` leaves the ticket open (it redeems onto a dead port) | 1 failed |
+| stopping the viewer leaves its password behind in the profile | 2 failed |
+| the replay branch tears the viewer down (a wrong nonce + a wrong session kills a live view) | 2 failed |
+| the ticket is consumed BEFORE the credential read that can refuse | 5 failed |
+| the bridge-readiness wait is deleted (a link onto a port nothing is bound to) | 8 failed |
+| the up-front revoke is dropped (a failed mint leaves the old link live onto a dead viewer) | 2 failed |
+| **new:** `expires_at` stamped AFTER the wait (the ticket outlives its own VNC server) | 1 failed |
+| **new:** `-timeout` padded by the bridge wait (the VNC server outlives its own ticket) | 3 failed |
+| **new:** the manifest version stays at the one that shipped without these verbs | 1 failed |
+
+There is no X server on a CI runner, so `Xvfb`/`x11vnc`/`websockify` are fakes on PATH — liveness is
+still the real PID check, redemption is still the real SHA-256 compare, and the only override is the X
+socket *directory*, a path, which cannot make a dead display read as live. The fakes RECORD their argv
+and BIND the port they are handed: written the first way they `exec sleep 300` and discarded `"$@"`,
+which silently deleted the surface carrying the property this design leads with. Captures are cleared
+before the mint that should rewrite them and read through a bounded non-empty wait, and every
+"does not contain" assertion over a capture is paired with a control that the capture is non-empty —
+an empty file contains no mutant string either, which is how "the flag is absent" and "the file is
+absent" rendered identically.
+
+#### Not in this change, and owed
+
+The packaging half is not here: `5dive-api scripts/install/apps.sh` does not yet preinstall
+chromium/xvfb/x11vnc/websockify or run `5dive plugin add browser` + `browser setup` at provision time
+(DIVE-4238), and the dashboard's Connect/Reconnect tile is not built (DIVE-4239). No real `x11vnc` has
+been asked to honour these flags and no human has logged into a real site through a real viewer. Server
+mode therefore ships **dark** — reachable by hand on a box that has the packages, not wired to a button.
+

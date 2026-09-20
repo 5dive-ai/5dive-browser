@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "5dive-browser",
+  "description": "The 5dive browser plugin, published from its own repository. One plugin, one repo — the shape `5dive plugin add <owner>/<repo>` was built for.",
+  "owner": {
+    "name": "5dive",
+    "email": "support@5dive.com"
+  },
+  "plugins": [
+    {
+      "name": "browser",
+      "description": "Persistent human-authenticated browser sessions: you log into a site once by hand, the agent is granted the session and never the credentials, and deterministic adapters decide where to click. A security challenge is a hard stop that asks for a person.",
+      "category": "channel",
+      "source": "./browser",
+      "homepage": "https://github.com/5dive-ai/5dive-browser"
+    }
+  ]
+}
