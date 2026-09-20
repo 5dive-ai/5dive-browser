@@ -236,7 +236,7 @@ function loadPlaywright() {
   {
     die(E_NOTHING_RAN, `playwright-core is not installed for this seat, so there is no executor. ` +
       `Install the pinned version next to the plugin:  npm install --prefix ` +
-      `${__dirname}/..  (it is pinned in plugins/browser/package.json). ` +
+      `${__dirname}/..  (it is pinned in the plugin's package.json). ` +
       `This driver does NOT fall back to a throwaway browser: a run that is not inside the profile a ` +
       `person logged into by hand is not the thing that was asked for.`);
   }

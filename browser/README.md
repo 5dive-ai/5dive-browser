@@ -373,7 +373,7 @@ Every shipped adapter has `"actions": {}`: they classify a session, and the acti
 wants are theirs to write in their seat's `.adapters/`.
 
 **Why two and not one.** It was one — the package's `adapters/` — and that directory is replaced
-wholesale by `5dive plugin upgrade browser@5dive-plugins`. Measured 2026-09-14: a hand-written
+wholesale by `5dive plugin upgrade browser@5dive-browser`. Measured 2026-09-14: a hand-written
 `adapters/reddit.com.json` was there before the upgrade and gone after it, and `status reddit.com`
 went `authenticated` → `UNKNOWN (no adapter)` with nothing else changed. An adapter is your own
 data about your own site; an upgrade that eats it silently un-classifies a live session.
@@ -438,10 +438,10 @@ driver counts steps rather than trusting a place in the file, and a step counts 
 `click` may already have posted, and calling *that* "nothing ran" would suppress the re-read on an
 action that half happened.
 
-**Playwright is pinned.** `plugins/browser/package.json` names an exact `playwright-core` version,
+**Playwright is pinned.** The plugin's `package.json` (`browser/package.json` in this repo) names an exact `playwright-core` version,
 no caret: the driver speaks CDP to a Chrome holding a human's live session, and a silent minor bump
 changes the launch arguments under a credential. Install it with
-`npm install --prefix plugins/browser`; without it, `run` refuses and says so.
+`npm install --prefix <the plugin directory>`; without it, `run` refuses and says so.
 
 On a managed 5dive box nobody types that command. The nightly browser-stack converger
 (`/usr/local/bin/5dive-browser-stack-install`, shipped by 5dive-api) reads the pin out of this
@@ -455,7 +455,7 @@ throwaway browser (DIVE-4538).
 `node_modules` in every ancestor directory of the driver, so unpacking the plugin somewhere that
 happens to sit under one hands this process — the one that opens a directory full of live sessions —
 a library nobody chose. The driver looks in exactly two places, in order: the directories `NODE_PATH`
-names, if any, then `plugins/browser/node_modules`. There is no ancestor walk, so "not installed"
+names, if any, then the plugin directory's own `node_modules`. There is no ancestor walk, so "not installed"
 is a fact about those two places rather than about where the plugin was unpacked.
 
 ## Ad filtering, and the one site where you turn it off
