@@ -106,6 +106,15 @@ files says so. Use `tree`, `read` or `shot` when one field really is all you wan
 **Never guess a selector.** A ref is `ref=<role>/<accessible name>[#n]` and is re-derived from
 the page every time, so it survives a reload — an obfuscated class name does not.
 
+**A ref that is not there yet is not a missing ref.** `tree`, `snapshot` and `run` wait 1200 ms
+after load before looking (`--settle=<ms>`, and `--page-settle=<ms>` on `run`, whose other
+`--key=value` arguments belong to the adapter). If a ref shows up at a higher settle and not at the
+default, the page is slow, not wrong — measured on a GitHub issue page: 54 nodes at the default, 76
+at `--settle=6000`. Raise the settle to orient; for an element that is genuinely late put a
+`wait_for` step in the adapter, which now polls for the whole step timeout on a `ref=` selector just
+as it always did on a CSS one. The settle is paid on every run; a `wait_for` costs only what the
+page takes.
+
 ## What will actually go wrong
 
 - **No server-mode stack on the box.** chromium / Xvfb / x11vnc / websockify are installed

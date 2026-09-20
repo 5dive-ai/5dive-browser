@@ -2118,6 +2118,7 @@ cat > "$PWROOT/node_modules/playwright-core/index.js" <<'PWJS'
 // it is a tape of what the driver asked for, which is what the arms grade.
 const fs = require('fs');
 const rec = (o) => fs.appendFileSync(process.env.PWREC, JSON.stringify(o) + '\n');
+let markWalks = 0;   // DIVE-4674: how many times the ref layer has asked THIS process
 const page = {
   setDefaultTimeout: (t) => rec({ call: 'setDefaultTimeout', t }),
   goto: async (url, o) => rec({ call: 'goto', url }),
@@ -2144,8 +2145,23 @@ const page = {
   // that lives in our code. The walk itself is graded directly against a DOM
   // shim in T23a — a stub cannot grade a function it is standing in for.
   evaluate: async (fn, arg) => {
-    rec({ call: 'evaluate', fnlen: String(fn).length, mark: (arg && arg.mark) || null,
+    const mark = (arg && arg.mark) || null;
+    if (mark) markWalks++;
+    rec({ call: 'evaluate', fnlen: String(fn).length, mark, walkN: mark ? markWalks : null,
           interactiveOnly: !!(arg && arg.interactiveOnly), snapshot: !!(arg && arg.snapshot) });
+    // PWWALK_MISS=<n> (DIVE-4674) — A REF THAT IS NOT THERE YET, which is a shape
+    // no other fixture here can produce: the first <n> mark-walks find nothing
+    // and the (n+1)th finds it. Every existing arm sees a page whose answer never
+    // changes, so "resolved once" and "resolved on the fourth look" are the same
+    // tape to them; that is exactly why a ref `wait_for` that never waited was
+    // invisible to this suite. Inert unless the variable is set.
+    if (mark && process.env.PWWALK_MISS) {
+      if (markWalks <= Number(process.env.PWWALK_MISS)) {
+        return { nodes: [{ role: 'textbox', name: 'Something Else', ref: 'textbox/Something Else' }],
+                 marker: null };
+      }
+      return { nodes: [], marker: 'late-1' };
+    }
     if (process.env.PWWALK) return JSON.parse(fs.readFileSync(process.env.PWWALK, 'utf8'));
     return { nodes: [], marker: null };
   },
@@ -3232,6 +3248,7 @@ printf '{ "name": "playwright-core", "version": "0.0.0-daemon-stub", "main": "in
 cat > "$DSTUB/node_modules/playwright-core/index.js" <<'DPWJS'
 const fs = require('fs');
 const rec = (o) => fs.appendFileSync(process.env.PWREC, JSON.stringify(o) + '\n');
+let markWalks = 0;   // DIVE-4674, see the driver stub
 const mkpage = (kind) => ({
   setDefaultTimeout: (t) => rec({ call: 'setDefaultTimeout', t, kind }),
   goto: async (url) => rec({ call: 'goto', url, kind }),
@@ -3247,7 +3264,19 @@ const mkpage = (kind) => ({
   waitForSelector: async (sel) => rec({ call: 'waitForSelector', sel, kind }),
   waitForTimeout: async (ms) => rec({ call: 'waitForTimeout', ms, kind }),
   evaluate: async (fn, arg) => {
-    rec({ call: 'evaluate', kind, mark: (arg && arg.mark) || null, snapshot: !!(arg && arg.snapshot) });
+    const mark = (arg && arg.mark) || null;
+    if (mark) markWalks++;
+    rec({ call: 'evaluate', kind, mark, walkN: mark ? markWalks : null, snapshot: !!(arg && arg.snapshot) });
+    // PWWALK_MISS: the same not-there-yet page the driver stub can produce
+    // (DIVE-4674). The warm loop is a SECOND copy of the step loop, so it needs
+    // the same fixture or half the product stays ungraded.
+    if (mark && process.env.PWWALK_MISS) {
+      if (markWalks <= Number(process.env.PWWALK_MISS)) {
+        return { nodes: [{ role: 'textbox', name: 'Something Else', ref: 'textbox/Something Else' }],
+                 marker: null };
+      }
+      return { nodes: [], marker: 'late-1' };
+    }
     if (arg && arg.snapshot && process.env.DPWSNAP) return JSON.parse(fs.readFileSync(process.env.DPWSNAP, 'utf8'));
     return { nodes: [], marker: null };
   },
@@ -4038,6 +4067,293 @@ t  'T27j (control) the same store at 0700 is usable, so the arm above graded the
       env FIVEDIVE_BROWSER_SEAT=agent-squatter.test "$BROWSER" status box.test 2>/dev/null \
       | grep -o authenticated | head -1)"
 rm -rf "$SQUAT"
+
+# ================================================== T28 a ref that is not there YET
+#
+# THE DEFECT (DIVE-4674). Both step loops resolved every selector through a
+# ONE-SHOT `aria.resolveSelector` before the switch. A CSS `wait_for` then polled
+# for the whole step timeout inside page.waitForSelector; a ref `wait_for` — the
+# same instruction, written the way this plugin tells agents to write it — probed
+# for 0 ms and threw. And `run` had no settle after `goto` at all, while `tree`
+# and `snapshot` both waited 1200 ms, so `run` looked at a page roughly fifty
+# milliseconds after domcontentloaded and truthfully reported that the element
+# `tree` had just listed was not there.
+#
+# WHY THE SUITE COULD NOT SEE IT. Every fixture above answers the walk the same
+# way every time, so "resolved once" and "resolved on the fourth look" leave a
+# byte-identical tape. PWWALK_MISS (both stubs) is the missing shape: a page that
+# answers "no" N times and then "yes".
+#
+# THE LOOP EXISTS TWICE — bin/driver-playwright (cold) and bin/session-daemon
+# (warm) — so T28f grades the second one through a REAL daemon rather than
+# trusting that the same patch was applied to both.
+
+_mkwaitpkg() {  # _mkwaitpkg <dir> — a plugin tree with its own lib, mutable per arm
+  mkdir -p "$1/bin"
+  cp "$ROOT/browser/bin/driver-playwright" "$1/bin/driver-playwright"
+  cp -r "$ROOT/browser/lib" "$1/lib"
+}
+# An adapter whose SECOND step is a ref wait_for, then a plain click. The ref is
+# the shape agents are told to use and the shape the old code could not wait for.
+mkrefadapter() {  # mkrefadapter <site> <verify-url> <expect>
+  cat > "$FIVEDIVE_BROWSER_ADAPTER_DIR/$1.json" <<JSON
+{ "site": "$1",
+  "probe": { "url": "https://$1.test/feed", "logged_out_when_dom_matches": "action=\"/login\"" },
+  "actions": { "publish": {
+      "steps": [ {"op":"goto","url":"https://$1.test/compose"},
+                 {"op":"wait_for","selector":"ref=textbox/Add a comment"},
+                 {"op":"click","selector":"#pub"} ],
+      "verify": { "url": "$2", "expect": "$3" } } } }
+JSON
+}
+WAITREC="$TMP/t27-record.jsonl"
+# THE DRIVER IS GRADED DIRECTLY wherever an exit code is the claim. `run` through
+# bin/browser re-reads the verify URL OUT OF BAND when a step fails, and every
+# fixture in this file verifies against the one $TMP/artifact.html an early arm
+# wrote 'PUBLISHED' into — so an rc of 0 from the front door is equally true of a
+# tree where the step never ran. The step loop's own rc is not.
+DRVPLAN() { jq -nc --arg p "$1" --argjson st "$2" '{profile:$p, steps:$st, args:{}}'; }
+LATEDIR="$FIVEDIVE_BROWSER_PROFILE_ROOT/$SEAT/late.test"
+mkprofile late.test "$LIVE_DOM" >/dev/null
+mkrefadapter late.test "file://$TMP/artifact.html" 'PUBLISHED'
+unset FIVEDIVE_BROWSER_DRIVER
+
+# --- T28a a ref wait_for WAITS, and succeeds once the element arrives ---------
+: > "$WAITREC"
+run env NODE_PATH="$PWROOT/node_modules" PWREC="$WAITREC" PWWALK_MISS=3 \
+    FIVEDIVE_BROWSER_STEP_TIMEOUT=8000 FIVEDIVE_BROWSER_RUN_SETTLE_MS=0 \
+    "$BROWSER" run late.test publish
+t  'T28a the whole command path completes (NOT the grade: see the re-read note above)' 0 "$RC"
+WALKS="$(jq -rs '[.[]|select(.call=="evaluate" and .mark!=null)]|length' "$WAITREC")"
+t  'T28a ...because the ref layer looked more than once' 'yes' \
+   "$([[ "${WALKS:-0}" -ge 4 ]] && echo yes || echo no)"
+t  'T28a ...and every look asked for the SAME ref' 'textbox/Add a comment' \
+   "$(jq -rs '[.[]|select(.call=="evaluate" and .mark!=null)|.mark]|unique|join(",")' "$WAITREC")"
+t  'T28a ...then handed the resolved marker to waitForSelector, as before' \
+   '[data-5dive-ref="late-1"]' \
+   "$(jq -rs '[.[]|select(.call=="waitForSelector")|.sel]|last' "$WAITREC")"
+t  'T28a ...and the step AFTER it ran, so the action completed' 'click' \
+   "$(jq -rs '[.[]|select(.call=="click")|.call]|last' "$WAITREC")"
+# The same plan at the DRIVER, where no re-read can paper over a failed step.
+: > "$WAITREC"
+env NODE_PATH="$PWROOT/node_modules" PWREC="$WAITREC" PWWALK_MISS=3 \
+    FIVEDIVE_BROWSER_STEP_TIMEOUT=8000 FIVEDIVE_BROWSER_RUN_SETTLE_MS=0 FIVEDIVE_BROWSER_CHROME=/bin/true \
+    "$DRV" <<<"$(DRVPLAN "$LATEDIR" '[{"op":"wait_for","selector":"ref=textbox/Add a comment"},{"op":"click","selector":"#pub"}]')" \
+    >/dev/null 2>&1; RC28A=$?
+t  'T28a THE GRADE: the driver itself exits 0 on a late ref' 0 "$RC28A"
+t  'T28a ...and the click really ran, on the tape, not on a re-read' 1 \
+   "$(jq -rs '[.[]|select(.call=="click")]|length' "$WAITREC")"
+
+# --- T28b beyond the timeout it is still a refusal, with the SAME message -----
+# The exit codes are the contract bin/browser keys on, so they are graded at the
+# driver, where they are decided, rather than through the out-of-band re-read.
+: > "$WAITREC"
+env NODE_PATH="$PWROOT/node_modules" PWREC="$WAITREC" PWWALK_MISS=99999 \
+    FIVEDIVE_BROWSER_STEP_TIMEOUT=400 FIVEDIVE_BROWSER_CHROME=/bin/true \
+    "$DRV" <<<"$(DRVPLAN "$LATEDIR" '[{"op":"wait_for","selector":"ref=textbox/Add a comment"}]')" \
+    >/dev/null 2>"$TMP/t27b.err"; RC27B=$?
+t  'T28b a ref wait_for that never arrives, as step ONE, still exits 70' 70 "$RC27B"
+tc 'T28b ...with the refMiss message unchanged, not a "timed out"' \
+   'matches nothing on this page' "$(cat "$TMP/t27b.err")"
+tc 'T28b ...and still naming what IS on the page, which is the hint an operator reads' \
+   'Refs of that role on this page' "$(cat "$TMP/t27b.err")"
+t  'T28b ...having polled rather than probed once' 'yes' \
+   "$([[ "$(jq -rs '[.[]|select(.call=="evaluate" and .mark!=null)]|length' "$WAITREC")" -ge 2 ]] && echo yes || echo no)"
+: > "$WAITREC"
+env NODE_PATH="$PWROOT/node_modules" PWREC="$WAITREC" PWWALK_MISS=99999 \
+    FIVEDIVE_BROWSER_STEP_TIMEOUT=400 FIVEDIVE_BROWSER_RUN_SETTLE_MS=0 FIVEDIVE_BROWSER_CHROME=/bin/true \
+    "$DRV" <<<"$(DRVPLAN "$LATEDIR" '[{"op":"goto","url":"https://late.test/c"},{"op":"wait_for","selector":"ref=textbox/Add a comment"}]')" \
+    >/dev/null 2>"$TMP/t27b2.err"; RC27B2=$?
+t  'T28b ...and exits 1, not 70, once a step has already run' 1 "$RC27B2"
+
+# --- T28c MUTANT: put the one-shot resolve back, and T28a must go red ---------
+# Non-vacuous in BOTH directions: the unmutated copy of the same package is run
+# first, so a red below is the mutation and not the fixture.
+MUTPKG="$TMP/t27-mutant"; _mkwaitpkg "$MUTPKG"
+: > "$WAITREC"
+env NODE_PATH="$PWROOT/node_modules" PWREC="$WAITREC" PWWALK_MISS=3 \
+    FIVEDIVE_BROWSER_STEP_TIMEOUT=8000 FIVEDIVE_BROWSER_RUN_SETTLE_MS=0 FIVEDIVE_BROWSER_CHROME=/bin/true \
+    "$MUTPKG/bin/driver-playwright" \
+    <<<"$(DRVPLAN "$LATEDIR" '[{"op":"wait_for","selector":"ref=textbox/Add a comment"}]')" \
+    >/dev/null 2>&1; RC27C0=$?
+t  'T28c (anchor) the UNMUTATED copy of the package resolves the late ref' 0 "$RC27C0"
+# The mutation: wait_for stops being the op that waits — exactly the pre-fix tree.
+perl -0pi -e "s/if \(step\.op === 'wait_for'\) return resolveRefWithin\(page, sel, \{ timeoutMs, pollMs \}\);/\/* MUTANT (DIVE-4674): the one-shot resolve, restored *\//" \
+  "$MUTPKG/lib/aria.cjs"
+t  'T28c (anchor) the mutation really landed in the copy' 'yes' \
+   "$(grep -q 'MUTANT (DIVE-4674)' "$MUTPKG/lib/aria.cjs" && echo yes || echo no)"
+t  'T28c (anchor) ...and the shipped lib is untouched' 'yes' \
+   "$(grep -q 'MUTANT (DIVE-4674)' "$ROOT/browser/lib/aria.cjs" && echo no || echo yes)"
+: > "$WAITREC"
+env NODE_PATH="$PWROOT/node_modules" PWREC="$WAITREC" PWWALK_MISS=3 \
+    FIVEDIVE_BROWSER_STEP_TIMEOUT=8000 FIVEDIVE_BROWSER_RUN_SETTLE_MS=0 FIVEDIVE_BROWSER_CHROME=/bin/true \
+    "$MUTPKG/bin/driver-playwright" \
+    <<<"$(DRVPLAN "$LATEDIR" '[{"op":"wait_for","selector":"ref=textbox/Add a comment"}]')" \
+    >/dev/null 2>"$TMP/t27c.err"; RC27C=$?
+t  'T28c MUTANT: with the one-shot resolve back, the late ref is a refusal' 70 "$RC27C"
+t  'T28c ...and it looked exactly ONCE, which is the whole defect' 1 \
+   "$(jq -rs '[.[]|select(.call=="evaluate" and .mark!=null)]|length' "$WAITREC")"
+
+# --- T28d `run` settles after goto, the way tree and snapshot always did ------
+: > "$WAITREC"
+mkadapter settle.test "file://$TMP/artifact.html" 'PUBLISHED'
+mkprofile settle.test "$LIVE_DOM" >/dev/null
+run env NODE_PATH="$PWROOT/node_modules" PWREC="$WAITREC" \
+    "$BROWSER" run settle.test publish --page-settle=777 --body=hi
+t  'T28d a run with --page-settle succeeds' 0 "$RC"
+t  'T28d ...and the goto is followed by a settle of exactly that many ms' '777' \
+   "$(jq -rs '[.[]|select(.call=="waitForTimeout")|.ms]|last' "$WAITREC")"
+: > "$WAITREC"
+run env NODE_PATH="$PWROOT/node_modules" PWREC="$WAITREC" \
+    "$BROWSER" run settle.test publish --page-settle=0 --body=hi
+t  'T28d ...and --page-settle=0 waits NOT AT ALL, rather than waiting zero' 0 \
+   "$(jq -rs '[.[]|select(.call=="waitForTimeout")]|length' "$WAITREC")"
+run env NODE_PATH="$PWROOT/node_modules" PWREC="$WAITREC" \
+    "$BROWSER" run settle.test publish --page-settle=abc --body=hi
+t  'T28d a --page-settle that is not milliseconds is refused here, not three processes away' 64 "$RC"
+tc 'T28d ...naming what it wanted' 'takes milliseconds' "$ERR"
+# The flag carries a DASH so it can never be mistaken for an adapter argument:
+# a placeholder name is [a-zA-Z0-9_]+, and {body} above proves adapter args still
+# arrive intact alongside it.
+t  'T28d ...and an adapter argument on the same line still reached the page' 'hi' \
+   "$(jq -rs '[.[]|select(.call=="fill")|.val]|last' "$WAITREC")"
+
+# --- T28e/f the WARM half: the settle rides in the REQUEST, and the loop polls -
+#
+# BOTH HALVES ARE GRADED THROUGH A REAL session-daemon, not through the source.
+# The daemon is a second copy of the step loop in a long-lived process that was
+# started before this command line existed — which is why an environment variable
+# set by bin/browser reaches the cold driver and nothing else, and why
+# `snapshot --settle` worked cold and was silently dropped on a served profile.
+# A text arm would pass on a tree where the knob is parsed and then thrown away.
+mkprofile latewarm.test "$LIVE_DOM" >/dev/null
+mkrefadapter latewarm.test "file://$TMP/artifact.html" 'PUBLISHED'
+: > "$DREC"
+# PROBE_SETTLE is pinned to a value nothing else here uses. `run` on a warm
+# profile asks the daemon for a liveness probe FIRST, and probeRequest has a
+# settle of its own (800 ms by default) — so an arm that just read the tape's
+# waits would grade the probe and call it the run's settle. Measured: it did.
+dserve latewarm.test PWWALK_MISS=3 FIVEDIVE_BROWSER_STEP_TIMEOUT=8000 FIVEDIVE_BROWSER_PROBE_SETTLE_MS=11
+t  'T28f (precondition) the warm session is up' 0 "$RC"
+LAUNCH_BEFORE="$(launches)"
+dwarm "$BROWSER" run latewarm.test publish
+t  'T28f a ref wait_for inside the WARM loop waits too' 0 "$RC"
+t  'T28f ...the daemon looked more than once' 'yes' \
+   "$([[ "$(jq -rs '[.[]|select(.call=="evaluate" and .mark!=null)]|length' "$DREC")" -ge 4 ]] && echo yes || echo no)"
+t  'T28f ...and it resolved to the marker, then waited on it' '[data-5dive-ref="late-1"]' \
+   "$(jq -rs '[.[]|select(.call=="waitForSelector")|.sel]|last' "$DREC")"
+t  'T28f ...without launching a browser to do any of it' "$LAUNCH_BEFORE" "$(launches)"
+
+# The knob has to REACH that process. Each arm asks for a settle no default could
+# produce and reads back what the warm page was actually told to wait.
+: > "$DREC"
+dwarm "$BROWSER" tree latewarm.test "https://latewarm.test/x" --settle=4321 >/dev/null 2>&1
+t  'T28e tree --settle reaches the WARM session' '4321' \
+   "$(jq -rs '[.[]|select(.call=="waitForTimeout" and .ms!=11)|.ms]|last' "$DREC")"
+: > "$DREC"
+dwarm "$BROWSER" snapshot latewarm.test "https://latewarm.test/x" --out="$TMP/t27-snap" --settle=4322 >/dev/null 2>&1
+t  'T28e snapshot --settle reaches it too — it was parsed and dropped before' '4322' \
+   "$(jq -rs '[.[]|select(.call=="waitForTimeout" and .ms!=11)|.ms]|last' "$DREC")"
+: > "$DREC"
+dwarm "$BROWSER" run latewarm.test publish --page-settle=4323 >/dev/null 2>&1
+t  'T28e run --page-settle reaches it, and settles after the goto' '4323' \
+   "$(jq -rs '[.[]|select(.call=="waitForTimeout" and .ms!=11)|.ms]|last' "$DREC")"
+: > "$DREC"
+dwarm "$BROWSER" run latewarm.test publish --page-settle=0 >/dev/null 2>&1
+t  'T28e ...and a warm run with --page-settle=0 waits not at all' 0 \
+   "$(jq -rs '[.[]|select(.call=="waitForTimeout" and .ms!=11)]|length' "$DREC")"
+t  'T28e (anchor) ...and the 11ms the filter drops really is the liveness probe' 'yes' \
+   "$([[ "$(jq -rs '[.[]|select(.call=="waitForTimeout" and .ms==11)]|length' "$DREC")" -ge 1 ]] && echo yes || echo no)"
+env PATH="$SPATH" "$BROWSER" serve latewarm.test --stop >/dev/null 2>&1
+
+# --- T28g ONLY wait_for waits — the asymmetry is graded, not just asserted ----
+#
+# The row allowed either choice for fill/click/press/select/upload and asked for
+# the one taken to be STATED AND GRADED. A sentence in lib/aria.cjs is not a
+# grade: an edit that hands every op the poll — a `click` hovering for the whole
+# step timeout inside somebody's live account, the exact harm this change argues
+# against — reds nothing unless an arm counts the looks. Measured: with the
+# asymmetry deleted from the shipped lib, the whole suite still passed except
+# T28c's mutation-plumbing anchors, which are about the perl edit and not about
+# behaviour at all.
+#
+# PWWALK_MISS=1 is the smallest page that can tell the two apart: a one-shot
+# resolve looks ONCE and refuses, a polling one looks twice and proceeds. The
+# step timeout is left long on purpose, so a poll would have every chance.
+: > "$WAITREC"
+env NODE_PATH="$PWROOT/node_modules" PWREC="$WAITREC" PWWALK_MISS=1 \
+    FIVEDIVE_BROWSER_STEP_TIMEOUT=8000 FIVEDIVE_BROWSER_CHROME=/bin/true \
+    "$DRV" <<<"$(DRVPLAN "$LATEDIR" '[{"op":"click","selector":"ref=textbox/Add a comment"}]')" \
+    >/dev/null 2>"$TMP/t28g.err"; RC28G=$?
+t  'T28g a ref click does not wait: it refuses on the page it was given' 70 "$RC28G"
+t  'T28g ...having looked EXACTLY ONCE, which is what the one-shot resolve means' 1 \
+   "$(jq -rs '[.[]|select(.call=="evaluate" and .mark!=null)]|length' "$WAITREC")"
+tc 'T28g ...with the same refMiss text, not a timeout' 'matches nothing on this page' \
+   "$(cat "$TMP/t28g.err")"
+t  'T28g ...and nothing was clicked on the way out' 0 \
+   "$(jq -rs '[.[]|select(.call=="click")]|length' "$WAITREC")"
+: > "$WAITREC"
+env NODE_PATH="$PWROOT/node_modules" PWREC="$WAITREC" PWWALK_MISS=1 \
+    FIVEDIVE_BROWSER_STEP_TIMEOUT=8000 FIVEDIVE_BROWSER_CHROME=/bin/true \
+    "$DRV" <<<"$(DRVPLAN "$LATEDIR" '[{"op":"fill","selector":"ref=textbox/Add a comment","value":"hi"}]')" \
+    >/dev/null 2>&1; RC28G2=$?
+t  'T28g a ref fill does not wait either' 70 "$RC28G2"
+t  'T28g ...one look, and nothing typed into a page that was not the one described' 1 \
+   "$(jq -rs '[.[]|select(.call=="evaluate" and .mark!=null)]|length' "$WAITREC")"
+t  'T28g ...and no fill reached the page' 0 \
+   "$(jq -rs '[.[]|select(.call=="fill")]|length' "$WAITREC")"
+
+# MUTANT, in its own copy of the package: delete the asymmetry so every op polls.
+# This is the regression the arms above exist to catch, and it must flip them —
+# on BEHAVIOUR (the click now succeeds after a second look), not on plumbing.
+SYMPKG="$TMP/t28-sym-mutant"; _mkwaitpkg "$SYMPKG"
+: > "$WAITREC"
+env NODE_PATH="$PWROOT/node_modules" PWREC="$WAITREC" PWWALK_MISS=1 \
+    FIVEDIVE_BROWSER_STEP_TIMEOUT=8000 FIVEDIVE_BROWSER_CHROME=/bin/true \
+    "$SYMPKG/bin/driver-playwright" \
+    <<<"$(DRVPLAN "$LATEDIR" '[{"op":"click","selector":"ref=textbox/Add a comment"}]')" \
+    >/dev/null 2>&1; RC28H0=$?
+t  'T28h (anchor) the UNMUTATED copy refuses the ref click, exactly as shipped' 70 "$RC28H0"
+perl -0pi -e "s/  if \(step\.op === 'wait_for'\) return resolveRefWithin\(page, sel, \{ timeoutMs, pollMs \}\);\n  return resolveRef\(page, sel\);/  \/* MUTANT-SYM (DIVE-4674): every op polls, the asymmetry deleted *\/\n  return resolveRefWithin(page, sel, { timeoutMs, pollMs });/" \
+  "$SYMPKG/lib/aria.cjs"
+t  'T28h (anchor) the mutation really landed in the copy' 'yes' \
+   "$(grep -q 'MUTANT-SYM (DIVE-4674)' "$SYMPKG/lib/aria.cjs" && echo yes || echo no)"
+t  'T28h (anchor) ...and the shipped lib still only gives the poll to wait_for' 'yes' \
+   "$(grep -q "if (step.op === 'wait_for') return resolveRefWithin" "$ROOT/browser/lib/aria.cjs" && echo yes || echo no)"
+: > "$WAITREC"
+env NODE_PATH="$PWROOT/node_modules" PWREC="$WAITREC" PWWALK_MISS=1 \
+    FIVEDIVE_BROWSER_STEP_TIMEOUT=8000 FIVEDIVE_BROWSER_CHROME=/bin/true \
+    "$SYMPKG/bin/driver-playwright" \
+    <<<"$(DRVPLAN "$LATEDIR" '[{"op":"click","selector":"ref=textbox/Add a comment"}]')" \
+    >/dev/null 2>&1; RC28H=$?
+t  'T28h MUTANT: with every op polling, the ref click stops refusing' 0 "$RC28H"
+t  'T28h ...because it looked a SECOND time — the count is the whole difference' 2 \
+   "$(jq -rs '[.[]|select(.call=="evaluate" and .mark!=null)]|length' "$WAITREC")"
+t  'T28h ...and the click it should never have reached went through' 1 \
+   "$(jq -rs '[.[]|select(.call=="click")]|length' "$WAITREC")"
+
+# --- T28i the WARM loop holds the same asymmetry ------------------------------
+# The daemon is the second copy of the step loop, so the choice has to be graded
+# there too or half the product is ungraded. Its walk counter lives in a process
+# that outlives the command, so this is the FIRST ref walk of a FRESH session.
+mkprofile clickwarm.test "$LIVE_DOM" >/dev/null
+cat > "$FIVEDIVE_BROWSER_ADAPTER_DIR/clickwarm.test.json" <<'JSON'
+{ "site": "clickwarm.test",
+  "probe": { "url": "https://clickwarm.test/feed", "logged_out_when_dom_matches": "action=\"/login\"" },
+  "actions": { "publish": {
+      "steps": [ {"op":"goto","url":"https://clickwarm.test/compose"},
+                 {"op":"click","selector":"ref=textbox/Add a comment"} ],
+      "verify": { "url": "https://clickwarm.test/feed", "expect": "posts" } } } }
+JSON
+dserve clickwarm.test PWWALK_MISS=1 FIVEDIVE_BROWSER_STEP_TIMEOUT=8000 FIVEDIVE_BROWSER_PROBE_SETTLE_MS=11
+t  'T28i (precondition) the warm session is up' 0 "$RC"
+: > "$DREC"
+dwarm "$BROWSER" run clickwarm.test publish >/dev/null 2>&1
+t  'T28i the WARM loop does not wait for a ref click either: exactly one look' 1 \
+   "$(jq -rs '[.[]|select(.call=="evaluate" and .mark!=null)]|length' "$DREC")"
+t  'T28i ...and no click reached the warm page' 0 \
+   "$(jq -rs '[.[]|select(.call=="click")]|length' "$DREC")"
+env PATH="$SPATH" "$BROWSER" serve clickwarm.test --stop >/dev/null 2>&1
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -1378,15 +1378,25 @@ cmd_run() {
   # --key=value on this command line is an ADAPTER ARGUMENT, so a bare `--wait`
   # would be indistinguishable from an adapter with a {wait} placeholder. A flag
   # that silently eats a caller's argument is worse than a longer flag.
-  local lwait=no rest=() a
+  #
+  # --page-settle, and the DASH is what makes it safe (DIVE-4674). `tree` and
+  # `snapshot` spell this flag `--settle`, and they can: nothing else on their
+  # command line is a caller's data. Here it would be indistinguishable from an
+  # adapter with a {settle} placeholder — the exact collision --lease-wait exists
+  # to avoid. A placeholder name is [a-zA-Z0-9_]+ (bin/driver-playwright), so a
+  # flag carrying a dash can never be one, and this one cannot eat an argument.
+  local lwait=no psettle="" rest=() a
   for a in "$@"; do
     case "$a" in
-      --lease-wait)   lwait="$LEASE_WAIT_DEFAULT" ;;
-      --lease-wait=*) lwait="${a#*=}" ;;
+      --lease-wait)    lwait="$LEASE_WAIT_DEFAULT" ;;
+      --lease-wait=*)  lwait="${a#*=}" ;;
+      --page-settle=*) psettle="${a#*=}" ;;
       *) rest+=("$a") ;;
     esac
   done
   set -- ${rest+"${rest[@]}"}
+  [[ -z "$psettle" || "$psettle" =~ ^[0-9]{1,7}$ ]] \
+    || die "$E_USAGE" "--page-settle takes milliseconds; got: $psettle"
   _lease_take "$site" "$dir" "run $action" "$lwait"
   trap '_lease_and_serve_release' EXIT
 
@@ -1481,7 +1491,8 @@ cmd_run() {
     local wplan wrc=0
     wplan=$(jq -nc --argjson steps "$(jq -c --arg a "$action" '.actions[$a].steps' "$f")" \
         --argjson args "$args" --argjson l "$(_daemon_lease_json)" \
-        '{op:"plan", steps:$steps, args:$args} + $l')
+        --argjson st "$(_settle_json "$psettle")" \
+        '{op:"plan", steps:$steps, args:$args} + $st + $l')
     _daemon_call "$dir" "$wplan" || wrc=$?
     _lease_release; trap - EXIT
     if (( wrc == 70 )); then
@@ -1512,6 +1523,7 @@ cmd_run() {
   # redeeming a viewer half-way through a publish, which is when a machine typing
   # into the same window does the most damage.
   FIVEDIVE_BROWSER_PROFILE="$dir" FIVEDIVE_BROWSER_CHROME="$chrome" \
+    FIVEDIVE_BROWSER_RUN_SETTLE_MS="${psettle:-${FIVEDIVE_BROWSER_RUN_SETTLE_MS:-${FIVEDIVE_BROWSER_TREE_SETTLE_MS:-$SNAP_SETTLE_DEFAULT}}}" \
     FIVEDIVE_BROWSER_LEASE="$(_lease_meta "$_LEASE_DIR")" \
     FIVEDIVE_BROWSER_LEASE_TOKEN="$_LEASE_TOKEN" \
     "$driver" <<<"$plan"
@@ -1589,11 +1601,12 @@ _run_verify() {  # _run_verify <adapter-file> <action> <args-json> <executor-rc>
 # file, it survives a navigation, a browser restart and a class-name change, and
 # the browser that printed it does not have to still be running when it is used.
 cmd_tree() {
-  local site="" url="" interactive=0 json=0 wait="no"
+  local site="" url="" interactive=0 json=0 wait="no" settle=""
   while (($#)); do
     case "$1" in
       --interactive) interactive=1 ;;
       --json)   json=1 ;;
+      --settle=*) settle="${1#*=}" ;;
       --wait)   wait="$LEASE_WAIT_DEFAULT" ;;
       --wait=*) wait="${1#*=}" ;;
       -h|--help) usage; return 0 ;;
@@ -1601,8 +1614,11 @@ cmd_tree() {
       *) if [[ -z "$site" ]]; then site="$1"; else url="$1"; fi ;;
     esac; shift
   done
-  [[ -n "$site" && -n "$url" ]] || die "$E_USAGE" "usage: 5dive browser tree <site> <url> [--interactive] [--json]"
+  [[ -n "$site" && -n "$url" ]] || die "$E_USAGE" "usage: 5dive browser tree <site> <url> [--interactive] [--json] [--settle=<ms>]"
   _valid_site "$site" || die "$E_USAGE" "'$site' is not a usable profile name"
+  # Same validation snapshot's --settle has had since DIVE-4653: a bad value is a
+  # refusal here, not a silent Number(NaN) three processes away.
+  [[ -z "$settle" || "$settle" =~ ^[0-9]{1,7}$ ]] || die "$E_USAGE" "--settle takes milliseconds; got: $settle"
   _open_site "$site"
   local dir="$_SITE_DIR"
 
@@ -1632,7 +1648,8 @@ cmd_tree() {
     # being a handle into the browser that printed it, so which process did the
     # walk is not a property the answer carries.
     plan=$(jq -nc --arg u "$url" --argjson i "$interactive" --argjson l "$(_daemon_lease_json)" \
-        '{op:"tree", url:$u, interactive:($i==1)} + $l')
+        --argjson st "$(_settle_json "$settle")" \
+        '{op:"tree", url:$u, interactive:($i==1)} + $st + $l')
     out=$(_daemon_call "$_PG_DIR" "$plan") \
       || die "$E_UNAVAILABLE" "the warm session could not enumerate $url (its own reason is above)."
   else
@@ -1643,6 +1660,7 @@ cmd_tree() {
     plan=$(jq -nc --arg p "$_PG_DIR" --arg u "$url" --argjson i "$interactive" \
         '{profile:$p, mode:"tree", url:$u, interactive:($i==1)}')
     out=$(FIVEDIVE_BROWSER_PROFILE="$_PG_DIR" FIVEDIVE_BROWSER_CHROME="$chrome" \
+          FIVEDIVE_BROWSER_TREE_SETTLE_MS="${settle:-${FIVEDIVE_BROWSER_TREE_SETTLE_MS:-$SNAP_SETTLE_DEFAULT}}" \
           FIVEDIVE_BROWSER_LEASE="$(_lease_meta "$_LEASE_DIR")" \
           FIVEDIVE_BROWSER_LEASE_TOKEN="$_LEASE_TOKEN" \
           "$driver" <<<"$plan") \
@@ -2974,6 +2992,20 @@ cmd_links() { _cmd_read_like links "$@"; }
 # was paying three times for one answer.
 SNAP_SETTLE_DEFAULT=1200
 
+# _settle_json <ms|""> — the settle knob as a JSON fragment for a daemon request.
+#
+# IT RIDES IN THE REQUEST BECAUSE IT CANNOT RIDE IN THE ENVIRONMENT (DIVE-4674).
+# The daemon is a long-lived process started before this command line existed, so
+# FIVEDIVE_BROWSER_TREE_SETTLE_MS set here reaches the cold driver and nothing
+# else — which is why `snapshot --settle` worked on a cold profile and was
+# silently dropped on a served one. An empty value emits {} so a request that was
+# never given a settle falls back to the daemon's own default rather than pinning
+# it to this process's idea of one.
+_settle_json() {
+  [[ -n "${1:-}" ]] || { printf '{}'; return 0; }
+  jq -nc --argjson s "$1" '{settle:$s}'
+}
+
 cmd_snapshot() {
   local site="" url="" out="" interactive=0 json=0 shot=1 full=0 wait="no" settle=""
   while (($#)); do
@@ -3028,8 +3060,9 @@ cmd_snapshot() {
     # for it rather than retrofitted onto the other two.
     plan=$(jq -nc --arg u "$url" --arg h "$stage/page.html" --arg s "$png" \
         --argjson i "$interactive" --argjson f "$full" --argjson l "$(_daemon_lease_json)" \
+        --argjson st "$(_settle_json "$settle")" \
         '{op:"snapshot", url:$u, html:$h, shot:(if $s=="" then null else $s end),
-          interactive:($i==1), full:($f==1)} + $l')
+          interactive:($i==1), full:($f==1)} + $st + $l')
     payload=$(_daemon_call "$_PG_DIR" "$plan") \
       || die "$E_UNAVAILABLE" "the warm session could not capture $url (its own reason is above)."
   else
