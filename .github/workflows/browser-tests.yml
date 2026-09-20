@@ -1,0 +1,35 @@
+name: browser plugin
+
+# The whole repo is one plugin, so there is no path filter to get wrong: any push
+# or PR here touches browser. (The registry's parity.yml fenced by path and that
+# fence is exactly what let telegram-pi ship with no CI for its whole lifetime —
+# DIVE-2374. One plugin per repo removes the fence rather than widening it.)
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Plain bash, no bun deps, no Chrome: the suite drives the real bin/browser
+      # as a subprocess with a FAKE google-chrome first on PATH. It grades the
+      # shipped script, the manifest and this repo's marketplace entry.
+      - name: browser plugin harness
+        run: bash tests/browser_plugin_unit.sh
+      # A manifest or marketplace file that does not parse breaks `5dive plugin
+      # add` at install time, where nobody is watching. Cheap, so it is its own
+      # named check rather than an assertion buried in the suite.
+      - name: manifests parse
+        run: |
+          jq -e . .claude-plugin/marketplace.json > /dev/null
+          jq -e . browser/.claude-plugin/plugin.json > /dev/null
+      # Contract §1: the manifest name must equal its folder name, and the
+      # marketplace `source` must name that same folder. Getting this wrong is
+      # invisible until an install fails rc=3 on a box (DIVE-4386, trap D).
+      - name: manifest name matches its folder and the marketplace source
+        run: |
+          test "$(jq -r .name browser/.claude-plugin/plugin.json)" = browser
+          test "$(jq -r '.plugins[]|select(.name=="browser")|.source' .claude-plugin/marketplace.json)" = ./browser
