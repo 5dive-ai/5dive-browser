@@ -143,6 +143,22 @@ for a in "$@"; do case "$a" in --user-data-dir=*) d="${a#*=}" ;; esac; done
 # `auth` runs headed in the foreground, and both would then hang forever.
 hl=; ws=; for a in "$@"; do case "$a" in --headless) hl=1 ;; --window-size=*) ws=1 ;; esac; done
 [[ -n "$ws" && -z "$hl" ]] && exec sleep 300
+# DIVE-4794: COUNT THE LOADS, and let a profile park a SEQUENCE of them. A
+# single-page app serves the same shell to a live session and a dead one and
+# only decides later, so an arm that grades "the probe waited" needs a fake that
+# ANSWERS DIFFERENTLY THE SECOND TIME. `.fake-dom.N` is that; `.fake-n` is how
+# an arm proves the probe looked more than once (or, for the control, exactly
+# once). A profile with no sequence parked behaves exactly as before.
+n=0
+if [[ -n "${d:-}" && -d "$d" ]]; then
+  n=$(cat "$d/.fake-n" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$d/.fake-n"
+fi
+if [[ -f "${d:-/nonexistent}/.fake-dom.1" ]]; then
+  if [[ -f "$d/.fake-dom.$n" ]]; then cat "$d/.fake-dom.$n"; else
+    last=$(ls "$d"/.fake-dom.[0-9]* 2>/dev/null | sort -V | tail -1); cat "$last"
+  fi
+  exit 0
+fi
 cat "${d:-/nonexistent}/.fake-dom" 2>/dev/null || echo "<html><body>feed</body></html>"
 CHROME
 chmod +x "$FAKEBIN/google-chrome"
@@ -3845,12 +3861,18 @@ mkdir -p "$RVROOT/$BOXSEAT"; chmod 711 "$RVROOT"; chmod 750 "$RVROOT/$BOXSEAT"
 
 DREC3="$TMP/dpw-record-4664.jsonl"; : > "$DREC3"
 BOXDOM="$TMP/box.dom"; printf '%s' "$LIVE_DOM" > "$BOXDOM"
+# The page-side walk `snapshot` runs (T27k). The stub answers a snapshot
+# evaluate from this file, and it is the DAEMON that evaluates — so it has to be
+# in the environment `bserve` starts, not the caller's.
+BOXSNAP="$TMP/box-snap.json"
+jq -n --arg html "$LIVE_DOM" '{nodes:[{ref:"button/Compose", role:"button", name:"Compose", tag:"button"}],
+  marker:null, title:"Box Page", url:"https://box.test/feed", html:$html}' > "$BOXSNAP"
 bserve() {  # the OWNER serves, out of the OWNER's store
   # The daemon is a child of this serve and inherits its environment, so the
   # re-entered `bin/browser` the broker uses for leases and audit rows resolves
   # `_seat` to the OWNER — which is exactly what `holder` has to be.
   run env PATH="$SPATH" DISPLAY= NODE_PATH="$DSTUB/node_modules" PWREC="$DREC3" DPWDOM="$BOXDOM" \
-      FIVEDIVE_BROWSER_SEAT="$BOXSEAT" "$@" "$BROWSER" serve box.test
+      DPWSNAP="$BOXSNAP" FIVEDIVE_BROWSER_SEAT="$BOXSEAT" "$@" "$BROWSER" serve box.test
 }
 bstop() { env PATH="$SPATH" FIVEDIVE_BROWSER_SEAT="$BOXSEAT" "$BROWSER" serve box.test --stop; }
 # A SECOND SEAT, with no store of its own. NOT $SPATH: that PATH's chrome is the
@@ -4038,6 +4060,54 @@ t  'T27i ...with the whole evidence triple' 'yes' \
 t  'T27i ...and the metadata says what actually rendered it' 'session-daemon' \
    "$(jq -r '.capture' "$TMP/brokeread/page.meta.json" 2>/dev/null)"
 t  'T27i ...still not one chrome of its own' "$BL3" "$(blaunches)"
+
+# --- T27k DIVE-4794: a brokered `snapshot` cannot hand the owner a path -------
+#
+# THE DEFECT, measured on a box 2026-09-21. `snapshot` staged its artifacts in a
+# mktemp directory 0700 to the CALLER and named that path in the request. The
+# daemon runs as the profile's OWNER, so it could not write there, and every
+# brokered snapshot died on `EACCES: permission denied, open
+# '/tmp/5dive-browser-read.XXXX/page.html'` — the verb the skill tells an agent
+# to reach for first, dark for every seat that does not own the login, while
+# `status` and `tree` (whose data comes back over the socket) worked.
+#
+# WHY THE ARM GRADES THE REQUEST AND NOT THE ERROR. Both seats here are the same
+# uid — the suite has no second one — so the owner CAN write the caller's
+# staging directory and the EACCES cannot be reproduced by permissions. What can
+# be graded is the thing that caused it: whether a caller-chosen absolute path
+# is in the request at all. The recorder below is a `session-daemon` wrapper that
+# tees each request to a file before exec'ing the real one, so the arm reads the
+# exact bytes the daemon received.
+REQREC="$TMP/brokered-requests.jsonl"; : > "$REQREC"
+cat > "$TMP/daemon-recorder" <<REC
+#!/usr/bin/env bash
+if [[ "\$1" == call ]]; then
+  tmp=\$(mktemp); cat > "\$tmp"; cat "\$tmp" >> "$REQREC"
+  exec "$DAEMONBIN" "\$@" < "\$tmp"
+fi
+exec "$DAEMONBIN" "\$@"
+REC
+chmod +x "$TMP/daemon-recorder"
+bother env FIVEDIVE_BROWSER_SESSION_DAEMON="$TMP/daemon-recorder" \
+    "$BROWSER" snapshot box.test https://box.test/feed --out="$TMP/brokesnap"
+t  'T27k a brokered snapshot captures the page' 0 "$RC"
+t  'T27k ...and the document is on disk, written by the seat that owns the directory' 'yes' \
+   "$([[ -s "$TMP/brokesnap/page.html" ]] && echo yes || echo no)"
+t  'T27k ...and it is the DOCUMENT, not an empty file the caller made' 'yes' \
+   "$(grep -q 'id="feed"' "$TMP/brokesnap/page.html" 2>/dev/null && echo yes || echo no)"
+t  'T27k ...with the refs beside it, from the same look' 'button/Compose' \
+   "$(jq -r '.nodes[0].ref' "$TMP/brokesnap/tree.json" 2>/dev/null)"
+t  'T27k ...the daemon was asked for BYTES' 'true' \
+   "$(jq -rs '[.[]|select(.op=="snapshot")]|last|.inline' "$REQREC" 2>/dev/null)"
+t  'T27k ...and was never handed a path in the caller-owned staging directory' 'null' \
+   "$(jq -rs '[.[]|select(.op=="snapshot")]|last|.html' "$REQREC" 2>/dev/null)"
+t  'T27k ...the screenshot is not a caller-chosen path either' 'no-path' \
+   "$(jq -rs '[.[]|select(.op=="snapshot")]|last|.shot|if type=="string" then . else "no-path" end' "$REQREC" 2>/dev/null)"
+t  'T27k (control) the OWNER still gets the cheap path-writing shape' 'false' \
+   "$(env PATH="$SPATH" NODE_PATH="$DSTUB/node_modules" PWREC="$DREC3" DPWDOM="$BOXDOM" DPWSNAP="$BOXSNAP" \
+        FIVEDIVE_BROWSER_SEAT="$BOXSEAT" FIVEDIVE_BROWSER_SESSION_DAEMON="$TMP/daemon-recorder" \
+        "$BROWSER" snapshot box.test https://box.test/feed --out="$TMP/ownersnap" >/dev/null 2>&1; \
+      jq -rs '[.[]|select(.op=="snapshot")]|last|.inline' "$REQREC" 2>/dev/null)"
 bstop >/dev/null 2>&1
 
 # --- T27j the seat override grants NOTHING, which is why it can exist ---------
@@ -4354,6 +4424,164 @@ t  'T28i the WARM loop does not wait for a ref click either: exactly one look' 1
 t  'T28i ...and no click reached the warm page' 0 \
    "$(jq -rs '[.[]|select(.call=="click")]|length' "$DREC")"
 env PATH="$SPATH" "$BROWSER" serve clickwarm.test --stop >/dev/null 2>&1
+
+
+# ============ T29 DIVE-4794: a probe that reads the shell cannot classify an SPA
+#
+# THE DEFECT, measured on a box 2026-09-21. Telegram Web ships ONE static shell
+# for both login states — `has-auth-pages` on <body> in the bytes the server
+# sends — and removes it in JavaScript once its own network init decides it is
+# logged in. The probe dumped the DOM at domcontentloaded plus a fixed settle,
+# which is before that decision, so a LIVE session and a DEAD one were identical
+# in every field a marker could read. An adapter written against the shell then
+# stamped `expired` on a live login and every acting verb refused; the fail-open
+# alternative (mark on the sign-in CONTENT) read `authenticated` on a cold
+# expired profile. No regex separates two identical documents — the missing
+# thing was the WAIT, and something POSITIVE to wait for.
+#
+# The mutants these arms exist to kill:
+#   drop the retry loop        -> T29a: the page that decides late reads UNKNOWN.
+#   wait, but keep inferring   -> T29c: a page that never speaks reads
+#                                 `authenticated` by elimination, which is the
+#                                 fail-open shape flagged on the row.
+#   wait on EVERY adapter      -> T29f: the server-rendered control pays a second
+#                                 load it does not need.
+#   test logged-in first       -> T29d/T29e: a dead session, and a challenge,
+#                                 both classified as a live login.
+SHELL_DOM='<html><body class="animation-level-2 has-auth-pages rounded-sections"><div id="auth-pages"></div></body></html>'
+CHATLIST_DOM='<html><body class="animation-level-2"><div class="chatlist custom-scroll"><div class="chatlist-chat">a chat</div></div></body></html>'
+SIGNIN_DOM='<html><body class="has-auth-pages"><div id="auth-pages"><div class="page-signQR">Log in to Telegram by QR Code</div></div></body></html>'
+spa_adapter() {  # spa_adapter <site> [--no-positive]
+  local pos='"logged_in_when_dom_matches": "class=\"[^\"]*chatlist",'
+  [[ "${2:-}" == --no-positive ]] && pos=''
+  cat > "$FIVEDIVE_BROWSER_ADAPTER_DIR/$1.json" <<JSON
+{ "site": "$1",
+  "probe": { "url": "https://$1/k/",
+             $pos
+             "logged_out_when_dom_matches": "(page-signQR|auth-qr-form)" },
+  "actions": {} }
+JSON
+}
+spaprobe() { run env FIVEDIVE_BROWSER_PROBE_WAIT_MS=1500 FIVEDIVE_BROWSER_PROBE_POLL_MS=300 "$BROWSER" status "$1"; }
+loads() { cat "$FIVEDIVE_BROWSER_PROFILE_ROOT/$SEAT/$1/.fake-n" 2>/dev/null || echo 0; }
+
+# --- T29a the page that has not decided yet is waited for ---------------------
+SPAD="$(mkprofile spa.test "$SHELL_DOM")"
+printf '%s' "$SHELL_DOM"    > "$SPAD/.fake-dom.1"
+printf '%s' "$CHATLIST_DOM" > "$SPAD/.fake-dom.2"
+spa_adapter spa.test
+spaprobe spa.test
+tc 'T29a a session whose page decides after the first look reads AUTHENTICATED' 'authenticated' "$OUT"
+t  'T29a ...quietly, because a live session is not an alert' 0 "$RC"
+t  'T29a ...and the only reason it could was that the probe looked AGAIN' 2 "$(loads spa.test)"
+
+# --- T29b ...and the verdict is the LIVENESS FILE's too, not just the print ---
+t  'T29b the tile remembers a live session, not the shell it saw first' 'authenticated' \
+   "$(awk '{print $2}' "$SPAD/.5dive-liveness" 2>/dev/null | tail -1)"
+
+# --- T29c a page that never says anything is UNKNOWN, NEVER authenticated -----
+SILD="$(mkprofile spasilent.test "$SHELL_DOM")"
+printf '%s' "$SHELL_DOM" > "$SILD/.fake-dom.1"
+printf '%s' "$SHELL_DOM" > "$SILD/.fake-dom.2"
+spa_adapter spasilent.test
+spaprobe spasilent.test
+tc 'T29c a page that never shows either marker is UNKNOWN' 'UNKNOWN' "$OUT"
+tn 'T29c ...and is NOT called authenticated by elimination' 'authenticated' "$OUT"
+t  'T29c ...quietly: a state we cannot read must not page a person' 0 "$RC"
+t  'T29c ...it really did spend the budget looking' 'waited' \
+   "$([[ "$(loads spasilent.test)" -ge 2 ]] && echo waited || echo "looked once")"
+run env FIVEDIVE_BROWSER_PROBE_WAIT_MS=900 FIVEDIVE_BROWSER_PROBE_POLL_MS=300 \
+    "$BROWSER" shot spasilent.test https://spasilent.test/k/ --out="$TMP/spasilent.png"
+tn 'T29c ...and the fail-closed half holds: `shot` refuses on UNKNOWN' 0 "$RC"
+t  'T29c ...writing no evidence at all' 'no' \
+   "$([[ -e "$TMP/spasilent.png" ]] && echo yes || echo no)"
+
+# --- T29d the logged-out marker still outranks the positive one ---------------
+DEADD="$(mkprofile spadead.test "$SIGNIN_DOM")"
+spa_adapter spadead.test
+spaprobe spadead.test
+tc 'T29d a rendered sign-in page is expired, and it names a person' 'session expired' "$OUT"
+t  'T29d ...loudly, with the status a caller can branch on, not a quiet 0' 75 "$RC"
+BOTHD="$(mkprofile spaboth.test "$SIGNIN_DOM$CHATLIST_DOM")"
+spa_adapter spaboth.test
+spaprobe spaboth.test
+tc 'T29d ...and a document carrying BOTH markers is read as the dead one' 'session expired' "$OUT"
+
+# --- T29e a challenge is still classified first -------------------------------
+CHD="$(mkprofile spachal.test "<html><body><div class=\"g-recaptcha\"></div><div class=\"chatlist\">x</div></body></html>")"
+spa_adapter spachal.test
+spaprobe spachal.test
+tc 'T29e a challenge page is a challenge even when the chatlist is behind it' 'CHALLENGE' "$OUT"
+
+# --- T29f (CONTROL) an adapter with no positive marker is UNCHANGED -----------
+# The wait is not free — it is another whole chrome launch — and this is the arm
+# that keeps it off every server-rendered adapter we already ship.
+LEGD="$(mkprofile legacy4794.test "$LIVE_DOM")"
+printf '%s' "$LIVE_DOM" > "$LEGD/.fake-dom.1"
+printf '%s' "$DEAD_DOM" > "$LEGD/.fake-dom.2"
+spa_adapter legacy4794.test --no-positive
+spaprobe legacy4794.test
+tc 'T29f (control) a site that classifies on the negative alone still reads authenticated' 'authenticated' "$OUT"
+t  'T29f (control) ...in exactly ONE load: no adapter pays for a wait it cannot use' 1 "$(loads legacy4794.test)"
+
+# --- T29g the shipped Telegram adapter, graded against both documents ---------
+# The markers are a public surface and this is the only place they are checked
+# against the two renders they were read off. Both halves matter, and in
+# opposite directions: a positive marker that matches the SHELL manufactures the
+# exact lie `shot` and `run` exist to refuse.
+TGA="$ROOT/browser/adapters/web.telegram.org.json"
+run jq -e . "$TGA";                                            t 'T29g the adapter is valid JSON' 0 "$RC"
+t  'T29g it probes the K app, not the bare host' 'https://web.telegram.org/k/' "$(jq -r '.probe.url' "$TGA")"
+TGIN="$(jq -r '.probe.logged_in_when_dom_matches' "$TGA")"
+TGOUT="$(jq -r '.probe.logged_out_when_dom_matches' "$TGA")"
+t  'T29g it names what a LOGGED-IN page looks like' 'yes' "$([[ -n "$TGIN" && "$TGIN" != null ]] && echo yes || echo no)"
+t  'T29g the logged-in marker matches the settled chatlist' 'match' \
+   "$(grep -qiE "$TGIN" <<<"$CHATLIST_DOM" && echo match || echo miss)"
+t  'T29g ...and does NOT match the static shell both states ship' 'miss' \
+   "$(grep -qiE "$TGIN" <<<"$SHELL_DOM" && echo match || echo miss)"
+t  'T29g the logged-out marker matches the rendered sign-in page' 'match' \
+   "$(grep -qiE "$TGOUT" <<<"$SIGNIN_DOM" && echo match || echo miss)"
+t  'T29g ...and does NOT match a live chatlist' 'miss' \
+   "$(grep -qiE "$TGOUT" <<<"$CHATLIST_DOM" && echo match || echo miss)"
+t  'T29g NEITHER marker keys on the shell, which is the whole defect' 'miss miss' \
+   "$(grep -qiE "$TGOUT" <<<"$SHELL_DOM" && printf match || printf miss; printf ' '; \
+      grep -qiE "$TGIN" <<<"$SHELL_DOM" && printf match || printf miss)"
+t  'T29g the unmeasured half is NAMED in the file, not silently shipped' 'yes' \
+   "$(jq -r '._comment' "$TGA" | grep -qi 'UNVERIFIED\|half-measured' && echo yes || echo no)"
+
+# ============ T30 DIVE-4794: the client half exited before stdout was flushed
+#
+# THE DEFECT, measured on a box 2026-09-21: a brokered `read` of a real page
+# came back as `jq: parse error: Unfinished string at EOF`. `callMode` wrote the
+# payload to stdout and then called `process.exit(rc)` on the `end` frame —
+# stdout is a PIPE for every caller (bin/browser runs it inside `$( … )`), a
+# pipe write past the OS buffer is queued rather than done, and `process.exit`
+# drops what is queued. So a capture that SUCCEEDED arrived truncated, and the
+# verb died on it. Invisible to every arm whose payload fits in the buffer,
+# which is why this one is deliberately two megabytes.
+BIGSOCK="$TMP/big.sock"
+cat > "$TMP/bigserve.js" <<'JS'
+const net = require('net'), fs = require('fs');
+const sock = process.argv[2], n = Number(process.argv[3]);
+try { fs.unlinkSync(sock); } catch (e) {}
+const srv = net.createServer((c) => {
+  c.once('data', () => {
+    c.write(JSON.stringify({ t: 'out', data: 'x'.repeat(n) + '\n' }) + '\n');
+    c.write(JSON.stringify({ t: 'end', rc: 0 }) + '\n');
+  });
+});
+srv.listen(sock, () => process.stdout.write('ready\n'));
+setTimeout(() => process.exit(0), 30000);
+JS
+node "$TMP/bigserve.js" "$BIGSOCK" 2000000 >"$TMP/bigserve.out" 2>&1 &
+BIGPID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -S "$BIGSOCK" ]] && break; sleep 0.2; done
+BIGBYTES="$("$DAEMONBIN" call "$BIGSOCK" <<<'{"op":"ping"}' | wc -c)"
+t  'T30a a two-megabyte payload arrives WHOLE through the client half' 2000001 "$BIGBYTES"
+BIGRC=0; "$DAEMONBIN" call "$BIGSOCK" <<<'{"op":"ping"}' >/dev/null || BIGRC=$?
+t  'T30a ...and the daemon-s own exit code still comes back' 0 "$BIGRC"
+kill "$BIGPID" 2>/dev/null; rm -f "$BIGSOCK"
+
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

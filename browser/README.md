@@ -229,6 +229,20 @@ without a scheduled probe the agent finds out **mid-publish**. So:
   including a profile nobody had ever logged into, which is what the dashboard's Connected-sites
   tile then showed. A challenge is still named without an adapter (that marker has a default), so
   the one classification that does work with no adapter is not lost.
+- **A SINGLE-PAGE APP NEEDS A POSITIVE MARKER, AND THE PROBE WAITS FOR IT** (DIVE-4794). Telegram
+  Web serves ONE static shell for both states — `has-auth-pages` is in the bytes the server sends —
+  and removes it in JavaScript after its own network init decides it is logged in. Dumped at
+  domcontentloaded plus a fixed settle, a live session and a dead one are the same document, so a
+  marker written against the shell stamped `expired` on a live login and every acting verb refused.
+  Two changes, and they only work as a pair:
+  - an adapter may name `probe.logged_in_when_dom_matches` — what a LOGGED-IN page looks like;
+  - where it does, the probe keeps looking (up to `FIVEDIVE_BROWSER_PROBE_WAIT_MS`, default 8000,
+    returning the instant either marker appears) and a page that shows NEITHER is `UNKNOWN`, never
+    `authenticated` by elimination. That is the fail-closed half: `run` and `shot` still refuse.
+
+  An adapter with no positive marker is untouched — one look, classified on the negative alone —
+  because without something to terminate on, waiting only adds a chrome launch to reach the same
+  answer.
 - **A served profile is not probed.** Chrome allows one instance per profile directory, so a probe
   launched at a profile `serve` is holding is handed off to the running browser and returns an
   empty document. `status` says `UNKNOWN (served on :N …)` and leaves the last real verdict
@@ -437,6 +451,7 @@ when.
 | `reddit.com` | `/login/` | `name="username"` | logged-out form in a real browser |
 | `x.com` | `/i/flow/login` | `name="username_or_email"` | logged-out form, three renders (8s, 25s, Playwright 15s); the logged-in half is unmeasured because no x.com profile exists — that gap fails SAFE (a false "expired" asks a person; never a false "authenticated") |
 | `github.com` | `/settings/profile` | `action="/session"` | BOTH halves: 3 matches on the sign-in page logged out, 0 on "Your profile" logged in |
+| `web.telegram.org` | `/k/` | out: `(page-signQR\|auth-qr-form\|…)`, **in:** `class="[^"]*chatlist` | the POSITIVE marker on both halves (9 matches on the settled live session, 0 on the shell and on a logged-out render); the logged-out marker matched 0 on the live session but its logged-out render was never observed — the K app does not paint sign-in inside the probe's window on a fresh profile. That gap fails SAFE only because of the positive marker: neither matching is `UNKNOWN`, not a login |
 
 Every shipped adapter has `"actions": {}`: they classify a session, and the actions a site's owner
 wants are theirs to write in their seat's `.adapters/`.
