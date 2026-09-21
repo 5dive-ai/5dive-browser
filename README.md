@@ -27,6 +27,13 @@ sudo 5dive plugin add 5dive-ai/5dive-browser
 
 A fresh box has no claim and installs in the one command above.
 
+**The migration is a forward step, and that is checked rather than assumed.** `plugin add
+<owner>/<repo>` is a fresh add with no version comparison, and the remove above has to come
+first, so nothing in the mechanism would stop a migration from installing something OLDER than
+what it removed. This repo is kept strictly ahead of `browser@5dive-plugins` for exactly that
+reason — 1.9.1 here against the registry's 1.9.0 — with `bin/browser` byte-identical to the
+registry copy (DIVE-4719).
+
 ## The plugin is only half of the browser capability
 
 | half | what it is | where it lives | who installs it |
