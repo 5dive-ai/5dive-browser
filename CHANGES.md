@@ -8,6 +8,34 @@ that file stays where it is.
 
 ## Released
 
+### Added — `served` and `forget`: a running browser you can stop, and a site you can log the box out of (DIVE-4791, ported by DIVE-4797), browser 1.10.2
+
+**This code landed in the frozen registry copy first** — `5dive-plugins@023a95cb`, browser 1.10.0,
+merged 2026-09-21 — because that is the tree DIVE-4791 was built against. It reaches nobody there:
+`_bs_plugin_add` tries THIS repo first, and the converger's floor is a `min()` over both copies, so
+a capability released into one of them rolls out to zero boxes
+(`community/wiki/a-forked-plugin-makes-the-converger-floor-a-min-over-both-copies.md`). The port is
+the rollout.
+
+**The version is 1.10.2, not 1.10.0.** This repo's `main` was already at 1.10.1 (DIVE-4794, the
+probe wait) when the port was cut, and `plugin upgrade` compares the version number only — a second
+1.10.0 with different bytes is never fetched, and 1.10.1 is a version the fleet can reach that does
+NOT carry these verbs. Anything that gates on the capability must therefore ask for **1.10.2**, not
+for the number written on the frozen copy.
+
+`served` prints the seat's running browsers, one site per line and nothing else. It is a separate
+verb rather than a column in `ls` because the dashboard PARSES `ls`'s `"<site>  <iso> <state>"`
+line: a marker appended there would have made every served site read as never-probed on the API
+already deployed. A box whose plugin predates the verb exits non-zero, which the dashboard reads as
+"nothing is served" and offers no Stop control — fail closed.
+
+`forget <site>` is the way out, and it is the delete: a profile IS the login, so stopping the
+browser (`serve --stop`, `evict`) deliberately keeps it. It revokes the viewer, stops the browser
+through the graceful daemon shutdown, withdraws the box offer, audits into the SEAT store — not
+into the directory it is about to remove — and deletes the profile. It refuses while a person is in
+the viewer or a caller holds the lease, which are evict's two refusals for evict's reason, except
+that here the loss is unrecoverable.
+
 ### Fixed — a probe that read the static shell could not classify a single-page app, and a brokered `snapshot` could not write (DIVE-4794), browser 1.10.1
 
 lodar connected Telegram Web on his box, the broker worked — the agent seat drove the
