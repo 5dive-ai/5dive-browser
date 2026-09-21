@@ -285,6 +285,7 @@ t  'T2c8 ...and no OTHER verb joined them' '2' "$(grep -A6 'if \[\[ \$EUID -eq 0
 # installed — then assert on the files that land and the commands that ran.
 SETUPBIN="$TMP/setupbin"; mkdir -p "$SETUPBIN"
 REALID="$(command -v id)"
+REALCHOWN="$(command -v chown)"
 cat > "$SETUPBIN/id" <<ID
 #!/usr/bin/env bash
 # fake root for \`id -u\`, and ONLY for that: \`id -u <user>\` (setup's "is the
@@ -367,6 +368,108 @@ t  'T2c8 ...the seat store survives the failure, so a rerun is a no-op' '700' \
    "$(stat -c '%a' "$TMP/setup-store/$SEAT" 2>/dev/null)"
 setup_run
 t  'T2c8 ...and the rerun, once systemd takes it, succeeds' 0 "$RC"
+rm -rf "$SDIR" "$TMP/setup-store"
+
+# ---- DIVE-4730: a unix account is not a seat --------------------------------
+# `setup` mints a per-seat timer that OUTLIVES the account. On box 10 one fired
+# every six hours from 2026-09-16 for `agent-mp`, a de-registered account whose
+# unix user survived — failing on every fire into a journal nobody reads, with
+# no tile anywhere because the dashboard lists the REGISTRY, not /etc/passwd.
+# These arms drive the real cmd_setup with a real registry file, because the
+# thing under test is a refusal BEFORE the store is made and a grep cannot see
+# which side of `mkdir` a guard sits on.
+REG4730="$TMP/agents-4730.json"
+# FIVEDIVE_BROWSER_SEAT, not SUDO_USER: `_seat()` reads the SHELL's $EUID, which
+# the fake `id -u` cannot move, so under a non-root runner the SUDO_USER branch
+# is never taken and every arm below would silently grade the real seat.
+setup_run_as() {  # setup_run_as <seat> [registry]
+  run env PATH="$SETUPBIN:$PATH" FIVEDIVE_BROWSER_SEAT="$1" \
+      FIVEDIVE_AGENT_REGISTRY="${2-$REG4730}" \
+      FIVEDIVE_BROWSER_PROFILE_ROOT="$TMP/setup-store" \
+      FIVEDIVE_BROWSER_SYSTEMD_DIR="$SDIR" \
+      FIVEDIVE_BROWSER_SYSTEMCTL=systemctl \
+      SYSTEMCTL_LOG="$SYSTEMCTL_LOG" SYSTEMCTL_RC=0 \
+      "$BROWSER" setup
+}
+printf '{"agents":{"%s":{"type":"claude","isolation":"sandboxed"}}}\n' "${SEAT#agent-}" > "$REG4730"
+
+# The orphan. `id -u` must succeed for it or setup refuses one step earlier and
+# the arm grades the wrong guard — so the fake `id` answers for this one name.
+cat > "$SETUPBIN/id" <<ID
+#!/usr/bin/env bash
+[[ "\$*" == "-u" ]] && { echo 0; exit 0; }
+[[ "\$*" == "-u agent-dive4730ghost" ]] && { echo 4730; exit 0; }
+[[ "\$*" == "-u dive4730operator" ]] && { echo 4731; exit 0; }
+exec "$REALID" "\$@"
+ID
+chmod +x "$SETUPBIN/id"
+# ...and `chown`, for the same two fabricated names. The first cut of the
+# non-agent arm below named a REAL account (`claude`): it exists on a 5dive box
+# and on no CI runner, so the arm died at setup's "is this a real uid" check
+# with 64 and graded nothing. A fabricated name makes the arm say what it means
+# — the registry guard does not govern a non-`agent-*` account — on any runner,
+# but nothing can chown a store to a uid that does not exist, so the two calls
+# that would are answered here. Every other path still reaches the real chown.
+cat > "$SETUPBIN/chown" <<CH
+#!/usr/bin/env bash
+[[ "\$*" == *dive4730operator* || "\$*" == *dive4730ghost* ]] && exit 0
+exec "$REALCHOWN" "\$@"
+CH
+chmod +x "$SETUPBIN/chown"
+
+: > "$SYSTEMCTL_LOG"; rm -rf "$SDIR" "$TMP/setup-store"
+setup_run_as agent-dive4730ghost
+t  'T2c9 an agent-* account absent from the registry is refused' 64 "$RC"
+tc 'T2c9 ...and told it is an orphan, not a seat'  'NO entry in this box'"'"'s agent registry' "$ERR"
+tc 'T2c9 ...and pointed at the reap, not at a workaround' '--category=registry --fix' "$ERR"
+# THE MUTANT THE MESSAGE CANNOT CATCH: move the guard below the store/timer
+# work, or drop the `die`. Both leave the sentence in the file and the artifacts
+# on the box, and only these two arms see it.
+t  'T2c9 ...and NO timer is enabled for it'  '' "$(grep -F 'dive4730ghost' "$SYSTEMCTL_LOG" || true)"
+t  'T2c9 ...and NO profile store is made for it' 'no' \
+   "$([[ -d "$TMP/setup-store/agent-dive4730ghost" ]] && echo yes || echo no)"
+
+# POSITIVE CONTROL, or "refuses everything" would pass every arm above: the seat
+# that IS in the registry still sets up, timer and all.
+: > "$SYSTEMCTL_LOG"; rm -rf "$SDIR" "$TMP/setup-store"
+setup_run_as "$SEAT"
+t  'T2c9 a REGISTERED seat still sets up'  0 "$RC"
+tc 'T2c9 ...and still gets its timer'      "enable --now 5dive-browser-probe@$SEAT.timer" "$(cat "$SYSTEMCTL_LOG")"
+
+# FAILS OPEN on a registry it could not read. A dev box, or a box that never ran
+# `agent create`, is not evidence that this account was de-registered — and a
+# guard that refused there would take setup out on every one of them.
+: > "$SYSTEMCTL_LOG"; rm -rf "$SDIR" "$TMP/setup-store"
+setup_run_as agent-dive4730ghost "$TMP/no-such-registry.json"
+t  'T2c9 an unreadable registry fails OPEN, it does not refuse on "we could not check"' 0 "$RC"
+
+# A non-`agent-*` seat is not a registry row and never was — refusing one would
+# break the ordinary operator case to fix a fleet one. The name is fabricated
+# and absent from $REG4730 on purpose: absent-from-the-registry is exactly the
+# condition that refuses an `agent-*` account one arm above, so this arm is the
+# discriminator for the `agent-*` half of the guard, not a second run of it.
+: > "$SYSTEMCTL_LOG"; rm -rf "$SDIR" "$TMP/setup-store"
+setup_run_as dive4730operator
+t  'T2c9 a non-agent-* account is not governed by the registry and is not refused' 0 "$RC"
+tn 'T2c9 ...and not by the orphan message either' 'NO entry in this box' "$ERR"
+
+# And the override, for the one-off the message names.
+: > "$SYSTEMCTL_LOG"; rm -rf "$SDIR" "$TMP/setup-store"
+run env PATH="$SETUPBIN:$PATH" FIVEDIVE_BROWSER_SEAT=agent-dive4730ghost \
+    FIVEDIVE_BROWSER_ALLOW_UNREGISTERED_SEAT=1 \
+    FIVEDIVE_AGENT_REGISTRY="$REG4730" \
+    FIVEDIVE_BROWSER_PROFILE_ROOT="$TMP/setup-store" \
+    FIVEDIVE_BROWSER_SYSTEMD_DIR="$SDIR" FIVEDIVE_BROWSER_SYSTEMCTL=systemctl \
+    SYSTEMCTL_LOG="$SYSTEMCTL_LOG" "$BROWSER" setup
+t  'T2c9 the documented override actually overrides' 0 "$RC"
+
+cat > "$SETUPBIN/id" <<ID
+#!/usr/bin/env bash
+[[ "\$*" == "-u" ]] && { echo 0; exit 0; }
+exec "$REALID" "\$@"
+ID
+chmod +x "$SETUPBIN/id"
+rm -f "$SETUPBIN/chown"
 rm -rf "$SDIR" "$TMP/setup-store"
 
 # A site name becomes a directory name.
