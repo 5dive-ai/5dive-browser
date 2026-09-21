@@ -8,6 +8,27 @@ that file stays where it is.
 
 ## Released
 
+### Fixed — `browser setup` refuses to mint a probe timer for an account the registry does not know (DIVE-4730), browser 1.9.2
+
+`setup` mints `5dive-browser-probe@<seat>.timer`, a per-seat unit that **outlives the
+account**. On box 10 (`5dive-exact-swallow`) one has fired every six hours since 2026-09-16
+for `agent-mp` — a de-registered account whose unix user survived, one of nine orphans
+`5dive doctor --category=registry` already names. It has failed on every fire (the account is
+outside the shared group, so it cannot read the box plugin record either) into a journal
+nobody reads, and nothing on the dashboard shows it, because the dashboard lists the
+**registry**, not `/etc/passwd`.
+
+`setup` now refuses **before the store is made** when the seat is an `agent-*` account the
+registry has measured as absent, and names the reap rather than a workaround. The predicate
+is narrow in both directions: `agent-*` only (`claude` and operator accounts are not registry
+rows and never were), and a registry it could not read or parse **fails open** — a dev box is
+not evidence that an account was de-registered. `FIVEDIVE_BROWSER_ALLOW_UNREGISTERED_SEAT=1`
+is the documented one-off override.
+
+This landed first as `5dive-ai/5dive-plugins` PR #101, against the copy of `bin/browser` that
+DIVE-4691 froze and deprecated on 2026-09-21 — a tree no box upgrades from. The guard is the
+same; the repo is the one that ships. #101 is closed as superseded.
+
 ### Added — a site login is per BOX and brokered: seats use the box's login (DIVE-4664), browser 1.9.1
 
 Ported from `5dive-ai/5dive-plugins` (registry `browser` 1.9.0, PR #93) by DIVE-4719. This repo was
