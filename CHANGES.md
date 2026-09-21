@@ -8,6 +8,65 @@ that file stays where it is.
 
 ## Released
 
+### Fixed — a probe that read the static shell could not classify a single-page app, and a brokered `snapshot` could not write (DIVE-4794), browser 1.10.1
+
+lodar connected Telegram Web on his box, the broker worked — the agent seat drove the
+`claude`-held session through the rendezvous socket, audit rows and all — and the agent still
+could not do anything with it, because **classifying** the session failed and every acting verb
+is gated on `authenticated`.
+
+**The page had not decided yet.** `https://web.telegram.org/k/` ships one static index for both
+login states (`<body class="… has-auth-pages …">` in the bytes the server sends) and removes that
+class in JavaScript once its own network init decides it is logged in. The probe dumped the DOM at
+domcontentloaded plus a fixed 800 ms, which is before the decision — so at probe timing a LIVE
+session and a DEAD one were identical in every field a marker could read (measured 2026-09-21: the
+same profile that `snapshot` showed with `auth-pages` 0 and `chatlist` 9 when settled still carried
+`auth-pages` under the probe). An adapter written against the shell therefore stamped `expired` on
+a live login at 16:58Z and `snapshot`/`read` then refused "logged out"; the other marker choice —
+the sign-in page's CONTENT — cannot false-alarm but reads `authenticated` on a cold expired
+profile, which is fail-OPEN.
+
+Two changes, and they only work as a pair:
+
+- **`probe.logged_in_when_dom_matches`** — an adapter may name what a LOGGED-IN page looks like.
+  `authenticated` stops being an inference from the logged-out marker's absence and becomes a
+  match.
+- **the probe WAITS** — where a positive marker exists, the warm (daemon) probe polls the live
+  page and the cold probe looks again, up to `FIVEDIVE_BROWSER_PROBE_WAIT_MS` (default 8000),
+  returning the instant either marker appears. A page that shows NEITHER inside the budget is
+  `UNKNOWN`, never `authenticated` by elimination — `run` and `shot` stay refused, which is the
+  fail-closed half.
+
+An adapter with no positive marker is byte-for-byte unchanged: one look, classified on the
+negative alone. The wait exists only where there is something to terminate it, so `github.com`,
+`x.com` and `reddit.com` pay nothing for it. The daemon never classifies — the markers ride in the
+request only so it knows when to stop waiting, and the verdict is still `bin/browser`'s grep, so
+two regex engines can never disagree about a login.
+
+**Ships `adapters/web.telegram.org.json`.** The positive marker is measured on both halves
+(`class="…chatlist` — 9 on the settled live session, 0 on the shell and on a logged-out render).
+The logged-out marker is half-measured and the file says so: it matched 0 on the live session, but
+the K app never painted its sign-in page inside the probe's window on a fresh profile, so "it
+matches a logged-out page" is unverified. That gap fails SAFE only because of the change above —
+neither marker matching is `UNKNOWN`, which asks a person, not a login, which would lie.
+
+**A brokered `snapshot` could not write its evidence.** `snapshot` staged artifacts in a directory
+0700 to the CALLER and named that path in the request; the daemon runs as the profile's OWNER, so
+it died with `EACCES: permission denied, open '/tmp/5dive-browser-read.XXXX/page.html'` — the verb
+the skill tells an agent to reach for first, dark for every seat that does not own the login.
+A brokered request now asks for the BYTES (`inline`), the same trade `shot` and `read` already
+make over this socket, and the caller writes them in the directory it owns. The owner's own
+`snapshot` keeps the cheap path-writing shape. Widening the staging directory to the box seat was
+the other fix available and is the one DIVE-4662 refused: it is the holder of a live session
+writing a caller-chosen path.
+
+**And a brokered capture came back CUT.** `session-daemon call` wrote the payload to stdout and
+then called `process.exit(rc)`. stdout is a pipe for every caller, a pipe write past the OS buffer
+is queued rather than done, and `process.exit` drops what is queued — so a brokered `read` of a
+real page surfaced as `jq: parse error: Unfinished string at EOF` on a capture that had actually
+succeeded. The client sets the exit code and lets node flush. Graded with a two-megabyte payload,
+because every arm whose payload fits in the buffer passes either way.
+
 ### Fixed — a ref `wait_for` never waited, and `run` looked at a page nobody let settle (DIVE-4674), browser 1.10.0
 
 Two halves of the same experience: an adapter quoted the refs `tree` printed, and `run` then

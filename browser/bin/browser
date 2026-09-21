@@ -672,6 +672,20 @@ _site_logged_out_marker() {
   local a; a="$(_adapter_path "$1")"
   [[ -f "$a" ]] && jq -r '.probe.logged_out_when_dom_matches // empty' "$a"
 }
+# POSITIVE EVIDENCE, AND WHY THE NEGATIVE ONE WAS NOT ENOUGH (DIVE-4794).
+# `authenticated` was always an inference: the logged-out marker did not match,
+# so we said the session was live. On a single-page app that inference is not
+# available — Telegram Web serves ONE static shell for both states and decides
+# which it is in JavaScript, so at the moment the old probe dumped the DOM a
+# live session and a dead one were the same bytes. An adapter can now name what
+# a LOGGED-IN page looks like, and where it does, `authenticated` stops being an
+# inference and becomes a match. Optional on purpose: the adapters written
+# against server-rendered sites (github, x, reddit) are unchanged and still
+# classify on the negative alone.
+_site_logged_in_marker() {
+  local a; a="$(_adapter_path "$1")"
+  [[ -f "$a" ]] && jq -r '.probe.logged_in_when_dom_matches // empty' "$a"
+}
 # THERE IS DELIBERATELY NO BYPASS BEHIND THIS. It classifies, names a human, and
 # stops. Decided 2026-09-07: "if a platform presents a security challenge, the
 # executor stops and requests human action rather than attempting to bypass it."
@@ -827,16 +841,62 @@ _probe() {
   fi
   local url; url=$(_site_url "$site")
   local marker; marker=$(_site_logged_out_marker "$site")
+  # THE PAGE MAY NOT HAVE DECIDED YET (DIVE-4794). A single-page app ships one
+  # static shell for both states and picks between them in JavaScript after its
+  # own network init — so the document at domcontentloaded+800ms says nothing,
+  # and an adapter marker written against the shell reads that silence as a
+  # verdict. Telegram Web stamped `expired` on a live login that way, and every
+  # acting verb refused on it (measured 2026-09-21). The fix is a WAIT, and it
+  # is bounded by evidence rather than by a fixed sleep: the probe looks again
+  # until the page says something or the budget runs out.
+  #
+  # ONLY WHERE THERE IS SOMETHING TO WAIT FOR. The wait needs a POSITIVE marker
+  # to terminate on — without one, "the logged-out marker has not matched" is
+  # indistinguishable from "the page has not spoken", and waiting would just add
+  # latency to every server-rendered adapter and then conclude the same thing.
+  # So an adapter with no `logged_in_when_dom_matches` probes exactly once, as
+  # it always did.
+  local positive; positive=$(_site_logged_in_marker "$site")
+  local challenge; challenge=$(_site_challenge_marker "$site")
   local dom; dom=$(mktemp) || { echo "UNKNOWN (probe did not load)"; return 0; }
-  local rc
-  if (( warm )); then
-    _daemon_call "$dir" "$(jq -nc --arg u "$url" '{op:"probe", url:$u}')" >"$dom" 2>"$dom.err"
-    rc=$?
-  else
-    "$chrome" --headless --no-sandbox --disable-gpu --user-data-dir="$dir" \
-          --virtual-time-budget=8000 --dump-dom "$url" >"$dom" 2>"$dom.err"
-    rc=$?
-  fi
+  local total="${FIVEDIVE_BROWSER_PROBE_WAIT_MS:-8000}" poll="${FIVEDIVE_BROWSER_PROBE_POLL_MS:-400}"
+  [[ "$total" =~ ^[0-9]{1,7}$ ]] || total=8000
+  [[ "$poll"  =~ ^[1-9][0-9]{0,6}$ ]] || poll=400
+  local rc waited=0 verdict=""
+  while :; do
+    if (( warm )); then
+      # THE DAEMON DOES THE WAITING ON THIS PATH, in one tab rather than one tab
+      # per look: the markers ride along purely so it knows when to stop, and
+      # the verdict below is still made HERE, by grep, on the document it sends
+      # back. Two regex engines must never both be allowed to decide a login.
+      _daemon_call "$dir" "$(jq -nc --arg u "$url" --arg o "$marker" --arg i "$positive" \
+            --arg c "$challenge" --argjson w "$total" \
+            '{op:"probe", url:$u, wait:$w, until:{logged_out:$o, logged_in:$i, challenge:$c}}')" \
+          >"$dom" 2>"$dom.err"
+      rc=$?
+    else
+      "$chrome" --headless --no-sandbox --disable-gpu --user-data-dir="$dir" \
+            --virtual-time-budget=8000 --dump-dom "$url" >"$dom" 2>"$dom.err"
+      rc=$?
+    fi
+    (( rc != 0 )) && break
+    [[ -s "$dom" ]] || break
+    # Challenge FIRST: a challenge page often still carries the login form's
+    # markup, so testing logged-out first would classify an interrogated live
+    # session as a dead one and send the user to re-authenticate a session that
+    # is fine.
+    if grep -qiE "$challenge" "$dom"; then verdict=challenge; break; fi
+    if [[ -n "$marker" ]] && grep -qiE "$marker" "$dom"; then verdict=expired; break; fi
+    if [[ -n "$positive" ]] && grep -qiE "$positive" "$dom"; then verdict=authenticated; break; fi
+    # Nothing yet. A warm probe has already spent the whole budget inside the
+    # daemon; a cold one buys another look, and only when a positive marker
+    # makes "not yet" a state distinct from "logged in".
+    (( warm )) && break
+    [[ -n "$positive" ]] || break
+    (( waited + poll > total )) && break
+    sleep "$(( poll / 1000 )).$(printf '%03d' "$(( poll % 1000 ))")"
+    waited=$(( waited + poll ))
+  done
   if (( rc != 0 )) || [[ ! -s "$dom" ]]; then
     # A BROWSER THAT CANNOT START IS NOT AN UNREADABLE SESSION (DIVE-4587). Both
     # arrive here as a non-zero chrome and an empty document, and collapsing them
@@ -869,33 +929,42 @@ _probe() {
     _stamp "$dir" "UNKNOWN — chrome did not load the page${why:+: $why}"
     echo "UNKNOWN (chrome did not load the page${why:+ — $why})"; return 0
   fi
-  rm -f "$dom.err"
-  # Challenge FIRST: a challenge page often still carries the login form's markup,
-  # so testing logged-out first would classify an interrogated live session as a
-  # dead one and send the user to re-authenticate a session that is fine.
-  if grep -qiE "$(_site_challenge_marker "$site")" "$dom"; then
-    rm -f "$dom"; _stamp "$dir" challenge
-    echo "CHALLENGE — human action required (we do not solve these)"; return 1
-  fi
-  if [[ -n "$marker" ]] && grep -qiE "$marker" "$dom"; then
-    rm -f "$dom"; _stamp "$dir" expired; echo "session expired — human action required"; return 1
-  fi
-  rm -f "$dom"
+  rm -f "$dom" "$dom.err"
+  case "$verdict" in
+    challenge)
+      # THERE IS DELIBERATELY NO BYPASS BEHIND THIS.
+      _stamp "$dir" challenge
+      echo "CHALLENGE — human action required (we do not solve these)"; return 1 ;;
+    expired)
+      _stamp "$dir" expired; echo "session expired — human action required"; return 1 ;;
+    authenticated)
+      _stamp "$dir" authenticated; echo "authenticated (checked $(date -u +%Y-%m-%dT%H:%MZ))"; return 0 ;;
+  esac
   # NO MARKER, NO VERDICT. `authenticated` is a claim about a LOGIN, and the only
   # evidence for it here is the adapter's logged-out marker failing to match. With
-  # no adapter that test is skipped (`[[ -n "$marker" ]] &&`), so every page that
-  # merely LOADED was stamped `authenticated` — observed on a profile nobody had
-  # ever logged into. The only adapter shipped is example.json, which means this
-  # was the state of every real profile, and the Connected-sites tile read it.
+  # no adapter that test is skipped, so every page that merely LOADED was stamped
+  # `authenticated` — observed on a profile nobody had ever logged into. The only
+  # adapter shipped is example.json, which means this was the state of every real
+  # profile, and the Connected-sites tile read it.
   # Reaching the challenge classification first is deliberate: its marker has a
   # built-in default, so a challenge page IS nameable with no adapter, and the
   # customer in front of a CAPTCHA still gets told to clear it rather than "we
   # cannot tell". Quiet (rc 0) like every other UNKNOWN: a state we cannot read
   # must not page a person. `run` still refuses on it — it accepts only
   # `authenticated*` — which is the fail-closed half.
-  if [[ -z "$marker" ]]; then
+  if [[ -z "$marker" && -z "$positive" ]]; then
     _stamp "$dir" unknown
     echo "UNKNOWN (no adapter for $site — the page loaded, but nothing here can tell logged-in from logged-out; write $(_adapter_path "$site") with probe.logged_out_when_dom_matches)"
+    return 0
+  fi
+  # A POSITIVE MARKER TURNS SILENCE INTO UNKNOWN, NOT INTO A LOGIN (DIVE-4794).
+  # This is the fail-closed half of the pair: where the adapter has told us what
+  # a logged-in page looks like and the page never showed it inside the budget,
+  # the honest answer is that we could not read the state — never `authenticated`
+  # by elimination, which is exactly the inference a single-page app breaks.
+  if [[ -n "$positive" ]]; then
+    _stamp "$dir" unknown
+    echo "UNKNOWN (the page never showed either the signed-in or the signed-out marker within ${total}ms — the state could not be read; acting verbs stay refused)"
     return 0
   fi
   _stamp "$dir" authenticated; echo "authenticated (checked $(date -u +%Y-%m-%dT%H:%MZ))"; return 0
@@ -3058,13 +3127,32 @@ cmd_snapshot() {
     # the daemon did not have, which is why `shot` and `read` still cycle a cold
     # chrome of their own; `snapshot` is that op, scoped to the one verb built
     # for it rather than retrofitted onto the other two.
+    # A BROKERED CALLER CANNOT HAND OVER A PATH (DIVE-4794). The staging
+    # directory below is 0700 to THIS seat, and the daemon runs as the profile's
+    # owner — so naming it in the request is asking another seat to write
+    # somewhere it cannot reach, and every brokered `snapshot` died on
+    # `EACCES ... open '/tmp/5dive-browser-read.XXXX/page.html'`. Widening the
+    # directory to the owning seat would fix the symptom by handing a browser
+    # session's owner a caller-chosen write, which is the exact rig DIVE-4662
+    # refused. The bytes come back instead and this seat writes them, the same
+    # trade `shot` and `read` already make over this socket.
+    local inline=0; (( _SITE_BROKERED )) && inline=1
     plan=$(jq -nc --arg u "$url" --arg h "$stage/page.html" --arg s "$png" \
         --argjson i "$interactive" --argjson f "$full" --argjson l "$(_daemon_lease_json)" \
-        --argjson st "$(_settle_json "$settle")" \
-        '{op:"snapshot", url:$u, html:$h, shot:(if $s=="" then null else $s end),
-          interactive:($i==1), full:($f==1)} + $st + $l')
+        --argjson n "$inline" --argjson st "$(_settle_json "$settle")" \
+        '{op:"snapshot", url:$u,
+          html:(if $n==1 then null else $h end),
+          shot:(if $n==1 then (if $s=="" then null else true end) elif $s=="" then null else $s end),
+          inline:($n==1), interactive:($i==1), full:($f==1)} + $st + $l')
     payload=$(_daemon_call "$_PG_DIR" "$plan") \
       || die "$E_UNAVAILABLE" "the warm session could not capture $url (its own reason is above)."
+    if (( inline )); then
+      jq -r '.html_inline // ""' <<<"$payload" > "$stage/page.html" \
+        || die "$E_UNAVAILABLE" "the box session returned a capture this seat could not read"
+      if [[ -n "$png" ]]; then
+        jq -r '.png_b64 // ""' <<<"$payload" | base64 -d > "$png" 2>/dev/null || : > "$png"
+      fi
+    fi
   else
     local driver="${FIVEDIVE_BROWSER_DRIVER:-$_SELF_DIR/driver-playwright}"
     [[ -n "$driver" && -x "$driver" ]] || die "$E_UNAVAILABLE" "no executor backend at $driver — snapshot reads the page through the same executor \`run\` acts through, inside the same profile."
