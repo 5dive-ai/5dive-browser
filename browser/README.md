@@ -19,6 +19,8 @@ than a detail.
 5dive browser probe-all             # scheduled sweep; served profiles are skipped
 5dive browser ls                    # profiles, and when each was last seen alive
 5dive browser run <site> <action> [--key=value ...]
+5dive browser tree <site> <url> [--settle=<ms>]   # refs; --settle also on snapshot,
+                                                  # --page-settle on run
 ```
 
 ## Server mode: the browser lives on the box, you reach it through a one-time link
@@ -305,7 +307,7 @@ promise — it does not scroll-stitch a page.
 ### `browser snapshot` — one cycle, one page instant, everything a decision needs
 
 ```
-5dive browser snapshot <site> <url> [--out=<dir>] [--interactive] [--json] [--no-shot] [--full]
+5dive browser snapshot <site> <url> [--out=<dir>] [--interactive] [--json] [--no-shot] [--full] [--settle=<ms>]
 ```
 
 Before an agent acts on a page it reads the same three things: **what it can click** (`tree`),
@@ -381,6 +383,36 @@ person's personal login — with exactly one exception, stated so it is not quie
 owner's own box, running the owner's own login, to their own product. That is a person granting a
 machine they own a session to a service they own. It is not a template for anyone else's account,
 and it is not a reason to log a 5dive box into a third party's personal profile.
+
+### The settle — a floor on when anyone looks, not a fix for a late element
+
+```
+5dive browser tree     <site> <url> [--settle=<ms>]
+5dive browser snapshot <site> <url> [--settle=<ms>]
+5dive browser run      <site> <action> [--page-settle=<ms>] [--key=value ...]
+```
+
+`tree`, `snapshot` and `run` all wait after `domcontentloaded` before anything looks at the page,
+because a live application is still assembling itself there. The default is **1200 ms**
+(`FIVEDIVE_BROWSER_TREE_SETTLE_MS`, and `FIVEDIVE_BROWSER_RUN_SETTLE_MS` for `run`, which falls back
+to it). It is deliberately **never** `waitUntil: 'networkidle'`: a web app that long-polls never
+idles, and waiting for one is what made a `read` hang for 150 seconds on a real box.
+
+The number is worth setting, and here is a measurement rather than an opinion. On a GitHub issue
+page, 2026-09-20: the default `tree` returned **54 nodes and no textbox**; `--settle=6000` returned
+**76**, including `textbox/Add a comment` and `button/Comment`. An adapter quoting the refs from the
+second tree is quoting refs the first one could not see.
+
+**On `run` the flag is `--page-settle`, and the dash is the reason.** Every other `--key=value` on a
+`run` command line is an *adapter argument*, so `--settle` there would be indistinguishable from an
+adapter with a `{settle}` placeholder — the same collision `--lease-wait` exists to avoid. A
+placeholder name is `[a-zA-Z0-9_]+`, so a flag carrying a dash can never be mistaken for one.
+
+**A settle is a floor, not a fix.** It says how long the page is given before anyone looks; it does
+not make a slow element arrive. An element that is genuinely late is `wait_for`'s job — and a
+`wait_for` on a `ref=` now waits for the whole step timeout, polling the page, exactly as a
+`wait_for` on a CSS selector always did. Raising the settle to cover a late element buys the delay
+on **every** run of that adapter; a `wait_for` costs only as long as the page actually takes.
 
 ## Adapters are data, and the vocabulary is fixed
 

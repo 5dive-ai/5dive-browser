@@ -8,6 +8,52 @@ that file stays where it is.
 
 ## Released
 
+### Fixed — a ref `wait_for` never waited, and `run` looked at a page nobody let settle (DIVE-4674), browser 1.10.0
+
+Two halves of the same experience: an adapter quoted the refs `tree` printed, and `run` then
+said no such element was on the page at all.
+
+**A ref `wait_for` waited for 0 ms.** Both step loops turned a selector into an element with a
+ONE-SHOT walk before the switch, so `{"op":"wait_for","selector":"ref=textbox/Add a comment"}`
+probed the page once and threw, while the identical step written as a CSS selector polled for
+the whole 30-second step timeout inside `page.waitForSelector`. The instruction this plugin
+tells agents to prefer was the one that could not wait. A ref `wait_for` now polls the page
+until the step timeout, and when it does give up it raises the same message as before, naming
+the refs that ARE on the page — the hint an operator reads, and the exit code (`70` on step
+one, `1` after) that stops `run` re-reading an artifact nothing wrote to. `fill`, `click`,
+`press`, `select` and `upload` deliberately keep the one-shot resolve: an adapter that needs to
+wait says so with a `wait_for` step, and a `click` that hovered for thirty seconds would turn
+"this is not the page `tree` described" into the same wrong answer half a minute later, inside
+a live account.
+
+**`run` had no settle at all.** `tree` and `snapshot` wait 1200 ms after `domcontentloaded`
+before looking, because a live application is still assembling itself there; `run` went from
+`goto` straight to the next step. Measured on a GitHub issue page, 2026-09-20: the default
+`tree` returned 54 nodes and no textbox, `--settle=6000` returned 76 including
+`textbox/Add a comment` and `button/Comment` — and `run` was resolving those refs about fifty
+milliseconds after load. `run` now takes the same bounded settle after every `goto`
+(`FIVEDIVE_BROWSER_RUN_SETTLE_MS`, falling back to `FIVEDIVE_BROWSER_TREE_SETTLE_MS`, default
+1200). It is still never `waitUntil: 'networkidle'`: a web app that long-polls never idles, and
+waiting for one is what made a `read` hang for 150 seconds on a real box.
+
+**The knob is reachable now.** `tree` takes `--settle=<ms>` like `snapshot`; `run` takes
+`--page-settle=<ms>`, spelled with a dash because every other `--key=value` on a `run` command
+line is an adapter argument and a placeholder name is `[a-zA-Z0-9_]+`, so a dashed flag can
+never eat one. All three carry the value INTO the warm session's request: the daemon is a
+long-lived process that cannot see an environment variable set on this command line, which is
+why `snapshot --settle` worked on a cold profile and was silently dropped on a served one.
+
+A settle is a floor on when anyone looks, not a fix for a late element — raising it is paid on
+every run, while a `wait_for` costs only what the page actually takes. Graded by the T28 family
+in `tests/browser_plugin_unit.sh`, through a stub page that answers "not there" N times and then
+"there"; the warm half is graded through a real `session-daemon`, and two mutant arms run in
+their own copy of the package — one puts the one-shot resolve back and asserts the late ref
+becomes a refusal again, the other deletes the asymmetry so every op polls and asserts the ref
+`click` stops refusing. That second one is why the choice stated above is a graded claim and
+not a comment: `fill`/`click`/`press`/`select`/`upload` keep the one-shot resolve and an arm
+counts the looks, so an edit that let a `click` hover for the whole step timeout inside a live
+account goes red.
+
 ### Fixed — `browser setup` refuses to mint a probe timer for an account the registry does not know (DIVE-4730), browser 1.9.2
 
 `setup` mints `5dive-browser-probe@<seat>.timer`, a per-seat unit that **outlives the

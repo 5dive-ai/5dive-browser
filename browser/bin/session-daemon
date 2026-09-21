@@ -118,6 +118,33 @@ const STEPS = {
 };
 const STEP_TIMEOUT = Number(process.env.FIVEDIVE_BROWSER_STEP_TIMEOUT || 30000);
 
+// THE SETTLE `run` DID NOT HAVE (DIVE-4674). `tree` and `snapshot` wait after
+// domcontentloaded because a live page is still assembling itself there; `run`
+// went from `goto` straight to the next step, so the very refs `tree` printed at
+// a settle were resolved by `run` about fifty milliseconds after DCL and missed.
+// Same knob, same bound, same reason it is NEVER `waitUntil: 'networkidle'` — a
+// web app that long-polls never idles, and waiting for it is what made a `read`
+// hang for 150s on a real box.
+//
+// A FLOOR, NOT A FIX. The settle is how long the page is given before anyone
+// looks; a genuinely late element is `wait_for`'s job, which now actually waits.
+const RUN_SETTLE_MS = Number(
+  process.env.FIVEDIVE_BROWSER_RUN_SETTLE_MS
+  || process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS
+  || 1200);
+
+// THE WARM PATH HAS TO TAKE THE FLAG TOO (DIVE-4674). The daemon is a long-lived
+// process started before the caller typed anything, so an env var set on THIS
+// invocation of bin/browser cannot reach it — which is why `snapshot --settle`
+// was silently dropped on a served profile while working cold. The knob travels
+// in the request instead, and a request that does not carry one falls back to the
+// daemon's own environment, exactly as before.
+const settleOf = (req, fallback) => {
+  const n = Number(req && req.settle);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
+const TREE_SETTLE_MS = Number(process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS || 1200);
+
 function die(code, msg) { process.stderr.write(`${PROG}: ${msg}\n`); process.exit(code); }
 
 // Identical to the driver's, and deliberately a second literal copy rather than a
@@ -461,7 +488,7 @@ async function treeRequest(ctx, req, send, end) {
     await page.goto(req.url, { waitUntil: 'domcontentloaded' });
     // NEVER network idle: a live web app long-polls and never idles — that is
     // what makes a `read` hang for 150s on a real Gmail.
-    await page.waitForTimeout(Number(process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS || 1200));
+    await page.waitForTimeout(settleOf(req, TREE_SETTLE_MS));
     const { nodes } = await aria.walk(page, { interactiveOnly: !!req.interactive });
     send({ t: 'out', data: JSON.stringify({ url: req.url, nodes }) + '\n' });
     end(0);
@@ -501,7 +528,7 @@ async function snapshotRequest(ctx, req, send, end) {
     const page = await pageOf(ctx);
     assertLease(req, 'snapshot');
     await page.goto(req.url, { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(Number(process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS || 1200));
+    await page.waitForTimeout(settleOf(req, TREE_SETTLE_MS));
     const snap = await aria.snapshot(page, { interactiveOnly: !!req.interactive });
     fs.writeFileSync(req.html, snap.html || '', { mode: 0o600 });
     if (req.shot) await page.screenshot({ path: req.shot, fullPage: !!req.full });
@@ -571,10 +598,18 @@ async function planRequest(ctx, req, send, end) {
       // BEFORE THE RESOLVE AND BEFORE THE COUNTER. Both touch the page, and the
       // point is to touch nothing once the browser is someone else's.
       assertLease(req, where);
-      const sel = s.selector === undefined ? undefined : await aria.resolveSelector(page, s.selector);
+      // A ref `wait_for` WAITS, like its CSS twin always did (DIVE-4674). The
+      // choice of which ops wait lives in lib/aria.cjs, shared by this loop and
+      // the other one, because the defect was that there are two of them.
+      const sel = await aria.resolveStepSelector(page, s, { timeoutMs: STEP_TIMEOUT });
       stepsRun++;
       switch (s.op) {
-        case 'goto':     await page.goto(s.url, { waitUntil: 'domcontentloaded' }); break;
+        case 'goto': {
+          await page.goto(s.url, { waitUntil: 'domcontentloaded' });
+          const ms = settleOf(req, RUN_SETTLE_MS);
+          if (ms > 0) await page.waitForTimeout(ms);
+          break;
+        }
         case 'fill':     await page.fill(sel, s.value); break;
         case 'click':    await page.click(sel); break;
         case 'wait_for': await page.waitForSelector(sel); break;
