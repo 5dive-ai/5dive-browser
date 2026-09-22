@@ -341,6 +341,12 @@ _open_site() {  # _open_site <site> [--no-broker <verb> <why> | --may-create]
   _require_store "$site"
   _resolve_site "$site" >/dev/null
   if (( _SITE_BROKERED )); then
+    # DIVE-4813: `serve` is the one verb root can carry out FOR a brokered
+    # caller, so its advice is the verb that seat can run itself. Every other
+    # verb here is genuinely the owner's and keeps the owner's wording.
+    if [[ "$mode" == --no-broker && "$verb" == serve ]]; then
+      die "$E_PERM" "$site is the box's login, owned by the '$_SITE_OWNER' seat, and $why Start it from here:  sudo 5dive browser serve $site"
+    fi
     [[ "$mode" != --no-broker ]] || die "$E_PERM" "$site is the box's login, owned by the '$_SITE_OWNER' seat, and $why Run it as the owner:  sudo -u $_SITE_OWNER 5dive browser $verb $site"
     _broker_ready "$site" "$_SITE_DIR"
   else
@@ -423,9 +429,65 @@ _broker_ready() {  # _broker_ready <site> <profile-dir>
   (( _SITE_BROKERED )) || return 0
   _daemon_live "$2" && return 0
   die "$E_UNAVAILABLE" "$1 is logged in on this box under the '$_SITE_OWNER' seat, but nothing is serving that session right now — and '$(_seat)' cannot open the profile directly: it is mode 0700 to $_SITE_OWNER, which is what stops any seat here from replaying somebody else's login. A brokered seat acts THROUGH the running browser or not at all.
-Start one on the owning seat:  sudo -u $_SITE_OWNER 5dive browser serve $1
+Start one from here:  sudo 5dive browser serve $1
+(root re-execs that as '$_SITE_OWNER', which owns the session, so it does NOT need \`sudo -u\` — the admin grant on this box is enough. A seat without that grant asks the owner:  sudo -u $_SITE_OWNER 5dive browser serve $1)
 If that starts but says 'no warm session', this box has no playwright-core, so there is no daemon to broker through and only $_SITE_OWNER can use the profile:  npm install --prefix $(cd "$_SELF_DIR/.." && pwd)"
 }
+
+# >>> DIVE-4813 WHICH SEAT ROOT BECOMES, and why it is not always the caller
+#
+# The DIVE-4348 drop below re-execs root as SUDO_USER before any store is
+# touched, which is right for every verb that operates the CALLER's store. It
+# was wrong for the one verb a brokered seat needs and cannot have: `serve`.
+# A site the box connected sits 0700 under $BOX_SEAT; an agent seat can only act
+# THROUGH a running daemon; starting that daemon is the owner's act. So the seat
+# was handed `sudo -u claude 5dive browser serve <site>` and stopped there,
+# because the 5dive admin grant is `(root)` runas ONLY — cmd_agent_create.sh
+# says it outright: "neither an admin nor a standard agent can sudo -u claude".
+# Root was the one lever that seat held, and the drop threw it away by re-execing
+# as the seat that cannot read the profile. Measured by lodar on wavy-mesa
+# 2026-09-22: agent-claude-yak, admin tier, handed a shell command for a human.
+#
+# So for that verb root becomes the seat that OWNS the session. This is not a new
+# grant: reaching euid 0 here already required the admin sudoers class
+# (`/usr/local/bin/5dive *` as root), which a standard agent's scoped drop-in
+# does not contain. **euid 0 IS the tier check** — which is why no tier lookup
+# appears here and no sudoers class is added.
+#
+# THE TARGET IS NEVER CALLER INPUT. It is the constant $BOX_SEAT, and it is taken
+# only when the box itself says so: the caller owns no store for that site AND
+# $BOX_SEAT has published an `.offered` marker for it. Both are box state. The
+# site name reaches this only as the key to those two lookups, never as the seat.
+#
+# START ONLY. `--stop` stays the owner's, for the reason `lease --release`
+# already refuses a brokered caller: tearing down a browser that several seats
+# and a human viewer share is not something you do on another seat's behalf.
+#
+# It is a FUNCTION, not an inline block, because the caller below is gated on
+# $EUID and $EUID cannot be faked — a test of an inline block would run only
+# where the runner happens to be root and be silently blank everywhere else.
+# This takes the caller as an argument, so it grades identically at any uid.
+_root_drop_target() {  # _root_drop_target <calling-seat> <argv...> -> the seat to become
+  local caller="$1"; shift
+  local site="" stop=0 a
+  if [[ "${1:-}" == serve ]]; then
+    for a in "${@:2}"; do
+      case "$a" in
+        --stop) stop=1 ;;
+        -*) ;;
+        *) [[ -n "$site" ]] || site="$a" ;;
+      esac
+    done
+    if (( ! stop )) && [[ -n "$site" ]] \
+       && [[ "$caller" != "$BOX_SEAT" ]] \
+       && [[ ! -d "$PROFILE_ROOT/$caller/$site" ]] \
+       && [[ -f "$(_rv_offer "$BOX_SEAT" "$site")" ]]; then
+      printf '%s\n' "$BOX_SEAT"; return 0
+    fi
+  fi
+  printf '%s\n' "$caller"
+}
+# <<< DIVE-4813
 
 # Every request the broker serves leaves a row naming WHO ASKED, not only who
 # owns the profile. The owner is `claude` on every brokered row by construction,
@@ -3604,8 +3666,15 @@ if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
     # file, which is root's. Dropping to the seat would turn it into a refusal.
     setup|adblock|-h|--help|help|"") ;;
     *)
-      _drop="${SUDO_USER}"
+      # DIVE-4813: usually the caller, and for a brokered `serve` the owner.
+      _drop="$(_root_drop_target "${SUDO_USER}" "$@")"
       id -u "$_drop" >/dev/null 2>&1 || die "$E_PERM" "SUDO_USER=$_drop is not a user on this box — refusing to operate a profile store as root"
+      if [[ "$_drop" != "${SUDO_USER}" ]]; then
+        # The audit row must name who ASKED, and the caller must not be able to
+        # forge it or to re-point the store this drop exists to open.
+        export FIVEDIVE_BROWSER_ON_BEHALF_OF="${SUDO_USER}"
+        unset FIVEDIVE_BROWSER_SEAT
+      fi
       exec runuser -u "$_drop" -- "$0" "$@"
       ;;
   esac
@@ -3614,6 +3683,9 @@ fi
 
 case "${1:-}" in
   -h|--help|help|"") usage ;;
+  # DIVE-4813: prints the seat root would become. Hidden, read-only, grants
+  # nothing — it is the seam the drop decision is graded through.
+  _drop-target) shift; _root_drop_target "$@" ;;
   setup) shift; cmd_setup "$@" ;;
   auth)  shift; cmd_auth  "$@" ;;
   status) shift; _auth_status "${1:-}" ;;

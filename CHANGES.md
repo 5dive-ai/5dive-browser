@@ -8,6 +8,46 @@ that file stays where it is.
 
 ## Released
 
+### Fixed — an admin agent can start the box login's browser itself, instead of handing a human a shell command (DIVE-4813), browser 1.10.3
+
+lodar, on wavy-mesa 2026-09-22: an admin-tier agent asked to open Telegram Web — a site **this box
+had already connected**, under the `claude` seat — and answered *"Blocked … as agent-claude-yak I'm
+refused even through `sudo 5dive`"*, then printed `sudo -u claude 5dive browser serve
+web.telegram.org` for a person to run. The site login is per BOX by design (DIVE-4662); the agent
+could not reach it.
+
+**The door that shut was not the 0700 profile and not the plugin's caller guard.** It was the
+DIVE-4348 root-drop. A brokered seat can only act through a *running* daemon, and starting one is
+the owner's act, so the agent's only lever was root via the admin sudoers class
+(`/usr/local/bin/5dive *`). The drop spent that lever: on `sudo 5dive browser serve` it re-executed
+unconditionally as `SUDO_USER` — the seat that cannot read the profile — and landed back in the same
+refusal. The advice it printed then asked for `sudo -u claude`, a **runas the admin grant does not
+contain**; 5dive-cli says so in `write_admin_sudoers`: *"neither an admin nor a standard agent can
+`sudo -u claude`"*. So the one command offered was one no agent on the box could run.
+
+Root now becomes the seat that **owns** the session for that one verb. `_root_drop_target` picks
+`$BOX_SEAT` when, and only when, the caller owns no store for the site *and* the box has published
+an `.offered` marker for it — both box state, never caller input; the target is a constant, so a
+site named `root` steers nothing. The caller still never opens the profile directory: the daemon
+runs as the owner and the caller acts over the socket exactly as before.
+
+**No new grant and no new sudoers class.** Reaching euid 0 here already required the admin class,
+which a standard agent's scoped drop-in does not contain — so **euid 0 is the tier check**, and
+standard tier is unchanged: it does not read box-level sites, because an identity is never a grant.
+`--stop` stays the owner's, for the reason `lease --release` already refuses a brokered caller —
+tearing down a browser several seats and a human viewer share is not done on another seat's behalf.
+The on-behalf drop also scrubs `FIVEDIVE_BROWSER_SEAT` (which would re-point the store this exists
+to open) and sets `FIVEDIVE_BROWSER_ON_BEHALF_OF` itself, so the audit row naming who asked cannot
+be forged by the caller.
+
+Both refusals now name a verb the agent can run **from its own seat** — `sudo 5dive browser serve
+<site>` — instead of one only a human could execute.
+
+The decision is a function taking the calling seat as an argument, reached by a hidden read-only
+`_drop-target` verb, because the drop itself is gated on `$EUID` and `$EUID` cannot be faked: an arm
+written against the inline block would grade the real thing only where the runner happens to be
+root, green-by-blankness elsewhere, with nothing in the output to tell the two apart.
+
 ### Added — `served` and `forget`: a running browser you can stop, and a site you can log the box out of (DIVE-4791, ported by DIVE-4797), browser 1.10.2
 
 **This code landed in the frozen registry copy first** — `5dive-plugins@023a95cb`, browser 1.10.0,
