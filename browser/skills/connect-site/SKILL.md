@@ -106,7 +106,17 @@ keyboard attached to the person's account.
   never repaired — you cannot open another seat's and must not try. But you do not need to:
   where the box has a login and something is serving it, your seat acts through the running
   browser and needs **no second human login**. A login you made yourself wins over the box's.
-  The viewer and `serve` stay the owning seat's acts; the relay still redeems `claude`.
+  The viewer stays the owning seat's act; the relay still redeems `claude`.
+- **If nothing is serving the box's login, START IT YOURSELF — do not hand a human a shell
+  command** (DIVE-4813). `sudo 5dive browser serve <site>`, from your own seat. Root re-execs
+  that as the seat that owns the session, so it does **not** need `sudo -u` — which is the
+  point, because `sudo -u <someone>` is a runas no 5dive agent grant contains, and printing it
+  for a person to run is the failure this rule exists to stop. Then act normally: `snapshot`,
+  `read`, `shot` all go through the running browser. If that `sudo` is itself refused, your
+  seat is not admin tier — say so plainly and name the site; do not improvise around it.
+- **`serve --stop` is still the owning seat's act**, and so is `lease --release`: they tear down
+  a browser other seats and a human viewer may be using, which is not yours to do on their
+  behalf. Stop only what your own seat serves.
 - **Some sites block datacenter IPs at login** ("your request has been blocked",
   "suspicious network"). That is the site's anti-bot policy meeting a VM's IP — it is not
   our bug, there is no flag for it, and the honest answer to the human is that this site

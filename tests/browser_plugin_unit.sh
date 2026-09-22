@@ -283,6 +283,104 @@ t  'T2c6 a root caller with SUDO_USER re-executes as the seat before touching a 
 t  'T2c7 ...but setup and adblock stay root'"'"'s' 'yes' "$(grep -A6 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -q 'setup|adblock|-h|--help|help|"") ;;' && echo yes || echo no)"
 t  'T2c8 ...and no OTHER verb joined them' '2' "$(grep -A6 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -oP '^\s+\K[a-z|]+(?=\|-h\|--help)' | tr '|' '\n' | grep -c .)"
 
+# DIVE-4813 — WHICH SEAT ROOT BECOMES. An admin agent asked to open a site the
+# box had connected under `claude` and was told to run `sudo -u claude 5dive
+# browser serve <site>` — a runas the 5dive admin grant does not contain, so the
+# agent handed the shell command back to a human (lodar, wavy-mesa, 2026-09-22).
+# Root is the one lever that seat holds and the DIVE-4348 drop above spent it
+# re-execing as the seat that cannot read the profile. Now, for `serve` on a site
+# the box offers and the caller has no store for, root becomes the OWNER.
+#
+# WHY THESE ARMS DRIVE A FUNCTION AND NOT THE ENTRYPOINT. The drop is gated on
+# $EUID, and `_seat`'s own comment at the top of this file says it: a fake `id
+# -u` cannot move $EUID. An arm written against the inline block would therefore
+# grade the real thing only where the runner happens to be root — green-by-
+# blankness on a developer box, live in CI, and nobody can tell which from the
+# output. So the decision is a function taking the caller as an ARGUMENT, and
+# `_drop-target` is the hidden verb that reaches it. Same answer at any uid.
+#
+# THE LOAD-BEARING ARMS ARE THE CONTROLS. This change turns a behaviour ON, so
+# "the brokered case picks the owner" is the cheap half — a function that
+# returned $BOX_SEAT unconditionally passes it. Every arm below it names a case
+# that must still pick the CALLER, and the mutants at the end delete one guard
+# each and prove the matching control goes red.
+DT="$TMP/droptarget"
+mkdir -p "$DT/profiles/claude/boxsite" "$DT/profiles/agent-yak" "$DT/sessions/claude"
+: > "$DT/sessions/claude/boxsite.offered"
+dt() {  # dt <caller> <argv...> -> the seat root would become
+  env FIVEDIVE_BROWSER_PROFILE_ROOT="$DT/profiles" \
+      FIVEDIVE_BROWSER_SESSION_ROOT="$DT/sessions" \
+      FIVEDIVE_BROWSER_BOX_SEAT=claude \
+      "${DTB:-$BROWSER}" _drop-target "$@"
+}
+t  'T2c9 a brokered serve makes root become the seat that OWNS the session' \
+   'claude' "$(dt agent-yak serve boxsite)"
+# The reason the row exists: the advice the agent used to get names a runas the
+# admin sudoers class does not grant, so it could only be executed by a human.
+tn 'T2c9a ...and the refusal it replaces no longer sends a brokered seat to sudo -u for serve' \
+   'Start one on the owning seat:  sudo -u' "$(cat "$ROOT/browser/bin/browser")"
+tc 'T2c9b ...the brokered refusal names a verb the seat can run itself' \
+   'sudo 5dive browser serve $1' "$(cat "$ROOT/browser/bin/browser")"
+
+# --- the controls. Each names a case that must still resolve to the CALLER ---
+mkdir -p "$DT/profiles/agent-yak/boxsite"
+t  'T2c10 CONTROL a seat with its OWN login for the site keeps using it' \
+   'agent-yak' "$(dt agent-yak serve boxsite)"
+rmdir "$DT/profiles/agent-yak/boxsite"
+t  'T2c11 CONTROL --stop is never carried out on the owner behalf' \
+   'agent-yak' "$(dt agent-yak serve boxsite --stop)"
+t  'T2c11a ...whichever side of the site name it is written on' \
+   'agent-yak' "$(dt agent-yak serve --stop boxsite)"
+t  'T2c12 CONTROL a site the box does not OFFER is not brokered' \
+   'agent-yak' "$(dt agent-yak serve neveroffered)"
+t  'T2c13 CONTROL no other verb is carried out on the owner behalf' \
+   'agent-yak agent-yak agent-yak agent-yak' \
+   "$(echo "$(dt agent-yak shot boxsite https://x.test/) $(dt agent-yak auth boxsite) $(dt agent-yak snapshot boxsite) $(dt agent-yak forget boxsite)")"
+t  'T2c14 CONTROL serve with no site named resolves to the caller' \
+   'agent-yak' "$(dt agent-yak serve)"
+# The target is a CONSTANT, never the caller's argv: a site name shaped like a
+# seat must not become the seat root becomes.
+t  'T2c15 CONTROL the site name cannot steer which seat root becomes' \
+   'agent-yak' "$(dt agent-yak serve root)"
+t  'T2c16 CONTROL the caller is returned unchanged when it IS the box seat' \
+   'claude' "$(dt claude serve boxsite)"
+# The drop exists to open the OWNER's store, and it records who asked. A caller
+# that could set either env var could re-point the first or forge the second.
+tc 'T2c17 the on-behalf drop scrubs the caller store override' \
+   'unset FIVEDIVE_BROWSER_SEAT' "$(cat "$ROOT/browser/bin/browser")"
+tc 'T2c18 ...and names the asking seat in the audit row it cannot forge' \
+   'export FIVEDIVE_BROWSER_ON_BEHALF_OF="${SUDO_USER}"' "$(cat "$ROOT/browser/bin/browser")"
+
+# --- the mutants. One guard deleted each; the named control must go RED -------
+# A mutation arm that cannot prove its own edit LANDED is an arm that passes on a
+# typo, so each one greps the mutant for the change before it grades anything —
+# and reports a broken edit as MUTATION-NOT-APPLIED / MUTATION-BROKE-SYNTAX
+# rather than as a survived property, which is the shape that passes silently.
+# The markers are LINE-EXACT where the condition alone is not unique: the
+# offer-marker test also appears in _resolve_site, and a marker matching two
+# sites cannot say which one the sed moved.
+mutdt() {  # mutdt <sed-expr> <marker-that-must-be-GONE>
+  local m="$DT/mut-browser"
+  sed "$1" "$BROWSER" > "$m"; chmod +x "$m"
+  if grep -qF -e "$2" "$m"; then echo "MUTATION-NOT-APPLIED"; return 0; fi
+  bash -n "$m" 2>/dev/null || { echo "MUTATION-BROKE-SYNTAX"; return 0; }
+  DTB="$m" dt "${@:3}"
+}
+t  'T2c19 MUTANT dropping the own-store guard breaks T2c10' 'claude' \
+   "$(mkdir -p "$DT/profiles/agent-yak/boxsite"
+      mutdt '/\[\[ ! -d "$PROFILE_ROOT\/$caller\/$site" \]\]/d' \
+            '! -d "$PROFILE_ROOT/$caller/$site"' agent-yak serve boxsite
+      rmdir "$DT/profiles/agent-yak/boxsite")"
+t  'T2c20 MUTANT dropping the offer-marker guard breaks T2c12' 'claude' \
+   "$(mutdt 's|&& \[\[ -f "$(_rv_offer "$BOX_SEAT" "$site")" \]\]; then|; then|' \
+            '&& [[ -f "$(_rv_offer "$BOX_SEAT" "$site")" ]]; then' agent-yak serve neveroffered)"
+t  'T2c21 MUTANT dropping the --stop guard breaks T2c11' 'claude' \
+   "$(mutdt 's|if (( ! stop )) \&\& \[\[ -n "$site" \]\]|if [[ -n "$site" ]]|' \
+            'if (( ! stop )) && [[ -n "$site" ]]' agent-yak serve boxsite --stop)"
+t  'T2c22 MUTANT dropping the serve-only guard breaks T2c13' 'claude' \
+   "$(mutdt 's|if \[\[ "${1:-}" == serve \]\]; then|if true; then|' \
+            'if [[ "${1:-}" == serve ]]; then' agent-yak shot boxsite https://x.test/)"
+
 # DIVE-4519 iteration 2 — setup owns the schedule, and these arms DRIVE setup.
 #
 # WHY THE GREPS THEY REPLACE GRADED NOTHING. The first cut of T2c8 matched three
