@@ -42,6 +42,10 @@ could not be read.
   minutes; `--approved=<id>` spends it. Enforced in both step loops (the one-shot driver and the
   session daemon) from one shared function in `lib/aria.cjs`. It catches the literal buttons; a
   purchase behind a button labelled "Continue" is not caught, and the docs say so.
+- **A `use-browser` skill that sends agents to the browser.** It fires on web tasks ("go to
+  <site> and …", buy/book/fill/submit, anything a normal fetch cannot do) and teaches snapshot →
+  act by ref → verify, plus the owner-approval stop. `connect-site` no longer tells agents to use a
+  normal fetch for public pages; it points them at `use-browser`.
 
 Tests: T31a–h (zero-site act and read, generic check, two accounts, the owner's four in both
 executors), each with its mutant: no URL route → the zero-site box cannot act; no generic check →
