@@ -6,6 +6,26 @@ voice — every two PRs to that file collided trivially, and splitting it is the
 exists (DIVE-4661). Only the sections that named a `browser <version>` came across; the rest of
 that file stays where it is.
 
+## Unreleased
+
+### Added — `browser capture <site>`: both halves of a login check, on disk, in one command (DIVE-4929)
+
+`5dive browser capture <site> [--url=<probe url>] [--out=<dir>]` saves the probe page twice signed
+out (two throwaway profiles, the probe's own command) and once signed in (this login's profile, or
+the served session through the daemon). The files are 0600 and go in a 0700 directory. The command
+prints the `sudo 5dive reflex login-marker …` line that drafts the site's login check from them
+(5dive CLI, DIVE-4928, shadow).
+
+- **Owner only.** A brokered seat is refused with 77, because the signed-in render is the
+  account's page, for a site no probe has cleared for reading.
+- **It never overwrites a directory.**
+- **It warns when both halves show the same page title.** That usually means the profile is not
+  logged in. A byte comparison misses this, because sign-in pages carry per-render tokens.
+- **It classifies nothing and writes no adapter.**
+
+Tests: T30a–g, including a mutant (the broker refusal dropped → a brokered seat gets the file).
+Not released: it rides the next version cut, after 1.10.4.
+
 ## Released
 
 ### Fixed — a hired agent can use the box's logins: its lease is really held, and it waits out a status check instead of being refused (DIVE-4927), browser 1.10.4
