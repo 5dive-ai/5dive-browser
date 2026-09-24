@@ -1,7 +1,7 @@
 {
   "name": "browser",
   "version": "1.11.0",
-  "description": "A real browser for your agents: browse and act on any website, with nothing connected. Log into a site once by hand where it must be you (several accounts per site). Paying, posting, sending and deleting wait for your yes; a security challenge always stops and asks you.",
+  "description": "Browse and act on any website with nothing connected; where it must be you, persistent human-authenticated sessions you log into once by hand (several accounts per site). Paying, posting, sending and deleting wait for your yes. Never solves a security challenge; it stops and asks you.",
   "author": {
     "name": "5dive",
     "email": "support@5dive.com",

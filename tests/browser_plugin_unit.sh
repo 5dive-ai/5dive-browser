@@ -5145,8 +5145,10 @@ tc 'T31h ...and names the ask' 'sudo 5dive browser approve' "$ERR"
 printf 'Star' > "$DPWLABEL"; DREC_LINES=$(wc -l < "$DREC")
 dwarm "$BROWSER" act warmact.test --steps='[{"op":"click","selector":"#star"}]' --out="$TMP/act31h2" --expect='feed'
 t  'T31h (control) a harmless click with NO url continues on the held page and verifies' 0 "$RC"
-t  'T31h ...the click reached the page and no goto did' '1 0' \
-   "$(tail -n +$((DREC_LINES+1)) "$DREC" | jq -rs '[([.[]|select(.call=="click")]|length), ([.[]|select(.call=="goto")]|length)]|join(" ")')"
+# The login probe opens its OWN tab (kind "extra") and may navigate there; the
+# held page is kind "first", and that is the one that must not be reloaded.
+t  'T31h ...the click reached the held page, and the held page was not reloaded' '1 0' \
+   "$(tail -n +$((DREC_LINES+1)) "$DREC" | jq -rs '[([.[]|select(.call=="click")]|length), ([.[]|select(.call=="goto" and .kind=="first")]|length)]|join(" ")')"
 t  'T31h ...and the re-read came back over the socket' 'yes' \
    "$([[ -s "$TMP/act31h2/page.html" ]] && grep -q feed "$TMP/act31h2/page.html" && echo yes || echo no)"
 env PATH="$SPATH" "$BROWSER" serve warmact.test --stop >/dev/null 2>&1
