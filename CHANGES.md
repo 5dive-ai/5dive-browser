@@ -8,6 +8,29 @@ that file stays where it is.
 
 ## Released
 
+### Fixed — a hired agent can use the box's logins: its lease is really held, and it waits out a status check instead of being refused (DIVE-4927), browser 1.10.4
+
+Marcus on exact-swallow, 2026-09-24: a second seat's brokered `read` and `run` against the box's
+github.com login were refused with *"whoever sent this did not hold [the lease]"*, while `lease
+--status` read **free**. There were two defects.
+
+**The brokered lease was dead on arrival.** A brokered seat cannot write inside the owner's 0700
+profile, so the daemon spawns `_broker-lease` as the owner to take the lease for it. That child
+became the lease's anchor pid, and it exits as soon as it prints the token. Even with a live anchor,
+the owner's `kill -0` on another seat's process is EPERM, which read as "no such process". The
+caller now sends its own pid as `anchor`, and the daemon accepts it only if `/proc` says it belongs
+to the SO_PEERCRED uid (a foreign pid gets exit 77 and nothing is written). Holder liveness now reads
+`/proc` instead of trusting `kill -0`.
+
+**The daemon refused any request that overlapped another.** `status` probes run through the daemon
+without a lease by design, so a leased caller that landed inside one was refused and blamed for it.
+A request now waits a bounded time (`FIVEDIVE_BROWSER_BUSY_WAIT_MS`, default 60s). Past that, the
+refusal names the op in flight, its seat and its age. Acting ops still re-read the lease before
+every step.
+
+**Reaching a box:** a site whose daemon is already running keeps the old code until that site's
+`serve` restarts.
+
 ### Fixed — an admin agent can start the box login's browser itself, instead of handing a human a shell command (DIVE-4813), browser 1.10.3
 
 lodar, on wavy-mesa 2026-09-22: an admin-tier agent asked to open Telegram Web — a site **this box
