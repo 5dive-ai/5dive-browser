@@ -10,6 +10,45 @@ that file stays where it is.
 
 ## Released
 
+### Added — the browser acts, on any website, with nothing connected (DIVE-4943), browser 1.11.0
+
+lodar, 2026-09-24: *"all examples are read only — i want our browser show that agents can act"*
+and *"can our agent just use browser even if Connected sites: 0?"*. Before this, no agent could
+click or type anywhere (every shipped adapter had `actions: {}`), a box with zero connected
+sites could not use the browser at all, and 10 of the 13 sites the dashboard offers connected but
+could not be read.
+
+- **`act <url> --steps=<json>`.** Click, fill, select and press on refs from `snapshot
+  --interactive`, in one tab under one lease, through the same executors and step vocabulary as
+  `run`. `--expect=<regex>` grades the page as the steps left it (re-read without reloading);
+  `page.png`, `page.html` and `after.json` land in the artifact directory. With a served browser
+  and no URL, `act` continues on the page it is holding. `upload` is not an act step.
+- **A URL in place of `<site>`, and a public profile.** Every page verb (`read links shot snapshot
+  tree act`) takes a URL and picks the profile: the host's one login, or `_public` (a per-seat
+  profile with nothing logged in and no login probe) when there is none. `ls`, `served`,
+  `status` and `probe-all` never list `_public`, so the dashboard's Connected sites stays logins.
+- **A generic sign-in check for sites with no adapter.** A page verb's gate no longer refuses every
+  no-adapter site as UNKNOWN. It refuses a page that is visibly a sign-in (a password field, a form
+  posting to a login/session/auth path, a sign-in URL after redirects) or a challenge, and
+  otherwise proceeds, saying every time that no adapter confirmed the login. `status` still says
+  UNKNOWN for those sites; only the gate in front of a render reads the generic check.
+- **Several accounts per site.** A profile is `<site>_<label>` (`github.com_work`). The adapter,
+  probe URL and host scope key on the site; the lease and directory on the whole name. A URL
+  with two logins for its host is refused, naming both, never guessed.
+- **Paying, posting, sending and deleting wait for the owner.** The executor reads the live
+  element's label before each click and each Enter (Ctrl/Cmd+Enter is always a send) and stops
+  in front of one, exit 73, with the ask, a screenshot and an approval id. `sudo 5dive browser
+  approve <id>` (root, i.e. the owner's surfaces) grants exactly those steps, once, for 30
+  minutes; `--approved=<id>` spends it. Enforced in both step loops (the one-shot driver and the
+  session daemon) from one shared function in `lib/aria.cjs`. It catches the literal buttons; a
+  purchase behind a button labelled "Continue" is not caught, and the docs say so.
+
+Tests: T31a–h (zero-site act and read, generic check, two accounts, the owner's four in both
+executors), each with its mutant: no URL route → the zero-site box cannot act; no generic check →
+the live no-adapter login is refused again; the executor's guard removed → the order is placed.
+T2c7/8 and T15b were changed on purpose: `approve` joins root's verbs, and a no-adapter page with
+no sign-in form now renders.
+
 ### Added — `browser capture <site>`: both halves of a login check, on disk, in one command (DIVE-4929), browser 1.10.5
 
 `5dive browser capture <site> [--url=<probe url>] [--out=<dir>]` saves the probe page twice signed
