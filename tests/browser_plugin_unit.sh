@@ -3365,7 +3365,10 @@ const rec = (o) => fs.appendFileSync(process.env.PWREC, JSON.stringify(o) + '\n'
 let markWalks = 0;   // DIVE-4674, see the driver stub
 const mkpage = (kind) => ({
   setDefaultTimeout: (t) => rec({ call: 'setDefaultTimeout', t, kind }),
-  goto: async (url) => rec({ call: 'goto', url, kind }),
+  // DPWGOTO_MS: a page that takes real time to load, so two requests can
+  // overlap in the daemon (DIVE-4927, T27m). Unset, a goto is instant as before.
+  goto: async (url) => { rec({ call: 'goto', url, kind });
+    if (process.env.DPWGOTO_MS) await new Promise((r) => setTimeout(r, Number(process.env.DPWGOTO_MS))); },
   content: async () => { rec({ call: 'content', kind }); return fs.readFileSync(process.env.DPWDOM, 'utf8'); },
   fill: async (sel, val) => {
     rec({ call: 'fill', sel, val, kind });
@@ -3649,8 +3652,10 @@ tc 'T25i ...and it was ASKED to go before it was killed' 'shutdown' \
    "$(sed -n '/^cmd_serve/,/^}/p' "$BROWSER")"
 tc 'T25i ...the profile is still reported as the durable half' 'profile is untouched' "$OUT"
 
-# --- T25j a second caller mid-request is refused, not queued ------------------
-tc 'T25j a busy session refuses rather than queueing' 'did not hold it' \
+# --- T25j a second caller mid-request waits a BOUNDED time, then is refused ----
+# DIVE-4927 replaced the on-the-spot refusal with a bounded wait; the behaviour
+# is graded in T27m. What stays here is the refusal's shape once the bound runs out.
+tc 'T25j a busy session still refuses once the wait is spent' 'still busy with' \
    "$(cat "$DAEMONBIN")"
 tc 'T25j ...and says nothing ran, so no artifact is re-read as evidence' 'Nothing ran' \
    "$(cat "$DAEMONBIN")"
@@ -4206,6 +4211,70 @@ t  'T27k (control) the OWNER still gets the cheap path-writing shape' 'false' \
         FIVEDIVE_BROWSER_SEAT="$BOXSEAT" FIVEDIVE_BROWSER_SESSION_DAEMON="$TMP/daemon-recorder" \
         "$BROWSER" snapshot box.test https://box.test/feed --out="$TMP/ownersnap" >/dev/null 2>&1; \
       jq -rs '[.[]|select(.op=="snapshot")]|last|.inline' "$REQREC" 2>/dev/null)"
+bstop >/dev/null 2>&1
+
+# --- T27m DIVE-4927: a brokered lease is HELD, and a leased caller is not refused
+#
+# THE DEFECT, measured on exact-swallow 2026-09-24: a second seat's brokered
+# `read` and `run` against the box's github.com login were refused with "whoever
+# sent this did not hold [the lease]", while `lease --status` read FREE. Two
+# faults, one arm each, and a control for each:
+#   the lease was anchored to the `_broker-lease` child the daemon spawns, which
+#   exits at once — so it was dead on arrival, and `kill -0` from the owner on a
+#   caller's pid is EPERM anyway, which read as dead too;
+#   the daemon refused ANY request that arrived while another ran, including a
+#   leased caller's request landing inside an unleased `status` probe.
+bserve >/dev/null 2>&1
+sleep 60 & ANCHOR_PID=$!
+TOK="$(env PATH="$SPATH" "$DAEMONBIN" call "$BSOCK" \
+  <<<"{\"op\":\"lease\",\"act\":\"acquire\",\"purpose\":\"t27m\",\"anchor\":$ANCHOR_PID}" 2>/dev/null)"
+t  'T27m a brokered caller takes the lease' 'yes' "$([[ -n "$TOK" ]] && echo yes || echo no)"
+run env PATH="$SPATH" FIVEDIVE_BROWSER_SEAT="$BOXSEAT" "$BROWSER" lease box.test --status
+tc 'T27m ...and the OWNER sees it held, while the caller lives' 'busy: held by' "$OUT"
+tc 'T27m ...naming the seat that asked' "on behalf of $(id -un)" "$OUT"
+t  'T27m ...anchored to the caller process, not the broker child that wrote it' "$ANCHOR_PID" \
+   "$(grep '^holder_pid=' "$BDIR/.5dive-lease/meta" 2>/dev/null | cut -d= -f2)"
+kill "$ANCHOR_PID" 2>/dev/null; wait "$ANCHOR_PID" 2>/dev/null
+run env PATH="$SPATH" FIVEDIVE_BROWSER_SEAT="$BOXSEAT" "$BROWSER" lease box.test --status
+tc 'T27m (control) ...and free again once the caller is gone, with nobody releasing it' 'free' "$OUT"
+rm -rf "$BDIR/.5dive-lease"
+# The anchor is the KERNEL's to vouch for: a pid of another uid is refused.
+if [[ "$(id -u)" != 0 ]]; then
+  run env PATH="$SPATH" "$DAEMONBIN" call "$BSOCK" <<<'{"op":"lease","act":"acquire","purpose":"t27m","anchor":1}'
+  t  'T27m an anchor that is not the calling seat process is refused' 77 "$RC"
+  tc 'T27m ...saying why' 'not a process of the calling seat' "$ERR"
+  t  'T27m ...and no lease was written' 'no' "$([[ -e "$BDIR/.5dive-lease/meta" ]] && echo yes || echo no)"
+else
+  printf 'NOTE: T27m foreign-anchor arm not run (as root every pid is this uid'"'"'s to vouch for).\n'
+fi
+# THE SEAT'S OWN VERB CARRIES ITS OWN PID. Recorded through the T27k wrapper.
+: > "$REQREC"
+bother env FIVEDIVE_BROWSER_SESSION_DAEMON="$TMP/daemon-recorder" "$BROWSER" run box.test publish --body=anchored
+t  'T27m a brokered run still succeeds' 0 "$RC"
+t  'T27m ...and its acquire named an anchor pid' 'yes' \
+   "$(jq -rs '[.[]|select(.op=="lease" and .act=="acquire")]|last|.anchor|type=="number"' "$REQREC" 2>/dev/null | sed 's/true/yes/;s/false/no/')"
+bstop >/dev/null 2>&1
+
+# A LEASED caller's request landing inside an UNLEASED probe waits its turn.
+bserve DPWGOTO_MS=1500 >/dev/null 2>&1
+env PATH="$SPATH" "$DAEMONBIN" call "$BSOCK" <<<'{"op":"probe","url":"https://box.test/"}' >/dev/null 2>&1 &
+PROBE_PID=$!
+sleep 0.4
+bother "$BROWSER" run box.test publish --body=queued
+t  'T27m a brokered run that lands inside a status probe is not refused' 0 "$RC"
+tc 'T27m ...it ran once the probe finished' 'verified: publish is live' "$OUT"
+tn 'T27m ...and was not told it skipped a lease it held' 'did not hold' "$ERR"
+wait "$PROBE_PID" 2>/dev/null
+bstop >/dev/null 2>&1
+# CONTROL: the wait is BOUNDED, and a refusal past it names what is in flight.
+bserve DPWGOTO_MS=1500 FIVEDIVE_BROWSER_BUSY_WAIT_MS=200 >/dev/null 2>&1
+env PATH="$SPATH" "$DAEMONBIN" call "$BSOCK" <<<'{"op":"probe","url":"https://box.test/"}' >/dev/null 2>&1 &
+PROBE_PID=$!
+sleep 0.4
+run env PATH="$SPATH" "$DAEMONBIN" call "$BSOCK" <<<'{"op":"probe","url":"https://box.test/"}'
+t  'T27m (control) past the bound the second request is refused' 70 "$RC"
+tc 'T27m (control) ...naming the op in flight' "still busy with a 'probe' request" "$ERR"
+wait "$PROBE_PID" 2>/dev/null
 bstop >/dev/null 2>&1
 
 # --- T27j the seat override grants NOTHING, which is why it can exist ---------
