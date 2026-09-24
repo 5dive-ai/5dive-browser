@@ -10,6 +10,29 @@ that file stays where it is.
 
 ## Released
 
+### Fixed — Connect opens the site, not a blank page, and the viewer's browser runs sandboxed (DIVE-4944), browser 1.10.6
+
+lodar on old-clay, 2026-09-24: *"opens about:blank instead of website and also warning 'You are
+using an unsupported command-line flag: --no-sandbox'"*. Both came from the warm session
+(DIVE-4621, 2026-09-20), and both reached every site on every box.
+
+- **The site opens.** The cold `serve` launched Chrome at the site's URL. The session daemon that
+  replaced it launched Playwright's persistent context with no URL, so the first tab was
+  `about:blank`. `serve` now hands the daemon that URL (`FIVEDIVE_BROWSER_START_URL`, the same
+  `_site_url` as before). The daemon loads it without holding `ready` and only for http(s). A
+  failure is noted in the daemon log and the session stays up.
+- **The sandbox is on.** The daemon passed `--no-sandbox`, and Playwright added a second one. That
+  put the warning bar on every viewer and ran the logged-in browser a person looks at without
+  Chrome's renderer sandbox. It now launches sandboxed, except as root (where Chrome refuses) or
+  with `FIVEDIVE_BROWSER_NO_SANDBOX=1`. If a sandboxed launch fails, it retries once without the
+  sandbox and says why, rather than losing the session. The cold path never passed the flag, so
+  this matches what `serve` ran before 09-20.
+- **Not changed:** the headless probe, shot and read launches and `driver-playwright` still pass
+  `--no-sandbox`. They show no bar; they are tracked with the any-site work (DIVE-4943).
+
+Tests: T31a–d (start URL loaded, sandbox on for non-root, one-retry fallback, a `file://` start
+URL refused). T25c now reads the step order from the run's own records.
+
 ### Added — `browser capture <site>`: both halves of a login check, on disk, in one command (DIVE-4929), browser 1.10.5
 
 `5dive browser capture <site> [--url=<probe url>] [--out=<dir>]` saves the probe page twice signed
