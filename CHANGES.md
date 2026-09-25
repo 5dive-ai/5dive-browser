@@ -10,6 +10,43 @@ that file stays where it is.
 
 ## Released
 
+### Added — reflex drafts a login check, the owner approves it, drift flags one that decayed (DIVE-4997), browser 1.17.0
+
+A site with no adapter cannot probe `authenticated`, so every page verb refused it until someone wrote
+a marker by hand. DIVE-4931 measured `5dive reflex login-marker` on a real box and let it out of
+shadow on three conditions: a signed-in render so both halves are verified, the owner sees every
+candidate and not only the pick (confidence was 0.20 to 0.61), and challenge and no-candidate
+refusals stay refusals. This release is those conditions, built into the browser for every agent.
+
+- **`5dive browser propose <site> [--url=] [--spa]`** (the login's owner; a brokered seat is
+  refused). It runs `capture`, refuses a challenge page on EITHER half and a profile that is not
+  logged in (both renders the same page), then asks `5dive reflex login-marker --json`, retrying with
+  `--spa` when the signed-out half has no candidates. The proposal and its renders are stored PENDING
+  in the seat's `.adapters-pending/` (0700). Nothing reads adapters from there. A proposal with no
+  candidate is never stored.
+- **The probe starts one on its own.** When a login has no adapter (the status the dashboard reads
+  after Connect, or a page verb's gate), a background `propose` runs (inline under `probe-all`, whose
+  systemd unit would kill a background child when it exits), at most once per
+  `FIVEDIVE_BROWSER_PROPOSE_RETRY_S` (6 hours) per site, never again for a site the owner rejected,
+  and only when `reflex status --json` says `configured:true`. The status line then says a login
+  check is waiting. `FIVEDIVE_BROWSER_AUTO_PROPOSE=0` turns it off.
+- **`sudo 5dive browser adapters pending [--json]`** shows reflex's pick AND every candidate, with its
+  counts on each half. **`adapters approve <site> [--marker=mN] [--signed-in=mN]`** takes the pick or
+  any other candidate. It is refused with no signed-in render, or on a challenge render. It re-counts
+  the chosen marker on the stored renders with the probe's own `grep -iE`, and never trusts the counts
+  the file claims. Then it writes the seat's `.adapters/<site>.json`, AS the seat and never over an
+  existing file. It never writes the package's `adapters/`. The `_comment` and `_reflex` record that
+  reflex proposed it, who approved it, when, and the counts. The renders are deleted. **`adapters
+  reject <site>`** deletes the proposal. Approve and reject are the box owner's: root, and not an
+  agent seat's sudo (DIVE-4982's rule).
+- **`5dive browser adapters drift [<site>] [--json]`** re-captures each of this seat's logins that
+  has an adapter. It flags DRIFTED any marker that stopped classifying both halves, which is the
+  case of the shipped Telegram marker that matched the static shell (DIVE-4931/4998). It writes
+  `<seat>/.5dive-drift.json` and exits 1 on a drift. `probe-all` runs it at most once per
+  `FIVEDIVE_BROWSER_DRIFT_EVERY_S` (a day) and prints a drift, never failing the timer for it.
+  `FIVEDIVE_BROWSER_DRIFT_ON_PROBE=0` turns that off.
+- Harness: `tests/browser_reflex_propose_unit.sh`, a new CI step.
+
 ### Added — the agent asks, the owner taps Connect in Telegram, no dashboard (DIVE-4992), browser 1.16.0
 
 An agent that needed the owner logged into a site had nothing it could send. The viewer link needs a
