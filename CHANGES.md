@@ -10,6 +10,43 @@ that file stays where it is.
 
 ## Released
 
+### Added — the browser waits for the page, names a loading screen, and never hangs a read (DIVE-4983), browser 1.13.0
+
+On a live web app the page an agent got was not the page it asked for. Measured on a Gmail inbox:
+
+- **Before:** `snapshot <inbox> --interactive` printed `4 addressable node(s)` and exited 0. The four
+  were the loading splash's help links and "Try reloading the page", and nothing said so. `read`
+  never came back (killed by `timeout 200`, nothing written). `act … --expect='Message sent'` ran
+  every step and printed NOT VERIFIED, while its own `page.png` showed the toast and the mail was
+  in Sent. No single command gave the refs of a loaded inbox.
+- **After:** `snapshot <inbox> --interactive --wait-for='[role=main]'` captures once the inbox is on
+  screen and lists `button/Compose`. Without `--wait-for` the splash is named: `LOADING SCREEN` on
+  stderr, `loading_screen: gmail` and `partial: true` in `page.meta.json` and `page.md`, exit
+  **76**. `read` comes back within a wall-clock cap with what had loaded, marked `partial: true`.
+  `act --expect` re-reads the page until the toast shows, and passes.
+
+What changed, and the knobs:
+
+- **`--wait-for=<target>` on `snapshot`, `read` and `act`**: a CSS selector, `ref=<role>/<name>`, or
+  `text=<words>`, bounded by `FIVEDIVE_BROWSER_STEP_TIMEOUT` (30 s). One that never appears is exit
+  76 with the capture shipped as `partial: true`. `read --wait-for` renders through the executor or
+  the warm session (`capture: playwright` / `session-daemon`). Both step loops (the cold driver and
+  the session daemon) wait through one function in `lib/aria.cjs`.
+- **Known loading screens**: one table, `LOADING_SCREENS` in `bin/browser`, one line per screen
+  (name, host, a sentence, a ceiling on interactive nodes). Gmail's splash is the first row.
+  **Exit 76** is new: the page was not ready. It is not 75, so do not log in again, and do not re-run
+  an act's steps.
+- **`read`'s wall clock**: `FIVEDIVE_BROWSER_READ_CAP_MS` (default 30000). Chrome gets `--timeout`
+  at the cap and dumps what loaded (`partial: true`). A Chrome that ignores it is killed a few
+  seconds later, and `read` exits 76 rather than hanging.
+- **`--expect`'s window**: `--expect-wait=<ms>` / `FIVEDIVE_BROWSER_EXPECT_WAIT_MS` (default 5000).
+  It is matched against the document and the visible text, toasts and `aria-live` regions included,
+  and the read that matched is the one that ships. `--expect-wait=0` is the old single read.
+- **`act` leaves the snapshot triple**: `tree.json` (`--interactive` narrows it), `page.md` and
+  `page.meta.json`, beside `page.html`, `page.png` and `after.json`.
+- A browser served before this release runs the old session daemon, which ignores `--wait-for`.
+  That is reported as not honoured (76), never as met. Restart the serve to pick up the new daemon.
+
 ### Added — a box's browser can go out through the customer's own proxy (DIVE-4951), browser 1.12.0
 
 Some sites refuse a datacenter IP ("Request blocked by network security"), and a box is one.
