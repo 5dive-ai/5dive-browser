@@ -10,7 +10,7 @@ that file stays where it is.
 
 ## Released
 
-### Added — the agent asks, the owner taps Connect in Telegram, no dashboard (DIVE-4992), browser 1.14.0
+### Added — the agent asks, the owner taps Connect in Telegram, no dashboard (DIVE-4992), browser 1.16.0
 
 An agent that needed the owner logged into a site had nothing it could send. The viewer link needs a
 bind that only the dashboard's session could register, so the agent walked the owner through
@@ -34,6 +34,71 @@ Connected sites by hand. lodar's Booking.com run on 2026-09-25 hit exactly that.
   is refused up front instead of getting a dead button. A standard-tier seat has no grant for
   `_connect` yet and is told to use the dashboard. A root-all seat could do all of this without the
   owner, as it always could.
+
+### Added — the approval ask shows the payload, the owner sets a policy per kind, and a seat cannot approve itself (DIVE-4982), browser 1.15.0
+
+- **Before:** a Gmail send stopped with 73 and the ask read `"Send (Ctrl-Enter) Send". OK?`. That
+  is the button, with U+202A/U+202C bidi marks round the shortcut, with no recipient, subject or text. The only way to say yes
+  was `sudo 5dive browser approve <id>`, which an owner on Telegram cannot run. An agent seat ran it
+  on its own ask and was granted (`approved_by: agent-…`), because a seat's `sudo 5dive` is root.
+- **After:** the ask reads `I am about to send a message on <site>: to ann@…, bob@… · subject "Q3
+  numbers" · "Hi both, figures attached". OK?`. When the 5dive CLI has `owner-ask`, the ask is
+  handed to it and reaches the owner with Approve and Decline. A seat's `sudo … approve` is refused
+  without the owner's proof. The owner can set `send=allow` once, and sends then run and are logged.
+
+What changed, and the knobs:
+
+- **`payload`** in the request (`send`: `to`, `subject`, `first_line`; `pay`: `payee`, `amount`;
+  `publish`: `text`, 280 characters; `delete`: `item`), read from the live page before the step by
+  `lib/aria.cjs` `stepRisk`, shared by both step loops, for `act` and a guarded `run` alike. Bidi (U+200E/F, U+202A–202E, U+2066–2069)
+  and C0/C1 characters are stripped from it and from `label`. `approvals` and `approve` print it.
+  An empty payload is said to be empty, never replaced by the label.
+- **`approvals policy [--json]`** → `{"pay":"ask","publish":"ask","send":"ask","delete":"ask"}`. It
+  is JSON on `--json` and on `FIVEDIVE_JSON_MODE=1`. **`sudo 5dive browser approvals policy set
+  <kind>=ask|allow`** is the owner's only: a seat uid, or `sudo` by an `agent-*` user, is refused.
+  The store is `<profile root>/.approval-policy.json`, root `0644` (override:
+  `FIVEDIVE_BROWSER_APPROVAL_POLICY`), and a file the granting uid does not own is ignored. With
+  `allow`, the step runs and one line goes to `allowed.jsonl` in the seat's approvals directory,
+  with the payload and the act's `page.png`. A guarded `run` (`run google.com send`) reads the same
+  policy.
+- **`approve <id> [--deny] --human-proof=<nonce>`**: from `sudo` by an `agent-*` user, `approve`
+  and `--deny` need a nonce whose sha256 is the request's `nonce_hash`, trusted only in a request
+  the granting uid owns. A root login, sudo from the owner's account and the dashboard are unchanged.
+- **`5dive owner-ask browser <request-file>`** is run, fail-soft, after the ask is written
+  (`FIVEDIVE_BROWSER_CLI` names the CLI). A CLI without the verb leaves the ask as it was.
+
+### Added — `run google.com send`: a Gmail message in one command, the owner's yes, read back in Sent (DIVE-4984), browser 1.14.0
+
+- **Before:** there was no google.com adapter, so a mail meant an `act` with steps the agent wrote
+  itself. And an adapter could not have verified one: `run` re-read `verify.url` with a cookieless
+  `curl`, so `https://mail.google.com/mail/u/0/#sent` came back as the sign-in page and every Gmail
+  send ended NOT VERIFIED (rc 1), sent or not. A subject with `&`, `#` or a space broke the compose
+  URL, because `{key}` values were spliced into URLs raw.
+- **After:** `5dive browser run google.com send --to=<addr> --subject=<s> --body=<b>` opens compose
+  with To and Subject filled, types the body, and stops in front of Send with exit 73 and an
+  approval id. The owner's `sudo 5dive browser approve <id>` now shows the `--to`, `--subject` and
+  `--body` it is saying yes to. The same command with `--approved-id=<id>` sends, waits for Gmail's
+  "Message sent", and re-reads the Sent folder in the same profile:
+  `verified: send is live at https://mail.google.com/mail/u/0/#sent (re-read in this profile)`.
+
+What changed, and the knobs:
+
+- **`verify.in_session: true`** (adapter): the re-read goes through the executor that acted (the
+  warm session, or the cold driver), in the same profile, under the same lease. It is a fresh load
+  of `verify.url`, graded with `--expect`'s window (`FIVEDIVE_BROWSER_EXPECT_WAIT_MS`, 5000).
+  **`verify.wait_for`** waits for the page first. **`verify.scope`** grades only the first element
+  that matches, so for Gmail an older mail with the same subject further down Sent cannot pass. Either
+  one without `in_session` is refused at load. Without `in_session`, the verify is the curl it was.
+- **`"guard": true`** (adapter action): pay/publish/send/delete stop a `run` the way they stop an
+  `act` (exit 73). **`--approved-id=<id>`** spends the owner's yes, which is bound to that action
+  with those arguments, once, for 30 minutes. An action without `guard` behaves as before.
+- **Arguments are encoded for where they go**: into a step's or the verify's `url`, URL-encoded (both
+  step loops); into `verify.expect`, regex-escaped, so "Q3 (draft)" matches itself. `fill` values
+  are typed as given.
+- **Not shipped: the login check.** google.com's signed-out page was not measured, so the adapter has
+  no `probe`. Until one is added, `status google.com` reads UNKNOWN and `run google.com send` refuses
+  with 75 before a step. Measure it with `5dive browser capture google.com`, draft the marker with
+  `5dive reflex login-marker`, and put the `probe` in the seat's `.adapters/google.com.json`.
 
 ### Added — the browser waits for the page, names a loading screen, and never hangs a read (DIVE-4983), browser 1.13.0
 
