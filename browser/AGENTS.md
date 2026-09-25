@@ -141,10 +141,12 @@ command only says the steps ran — look at the `page.png` it writes before you 
 worked. `act` also writes `tree.json` and `page.md` of the page it left, so you do not need a
 second `snapshot` to read the refs there.
 
-**Paying, posting, sending and deleting are the owner's call.** `act` stops in front of any
-such button (read off the live page, whatever selector you used; Ctrl/Cmd+Enter counts as
-send) and exits **73** with the ask and a screenshot. Relay the ask to the owner with the
-screenshot. Only on their explicit yes is it approved (`sudo 5dive browser approve <id>`, which
+**Paying, posting, sending and deleting follow the owner's policy.** The default is yolo
+(DIVE-5006): `act` runs them, says `ALLOWED (default yolo)`, and logs each one, with what it sent
+and a screenshot, for the owner. Under the owner's `careful`
+(`sudo 5dive browser approvals policy set careful`, theirs to set, never yours), `act` stops in
+front of any such button (read off the live page, whatever selector you used; Ctrl/Cmd+Enter
+counts as send) and exits **73** with the ask and a screenshot. Relay the ask to the owner with the screenshot. Only on their explicit yes is it approved (`sudo 5dive browser approve <id>`, which
 the owner or their dashboard runs); then re-run the SAME act with `--approved=<id>`. A yes
 covers exactly those steps, once, for 30 minutes. Do not rephrase the steps to get around the
 stop — a button renamed is still an order placed.
@@ -155,8 +157,9 @@ stop — a button renamed is still an order placed.
 5dive browser run google.com send --to=<addr> --subject='<subject>' --body='<text>'
 ```
 
-One command. It opens compose with To and Subject filled, types the body, and stops in front of
-Send with exit **73** and an ask, as `act` does. Relay it: the owner's `approve` shows the `--to`,
+One command. It opens compose with To and Subject filled, types the body, and sends (the default,
+yolo, logged). Under `careful` it stops in front of Send with exit **73** and an ask, as `act`
+does. Relay it: the owner's `approve` shows the `--to`,
 `--subject` and `--body` they are saying yes to. On their yes, re-run the SAME command with the
 SAME arguments plus `--approved-id=<id>` — a different subject is a different ask. It then sends
 and reads the Sent folder back in the same login (`verify.in_session`); only
@@ -169,9 +172,9 @@ The ask shows what the step will act on (recipients, subject and first line of a
 amount; the post's text; the item deleted). Relay THAT to the owner, not the button's name. If
 it says the page showed none of it, say so and send the screenshot. **Never approve an ask
 yourself:** `sudo 5dive browser approve` from your seat is refused, and trying to get around that
-is exactly what it exists to stop. The owner may have set a standing answer per kind
-(`5dive browser approvals policy` shows it). A kind set to `allow` runs without stopping, and it
-is still logged for them to read.
+is exactly what it exists to stop. `5dive browser approvals policy` shows the owner's standing
+answer per kind and its `mode` (`yolo`, `careful` or `custom`). A kind set to `allow` (all four
+under `yolo`, the default) runs without stopping, and it is still logged for them to read.
 
 ## Working the page: ONE snapshot per decision
 

@@ -25,6 +25,7 @@ than a detail.
 5dive browser snapshot <url> --wait-for='[role=main]'   # capture when the page shows it;
                                                   # also on read and act (exit 76: not ready)
 sudo 5dive browser approve <id> [--deny]          # the owner's yes to a pay/post/send/delete
+sudo 5dive browser approvals policy set careful   # the owner: all four stop and ask (default: yolo)
 sudo 5dive browser approvals policy set send=allow   # the owner's standing answer per kind
 ```
 
@@ -38,13 +39,15 @@ connected site); a refusal naming the accounts when there are several (`github.c
 
 `act` runs agent-written steps in the fixed vocabulary (`goto fill click wait_for select press`)
 through the same executors, lease and login gate as `run`, and grades `--expect` against the page
-as the steps left it. **Paying, publishing, sending and deleting stop before the step** (exit 73):
-the executor reads the live element's label (`lib/aria.cjs` `stepRisk`, shared by both step loops),
-records the ask with a screenshot, and waits for `sudo 5dive browser approve <id>`, a root-owned
-grant bound to the exact steps, good once for 30 minutes. It catches the literal buttons, not
-intent: an order behind a button labelled "Continue" is not caught.
+as the steps left it. **Paying, publishing, sending and deleting run and are logged by default
+(yolo, DIVE-5006); under the owner's `careful` they stop before the step** (exit 73): the executor
+reads the live element's label (`lib/aria.cjs` `stepRisk`, shared by both step loops), and a kind
+the owner's policy sets to `ask` records the ask with a screenshot and waits for
+`sudo 5dive browser approve <id>`, a root-owned grant bound to the exact steps, good once for 30
+minutes. It catches the literal buttons, not intent: an order behind a button labelled "Continue"
+is not caught.
 
-`run` stops the same way where the adapter's action says **`"guard": true`** (DIVE-4984): a
+`run` reads the same policy where the adapter's action says **`"guard": true`** (DIVE-4984): a
 recipe is a reviewed file, but when its arguments choose the recipient and the words — a mail —
 sending is still the owner's call. The ask records the `--key=value` arguments and `approve` shows
 them; the yes is bound to that action with those arguments, and is spent with
@@ -60,13 +63,19 @@ A page that shows none of it gets an ask that says so; the button label is never
 a payload.
 
 **The owner's policy per kind.** `5dive browser approvals policy [--json]` prints
-`{"pay":"ask","publish":"ask","send":"ask","delete":"ask"}` (also as JSON when
-`FIVEDIVE_JSON_MODE=1`, which is how the 5dive CLI passes `--json` on). The owner changes it
-with `sudo 5dive browser approvals policy set <kind>=ask|allow`. The file lives at
-`/var/lib/5dive/browser-profiles/.approval-policy.json`, root-owned `0644`: every seat reads it,
-none writes it, and one the granting uid does not own is ignored. With `allow`, that kind's step
-runs without asking and is logged, with the payload and the act's screenshot, to
-`allowed.jsonl` in the seat's approvals directory.
+`{"pay":"allow","publish":"allow","send":"allow","delete":"allow","mode":"yolo"}` on a box with no
+policy file (also as JSON when `FIVEDIVE_JSON_MODE=1`, which is how the 5dive CLI passes `--json`
+on). **The default is `allow` for all four (DIVE-5006):** the step runs and is logged, with the
+payload and the act's screenshot, to `allowed.jsonl` in the seat's approvals directory
+(`allowed_by: "default"`, and stderr says `ALLOWED (default yolo)`). The owner changes it with a
+preset, `sudo 5dive browser approvals policy set yolo` (all four allow) or
+`sudo 5dive browser approvals policy set careful` (all four ask: the exit-73 stop), and per kind
+with `set <kind>=ask|allow`, on top of either. `mode` is computed from the four: `yolo`, `careful`,
+or `custom`. The file lives at `/var/lib/5dive/browser-profiles/.approval-policy.json`, root-owned
+`0644`: every seat reads it, none writes it (a seat's `set` is refused, 77), and one the granting
+uid does not own is ignored, so the default applies and a seat can neither loosen nor tighten
+it. A kind the owner set to `allow` is logged as `allowed_by: "policy"`. A file written by an
+earlier version keeps what it says.
 
 **A seat cannot answer an ask.** An agent seat's `sudo 5dive …` grant is root, and measured, a
 seat approved its own ask that way. `approve` and `approve --deny` from `sudo` by an `agent-*`
@@ -567,13 +576,14 @@ site's owner wants are theirs to write in their seat's `.adapters/`. The one is 
 
 ```bash
 5dive browser run google.com send --to=<addr> --subject='<subject>' --body='<text>'
-# -> exit 73 and an approval id; the owner: sudo 5dive browser approve <id>
+# -> by default (yolo): ALLOWED (default yolo): send …, then verified: send is live at …#sent
+# -> under careful: exit 73 and an approval id; the owner: sudo 5dive browser approve <id>, then
 5dive browser run google.com send --to=<addr> --subject='<subject>' --body='<text>' --approved-id=<id>
 # -> verified: send is live at https://mail.google.com/mail/u/0/#sent (re-read in this profile)
 ```
 
 It opens full-screen compose with To and Subject in the URL (Gmail drops a `body=` parameter, so
-the body is typed), stops in front of Send until the owner's yes (`guard: true`), waits for
+the body is typed), under `careful` stops in front of Send until the owner's yes (`guard: true`), waits for
 Gmail's "Message sent" before letting the browser go, and is verified by the Sent folder, read in
 the same profile, on its newest row — never by the toast.
 

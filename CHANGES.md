@@ -10,6 +10,36 @@ that file stays where it is.
 
 ## Released
 
+### Changed — approvals default to yolo: pay, publish, send and delete run and are logged; presets `yolo`/`careful`, a `mode` field (DIVE-5006), browser 1.18.0
+
+**Before:** every pay, publish, send and delete step stopped in front of the button with exit 73
+until the owner said yes. Measured on a box at 1.17.0: an owner with no dashboard and no shell
+could not approve, could not relax the policy, and every send stopped dead.
+
+**Now:** on a box with no policy file, all four run. Each step is still written down in the seat's
+`allowed.jsonl` with its payload and the act's screenshot, as `allowed_by: "default"`, and the
+agent's stderr says `ALLOWED (default yolo): <kind>, step N, …`. `run google.com send` sends and is
+verified in Sent without an approval id.
+
+- **`sudo 5dive browser approvals policy set careful`** puts the stop back for all four (exit 73,
+  the ask, the owner's `approve`, exactly as before). **`set yolo`** makes all four allow again.
+  **`set <kind>=ask|allow`** still changes one kind, on top of either preset.
+- **`5dive browser approvals policy --json`** (and `FIVEDIVE_JSON_MODE=1`) adds `"mode"`: `yolo`
+  (all four allow), `careful` (all four ask) or `custom`, computed from the four, never stored. The
+  text form prints a `mode` line.
+- Only the owner changes it: a seat's `set yolo`, `set careful` or `set <kind>=…` is refused (77)
+  and writes nothing. A policy file the granting uid does not own is ignored and the default
+  applies, so a seat can neither loosen nor tighten it. A kind the file leaves out, or gives any
+  value other than `ask` or `allow`, is the default too.
+- A policy file written by 1.17.0 keeps what it says: an owner who ran `set send=allow` there has a
+  file with the other three at `ask`, and keeps them until they `set yolo`.
+- A preset or `<kind>=…` without `set` is now a usage error (64) rather than a silent read.
+- The step loops (`driver-playwright`, `session-daemon`) are unchanged: both already run whatever
+  `allow_kinds` the front door sends, and the front door now sends all four by default.
+- Harness: T37 (no-file default for `act` cold and warm and for `run google.com send`, `careful`,
+  `mode`, the seat refusals, and a mutant that restores the `ask` default); the arms that grade
+  the stop (T32e, T32h, T35, T36) now run under `careful`.
+
 ### Added — reflex drafts a login check, the owner approves it, drift flags one that decayed (DIVE-4997), browser 1.17.0
 
 A site with no adapter cannot probe `authenticated`, so every page verb refused it until someone wrote
