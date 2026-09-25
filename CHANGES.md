@@ -10,6 +10,31 @@ that file stays where it is.
 
 ## Released
 
+### Added — the agent asks, the owner taps Connect in Telegram, no dashboard (DIVE-4992), browser 1.16.0
+
+An agent that needed the owner logged into a site had nothing it could send. The viewer link needs a
+bind that only the dashboard's session could register, so the agent walked the owner through
+Connected sites by hand. lodar's Booking.com run on 2026-09-25 hit exactly that.
+
+- **`5dive browser connect-request <site> --reason=<why>`**: the agent's verb. It hands the request
+  to root, which mints a one-time code, keeps only its sha256, and sends the seat's paired owner a
+  Telegram message with a **Connect <site>** button carrying the code. The seat never holds the code
+  before the tap. A request binds nothing.
+- **`_connect` (root, `sudo -n 5dive browser _connect`, parameters NUL-separated on stdin)**: `tap`
+  re-checks the code, that the tap came through the seat whose bot carried it, and that the tapper
+  is that seat's paired owner. Then it does what the dashboard's Connect does, on the box: serve
+  (auth first when there is no profile), a viewer with a fresh 128-bit bind, and the bind registered
+  with shelld over loopback with the connectord token. It prints the one-time URL for the Telegram
+  plugin to send as code, plus a Done code. `done` revokes the view, stops the browser, and probes.
+  A refused tap (wrong person, wrong seat, made-up code) does not burn the owner's button. Every
+  code is one-shot.
+- The control plane is not involved, so zero standing access (DIVE-462) is untouched. The
+  automation token is not used.
+- **Limits of this release:** only Claude Code's Telegram bridge relays the tap. Any other runtime
+  is refused up front instead of getting a dead button. A standard-tier seat has no grant for
+  `_connect` yet and is told to use the dashboard. A root-all seat could do all of this without the
+  owner, as it always could.
+
 ### Added — the approval ask shows the payload, the owner sets a policy per kind, and a seat cannot approve itself (DIVE-4982), browser 1.15.0
 
 - **Before:** a Gmail send stopped with 73 and the ask read `"Send (Ctrl-Enter) Send". OK?`. That
