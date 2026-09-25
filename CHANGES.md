@@ -10,6 +10,39 @@ that file stays where it is.
 
 ## Released
 
+### Added — `run google.com send`: a Gmail message in one command, the owner's yes, read back in Sent (DIVE-4984), browser 1.14.0
+
+- **Before:** there was no google.com adapter, so a mail meant an `act` with steps the agent wrote
+  itself. And an adapter could not have verified one: `run` re-read `verify.url` with a cookieless
+  `curl`, so `https://mail.google.com/mail/u/0/#sent` came back as the sign-in page and every Gmail
+  send ended NOT VERIFIED (rc 1), sent or not. A subject with `&`, `#` or a space broke the compose
+  URL, because `{key}` values were spliced into URLs raw.
+- **After:** `5dive browser run google.com send --to=<addr> --subject=<s> --body=<b>` opens compose
+  with To and Subject filled, types the body, and stops in front of Send with exit 73 and an
+  approval id. The owner's `sudo 5dive browser approve <id>` now shows the `--to`, `--subject` and
+  `--body` it is saying yes to. The same command with `--approved-id=<id>` sends, waits for Gmail's
+  "Message sent", and re-reads the Sent folder in the same profile:
+  `verified: send is live at https://mail.google.com/mail/u/0/#sent (re-read in this profile)`.
+
+What changed, and the knobs:
+
+- **`verify.in_session: true`** (adapter): the re-read goes through the executor that acted (the
+  warm session, or the cold driver), in the same profile, under the same lease. It is a fresh load
+  of `verify.url`, graded with `--expect`'s window (`FIVEDIVE_BROWSER_EXPECT_WAIT_MS`, 5000).
+  **`verify.wait_for`** waits for the page first. **`verify.scope`** grades only the first element
+  that matches, so for Gmail an older mail with the same subject further down Sent cannot pass. Either
+  one without `in_session` is refused at load. Without `in_session`, the verify is the curl it was.
+- **`"guard": true`** (adapter action): pay/publish/send/delete stop a `run` the way they stop an
+  `act` (exit 73). **`--approved-id=<id>`** spends the owner's yes, which is bound to that action
+  with those arguments, once, for 30 minutes. An action without `guard` behaves as before.
+- **Arguments are encoded for where they go**: into a step's or the verify's `url`, URL-encoded (both
+  step loops); into `verify.expect`, regex-escaped, so "Q3 (draft)" matches itself. `fill` values
+  are typed as given.
+- **Not shipped: the login check.** google.com's signed-out page was not measured, so the adapter has
+  no `probe`. Until one is added, `status google.com` reads UNKNOWN and `run google.com send` refuses
+  with 75 before a step. Measure it with `5dive browser capture google.com`, draft the marker with
+  `5dive reflex login-marker`, and put the `probe` in the seat's `.adapters/google.com.json`.
+
 ### Added — the browser waits for the page, names a loading screen, and never hangs a read (DIVE-4983), browser 1.13.0
 
 On a live web app the page an agent got was not the page it asked for. Measured on a Gmail inbox:
