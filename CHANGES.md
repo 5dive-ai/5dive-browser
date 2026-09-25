@@ -10,6 +10,27 @@ that file stays where it is.
 
 ## Released
 
+### Added — a box's browser can go out through the customer's own proxy (DIVE-4951), browser 1.12.0
+
+Some sites refuse a datacenter IP ("Request blocked by network security"), and a box is one.
+Until now there was nowhere to plug a fix in: neither Playwright launch passed a proxy, and
+Chrome's `--proxy-server` cannot carry the username and password every paid proxy uses.
+
+- **`proxy set <scheme://user:pass@host:port>` / `proxy show` / `proxy clear`.** Per seat, one
+  line, 0600, in the seat's own 0700 profile root. `show` masks the password; the value is in no
+  log line, no refusal and no `status`. `proxy set -` reads it from stdin. SOCKS with a login is
+  refused up front (Chrome under Playwright cannot authenticate to SOCKS).
+- **Both launches use it** — the session daemon and the cold driver pass Playwright's
+  `proxy: {server, username, password}` through one shared parser (`lib/proxy.cjs`). With
+  nothing set there is no `proxy` key, so the launch is byte-for-byte what it was. A setting that
+  is there and cannot be read or parsed refuses the launch rather than going out direct.
+- **A running served browser is not restarted.** `set`/`clear` name the served browsers still on
+  the old route and the command that moves one; a seat that is not the box seat is told that box
+  logins follow the box seat's setting.
+- **Still direct:** plain-Chrome launches (the scheduled login check on an unserved site, a cold
+  `read`/`shot`/`capture`, `auth` with a display). README "Limits: sites that block datacenter
+  IPs" says so.
+
 ### Added — the browser acts, on any website, with nothing connected (DIVE-4943), browser 1.11.0
 
 lodar, 2026-09-24: *"all examples are read only — i want our browser show that agents can act"*
