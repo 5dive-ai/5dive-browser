@@ -6452,7 +6452,8 @@ done
 # ERE `2?` is an optional 2 with no literal `?` after it, so it missed the link
 # it was counted in and `status` read authenticated on the logged-out render.
 # T39b and T39c went red on exactly that; the shipped marker escapes it.
-#   T39a  the file parses and names its site and the page it probes
+#   T39a  the file parses and names its site and the page it probes, and the
+#         version moved, or no box that already has the plugin fetches it
 #   T39b  the marker, read as the probe reads it (grep -iE), matches the logged-out
 #         header link and not the logged-in header
 #   T39c  `status booking.com` through the real probe and the real adapter search
@@ -6472,6 +6473,11 @@ rm -f "$FIVEDIVE_BROWSER_PROFILE_ROOT/$SEAT/.adapters/booking.com.json"
 run jq -e . "$BKA";                                  t 'T39a the shipped booking.com adapter is valid JSON' 0 "$RC"
 t  'T39a it names its site' 'booking.com' "$(jq -r '.site' "$BKA")"
 t  'T39a it probes the home page, whose header carries the Sign in link' 'https://www.booking.com/' "$(jq -r '.probe.url' "$BKA")"
+# Same reason as T1i: `plugin upgrade` resolves a version-pinned path, so a box
+# holding 1.19.0 never fetches this file unless the number moves past it.
+BKV="$(jq -r .version "$ROOT/browser/.claude-plugin/plugin.json")"
+t  'T39a the manifest is past 1.19.0, the release that shipped without it' 'yes' \
+   "$([[ "$BKV" != 1.19.0 && "$(printf '%s\n' 1.19.0 "$BKV" | sort -V | tail -1)" == "$BKV" ]] && echo yes || echo no)"
 
 # --- T39b the marker against both headers -------------------------------------------------
 BKMARK="$(jq -r '.probe.logged_out_when_dom_matches' "$BKA")"
