@@ -2301,9 +2301,15 @@ let markWalks = 0;   // DIVE-4674: how many times the ref layer has asked THIS p
 // Unset, every answer is the one it always was.
 let clock = 0;
 const late = () => !!process.env.PWLATE_MS && clock >= Number(process.env.PWLATE_MS);
+// A SEARCH BOX WHOSE SUGGESTIONS OPEN ON KEYSTROKES (the `type` step). PWSUGGEST
+// names the suggestion; it is on the page only once a key has gone down in the
+// box since the last goto. page.fill puts a value in with no keydown, which is
+// the measured defect; pressSequentially sends one key per character. Unset,
+// waitForSelector answers as it always did.
+let keydowns = 0;
 const page = {
   setDefaultTimeout: (t) => rec({ call: 'setDefaultTimeout', t }),
-  goto: async (url, o) => { clock = 0; rec({ call: 'goto', url }); },
+  goto: async (url, o) => { clock = 0; keydowns = 0; rec({ call: 'goto', url }); },
   fill: async (sel, val) => {
     rec({ call: 'fill', sel, val });
     // PWPREEMPT_FILE: a PERSON arrives mid-run. Writing the lease file from
@@ -2320,7 +2326,20 @@ const page = {
     rec({ call: 'click', sel });
     if (process.env.PWFAIL) throw new Error('stub: the step failed');
   },
-  waitForSelector: async (sel) => rec({ call: 'waitForSelector', sel }),
+  waitForSelector: async (sel) => {
+    rec({ call: 'waitForSelector', sel });
+    if (process.env.PWSUGGEST && sel === `text=${process.env.PWSUGGEST}` && !keydowns) {
+      throw new Error('page.waitForSelector: Timeout 30000ms exceeded.');
+    }
+  },
+  locator: (sel) => { const box = {
+    first: () => { rec({ call: 'first', sel }); return box; },
+    clear: async (o) => rec({ call: 'clear', sel, timeout: o && o.timeout }),
+    pressSequentially: async (val, o) => {
+      rec({ call: 'type', sel, val, delay: o && o.delay, timeout: o && o.timeout });
+      keydowns += [...val].length;
+    },
+  }; return box; },
   waitForTimeout: async (ms) => { clock += Number(ms) || 0; rec({ call: 'waitForTimeout', ms }); },
   // DIVE-4588. The ref layer runs its walk with page.evaluate, so the tape has
   // to carry it. PWWALK parks the answer the walk would have produced in a real
@@ -3458,13 +3477,14 @@ const rec = (o) => fs.appendFileSync(process.env.PWREC, JSON.stringify(o) + '\n'
 let markWalks = 0;   // DIVE-4674, see the driver stub
 // DIVE-4983: the driver stub's page clock, per tab, with the late state named by
 // FILES (DPWSNAP_LATE, DPWDOM_LATE) and DPWTEXT/DPWTEXT_LATE, fixed at `serve`.
-const mkpage = (kind) => { let clock = 0;
+// DPWSUGGEST: the driver stub's keystroke-driven search box (PWSUGGEST), per tab.
+const mkpage = (kind) => { let clock = 0, keydowns = 0;
   const late = () => !!process.env.DPWLATE_MS && clock >= Number(process.env.DPWLATE_MS);
   return {
   setDefaultTimeout: (t) => rec({ call: 'setDefaultTimeout', t, kind }),
   // DPWGOTO_MS: a page that takes real time to load, so two requests can
   // overlap in the daemon (DIVE-4927, T27m). Unset, a goto is instant as before.
-  goto: async (url) => { clock = 0; rec({ call: 'goto', url, kind });
+  goto: async (url) => { clock = 0; keydowns = 0; rec({ call: 'goto', url, kind });
     if (process.env.DPWGOTO_MS) await new Promise((r) => setTimeout(r, Number(process.env.DPWGOTO_MS))); },
   content: async () => { rec({ call: 'content', kind });
     return fs.readFileSync((late() && process.env.DPWDOM_LATE) || process.env.DPWDOM, 'utf8'); },
@@ -3476,7 +3496,20 @@ const mkpage = (kind) => { let clock = 0;
     }
   },
   click: async (sel) => { clock = 0; rec({ call: 'click', sel, kind }); if (process.env.PWFAIL) throw new Error('stub: the step failed'); },
-  waitForSelector: async (sel) => rec({ call: 'waitForSelector', sel, kind }),
+  waitForSelector: async (sel) => {
+    rec({ call: 'waitForSelector', sel, kind });
+    if (process.env.DPWSUGGEST && sel === `text=${process.env.DPWSUGGEST}` && !keydowns) {
+      throw new Error('page.waitForSelector: Timeout 30000ms exceeded.');
+    }
+  },
+  locator: (sel) => { const box = {
+    first: () => { rec({ call: 'first', sel, kind }); return box; },
+    clear: async (o) => rec({ call: 'clear', sel, timeout: o && o.timeout, kind }),
+    pressSequentially: async (val, o) => {
+      rec({ call: 'type', sel, val, delay: o && o.delay, timeout: o && o.timeout, kind });
+      keydowns += [...val].length;
+    },
+  }; return box; },
   waitForTimeout: async (ms) => { clock += Number(ms) || 0; rec({ call: 'waitForTimeout', ms, kind }); },
   // DIVE-4943: `act` re-reads the page the steps left, and the owner-approval
   // guard reads the live label. The daemon's env is fixed at `serve` time, so the
@@ -6249,6 +6282,159 @@ run bash "$BROWSER" --help
 tc 'T37f --help names the presets' 'approvals policy set yolo|careful' "$OUT$ERR"
 for f in browser/README.md browser/AGENTS.md browser/skills/use-browser/SKILL.md CHANGES.md; do
   tc "T37f $f names careful, the way back to the stop" 'approvals policy set careful' "$(cat "$ROOT/$f")"
+done
+
+# ============ T38 `type`: key by key, for a search box whose suggestions open on keystrokes
+#
+# Measured on a live hotel search with nothing connected, at 1.18.0: `fill` put
+# "Lisbon" in the box and Search went to the results for an empty city ("0
+# properties found"), because the suggestion list opens only on typed keys and
+# page.fill sends none; fill "Lisbo", press "n", wait_for the suggestion timed out
+# at 30 s. The stubs model that box (PWSUGGEST, DPWSUGGEST): the suggestion is on
+# the page only once a key has gone down. Each arm is the mutant:
+#   T38a  the box: `type` opens the suggestion and `fill` does not, cold and warm
+#   T38b  `type` is accepted by act (cold, on a ref too) and by an adapter step
+#   T38c  {key} in a `type` value: the argument is typed, a missing one refused
+#   T38d  delay_ms: 50 by default, the caller's, anything else refused before the
+#         browser opens; the bound grows with the text; not one of the owner's four;
+#         a line break (typed, the Enter key) refused, cold and warm
+#   T38e  MUTANT: `type` mapped to page.fill in both executors — the suggestion
+#         never opens, cold and warm
+#   T38f  documented where agents and people read it
+unset FIVEDIVE_BROWSER_DRIVER
+mkdir -p "$TMP/t38"
+SUG38='Lisbon, Portugal'
+TYPE38='[{"op":"type","selector":"#where","value":"Lisbon"},{"op":"wait_for","selector":"text=Lisbon, Portugal"}]'
+FILL38='[{"op":"fill","selector":"#where","value":"Lisbon"},{"op":"wait_for","selector":"text=Lisbon, Portugal"}]'
+POL38="$TMP/t38/policy.json"
+t38env() { env -u SUDO_USER FIVEDIVE_BROWSER_PROFILE_ROOT="$P31" FIVEDIVE_BROWSER_SESSION_ROOT="$TMP/p31/sessions" \
+               FIVEDIVE_BROWSER_APPROVAL_DIR="$TMP/t38/approvals" FIVEDIVE_BROWSER_APPROVAL_POLICY="$POL38" \
+               FIVEDIVE_BROWSER_GRANT_UID="$(id -u)" FIVEDIVE_BROWSER_RUN_SETTLE_MS=0 \
+               NODE_PATH="$PWROOT/node_modules" PWREC="$PWREC" PWWALK="$W31" PWSUGGEST="$SUG38" "$@"; }
+act38() {  # act38 <steps> [env assignments...] — cold, on the hotel search page
+  local st="$1"; shift
+  : > "$PWREC"
+  run t38env "$@" "${T38BIN:-$BROWSER}" act "https://hotels.t38.test/" --steps="$st" --out="$TMP/t38/cold"
+}
+tape38() { jq -rs "$1" "$PWREC"; }
+KEYS38='[.[]|select(.call|IN("clear","type","fill"))|if .call=="type" then "type:"+.val elif .call=="fill" then "fill:"+.val else .call end]|join(" ")'
+
+# --- T38a the box that opens on keystrokes ------------------------------------------------
+act38 "$TYPE38"
+t  'T38a `type` opens a suggestion list that opens on keystrokes: act exits 0' 0 "$RC"
+t  'T38a ...the box was cleared, then typed key by key, and nothing was filled' 'clear type:Lisbon' "$(tape38 "$KEYS38")"
+t  'T38a ...into the FIRST match, as page.fill takes it, not a strict locator that throws on two' '1' \
+   "$(tape38 '[.[]|select(.call=="first")]|length')"
+act38 "$FILL38"
+t  'T38a `fill` does not open it: the wait_for the suggestion fails (1)' 1 "$RC"
+tc 'T38a ...timed out, as it did on the live page' 'Timeout 30000ms exceeded' "$ERR"
+act38 "$FILL38" PWSUGGEST=
+t  'T38a (anchor) with no such box, the same fill + wait_for passes: the red above is the box' 0 "$RC"
+# the warm loop is the second copy of the step loop
+mkprofile warm38.test "$LIVE_DOM" >/dev/null
+dserve warm38.test DPWSUGGEST="$SUG38"
+t  'T38a (precondition) a warm session is up' 0 "$RC"
+w38() {  # w38 <site> <steps> — act on the served browser; N38 marks where its tape starts
+  N38=$(wc -l < "$DREC")
+  dwarm "$BROWSER" act "$1" "https://$1/hotels" --steps="$2" --out="$TMP/t38/warm"
+}
+wtape38() { tail -n +$((N38+1)) "$DREC" | jq -rs "$1"; }
+w38 warm38.test "$TYPE38"
+t  'T38a warm: `type` opens it too' 0 "$RC"
+t  'T38a warm: ...cleared, then typed key by key' 'clear type:Lisbon' "$(wtape38 "$KEYS38")"
+w38 warm38.test "$FILL38"
+t  'T38a warm: `fill` does not (1)' 1 "$RC"
+# T38d's warm arm, on this session: the daemon checks a `type` value as the driver does
+w38 warm38.test '[{"op":"type","selector":"#where","value":"Lisbon\nx"}]'
+t  'T38d warm: a line break in a `type` value is refused before a key goes down (69: nothing ran)' '69 0' \
+   "$RC $(wtape38 '[.[]|select(.call=="clear" or .call=="type")]|length')"
+env PATH="$SPATH" "$BROWSER" serve warm38.test --stop >/dev/null 2>&1
+
+# --- T38b accepted by act and by an adapter step ------------------------------------------
+act38 '[{"op":"type","selector":"ref=textbox/Where to?","value":"Lisbon"}]'
+t  'T38b act takes `type` on a ref, as the agent reads it off snapshot' 0 "$RC"
+t  'T38b ...typed into the element the ref resolved to, not the literal ref' 'resolved' \
+   "$(tape38 '[.[]|select(.call=="type")|.sel]|first|if . == null then "none" elif startswith("ref=") then "literal" else "resolved" end')"
+AD38="$TMP/t38/adapters"; mkdir -p "$AD38"; printf 'PUBLISHED' > "$TMP/t38/artifact.html"
+mkprofile hotels38 "$LIVE_DOM" >/dev/null
+cat > "$AD38/hotels38.json" <<JSON
+{ "site": "hotels38",
+  "probe": { "url": "https://hotels38.test/", "logged_out_when_dom_matches": "action=\"/login\"" },
+  "actions": { "search": {
+      "steps": [ {"op":"goto","url":"https://hotels38.test/"},
+                 {"op":"type","selector":"#where","value":"{city}","delay_ms":80},
+                 {"op":"wait_for","selector":"text=$SUG38"},
+                 {"op":"click","selector":"text=$SUG38"} ],
+      "verify": { "url": "file://$TMP/t38/artifact.html", "expect": "PUBLISHED" } } } }
+JSON
+run38() { : > "$PWREC"; run env FIVEDIVE_BROWSER_ADAPTER_DIR="$AD38" FIVEDIVE_BROWSER_RUN_SETTLE_MS=0 \
+            NODE_PATH="$PWROOT/node_modules" PWREC="$PWREC" PWSUGGEST="$SUG38" "$BROWSER" run hotels38 search "$@"; }
+run38 --city=Lisbon
+t  'T38b an adapter with a `type` step loads and runs: the suggestion opened and was clicked' '0 1' \
+   "$RC $(tape38 '[.[]|select(.call=="click" and .sel=="text=Lisbon, Portugal")]|length')"
+
+# --- T38c {key} in a `type` value ---------------------------------------------------------
+t  'T38c the argument is typed as a VALUE, not the placeholder' 'Lisbon' "$(tape38 '[.[]|select(.call=="type")|.val]|first')"
+run38
+t  'T38c a missing --city is refused before the browser opens (69: nothing to re-read), nothing typed' '69 0' \
+   "$RC $(tape38 '[.[]|select(.call=="launch" or .call=="type")]|length')"
+tc 'T38c ...rather than typing the literal placeholder' 'publishes literal' "$ERR"
+
+# --- T38d delay_ms, the bound, and the owner's four ---------------------------------------
+drv38() {  # drv38 <steps-json> — the plan straight to the driver, as T16d does
+  : > "$PWREC"
+  printf '{"profile":"%s","steps":%s,"args":{}}' "$FIVEDIVE_BROWSER_PROFILE_ROOT/$SEAT/hotels38" "$1" | \
+    env NODE_PATH="$PWROOT/node_modules" PWREC="$PWREC" FIVEDIVE_BROWSER_CHROME=/bin/true "$DRV" \
+      >/dev/null 2>"$TMP/t38/drv.err"; RC=$?; ERR=$(cat "$TMP/t38/drv.err")
+}
+DELAY38='[.[]|select(.call=="type")|"\(.delay) \(.timeout)"]|first'
+drv38 '[{"op":"type","selector":"#where","value":"Lisbon"}]'
+t  'T38d delay_ms defaults to 50; the bound is the step timeout plus 6 keys x 50' '0 50 30300' "$RC $(tape38 "$DELAY38")"
+drv38 '[{"op":"type","selector":"#where","value":"Lisbon","delay_ms":0}]'
+t  'T38d delay_ms 0 is a delay too' '0 0 30000' "$RC $(tape38 "$DELAY38")"
+t  'T38d the adapter'"'"'s delay_ms 80 reached the page' '80 30480' "$(run38 --city=Lisbon; tape38 "$DELAY38")"
+for bad in '"fast"' -1 1001 2.5 null; do
+  drv38 '[{"op":"goto","url":"https://x.test/"},{"op":"type","selector":"#where","value":"Lisbon","delay_ms":'"$bad"'}]'
+  t  "T38d delay_ms $bad is refused before the browser opens (70, no launch)" '70 0' \
+     "$RC $(tape38 '[.[]|select(.call=="launch")]|length')"
+done
+tc 'T38d ...saying what it takes' 'whole milliseconds between keys, 0 to 1000' "$ERR"
+# pressSequentially sends a line break as Enter, which submits the form; a `press
+# Enter` step is read by the owner's policy, a newline inside a value never would be
+drv38 '[{"op":"goto","url":"https://x.test/"},{"op":"type","selector":"#where","value":"Lisbon\n"}]'
+t  'T38d a line break in a `type` value (the Enter key) is refused before the browser opens (70, no launch)' '70 0' \
+   "$RC $(tape38 '[.[]|select(.call=="launch")]|length')"
+tc 'T38d ...saying to press Enter as its own step' 'Press Enter as its own step' "$ERR"
+run38 --city=$'Lisbon\r'
+t  'T38d ...and one that arrives in a {key} argument, nothing typed (69: nothing ran)' '69 0' \
+   "$RC $(tape38 '[.[]|select(.call=="type")]|length')"
+run t38env "$BROWSER" approvals policy set careful
+act38 "$TYPE38" PWLABEL=Send
+t  'T38d `type` is not one of the owner'"'"'s four: under careful, by a Send label, it runs unasked' '0 0' \
+   "$RC $(tape38 '[.[]|select(.call=="label")]|length')"
+
+# --- T38e MUTANT: `type` mapped to page.fill in both executors ----------------------------
+MUT38="$TMP/t38/mut"; rm -rf "$MUT38"; cp -r "$ROOT/browser" "$MUT38"
+sed -i "s|^\( *case 'type': *\)await aria\.typeKeys(.*\$|\1await page.fill(sel, s.value); break;  // MUTANT (type as fill)|" \
+  "$MUT38/bin/driver-playwright" "$MUT38/bin/session-daemon"
+t  'T38e (anchor) the mutation landed in both executors' '1 1' \
+   "$(grep -c 'MUTANT (type as fill)' "$MUT38/bin/driver-playwright") $(grep -c 'MUTANT (type as fill)' "$MUT38/bin/session-daemon")"
+T38BIN="$MUT38/bin/browser" act38 "$TYPE38"
+t  'T38e MUTANT (type as fill), cold: the suggestion never opens (1), and the box was filled' '1 fill:Lisbon' "$RC $(tape38 "$KEYS38")"
+mkprofile mut38.test "$LIVE_DOM" >/dev/null
+dserve mut38.test DPWSUGGEST="$SUG38" FIVEDIVE_BROWSER_SESSION_DAEMON="$MUT38/bin/session-daemon"
+t  'T38e (precondition) the mutant warm session is up' 0 "$RC"
+w38 mut38.test "$TYPE38"
+t  'T38e MUTANT (type as fill), warm: the suggestion never opens (1)' '1 fill:Lisbon' "$RC $(wtape38 "$KEYS38")"
+env PATH="$SPATH" "$BROWSER" serve mut38.test --stop >/dev/null 2>&1
+
+# --- T38f the words -----------------------------------------------------------------------
+run bash "$BROWSER" --help
+tc 'T38f --help names type' 'click / fill / type / select / press' "$OUT$ERR"
+for f in browser/README.md browser/AGENTS.md browser/skills/use-browser/SKILL.md CHANGES.md; do
+  tc "T38f $f says when to type and when to fill" \
+     'Use `type` for search boxes and autocompletes that react to keystrokes, and `fill` for plain inputs' \
+     "$(tr -s ' \n' '  ' < "$ROOT/$f")"
 done
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

@@ -112,6 +112,7 @@ const stepFailure = () => (stepsRun ? E_FAILED : E_NOTHING_RAN);
 const STEPS = {
   goto:     ['url'],
   fill:     ['selector', 'value'],
+  type:     ['selector', 'value'],
   click:    ['selector'],
   wait_for: ['selector'],
   select:   ['selector', 'value'],
@@ -471,6 +472,14 @@ async function main() {
       out[field] = field === 'selector' || plan.literal ? s[field]
         : interp(s[field], args, `step ${i + 1} (${s.op})`, field === 'url' ? encodeURIComponent : null);
     }
+    // `type`'s one optional knob, a number and never an argument, and its value with
+    // the arguments in: checked here with the rest, so a bad one refuses before the
+    // browser opens (lib/aria.cjs).
+    if (s.op === 'type') {
+      const why = aria.typeRefusal(s.delay_ms, out.value);
+      if (why) die(E_NOTHING_RAN, `step ${i + 1} (type) ${why}`);
+      out.delay_ms = aria.typeDelay(s.delay_ms);
+    }
     return out;
   });
 
@@ -529,6 +538,7 @@ async function main() {
           if (RUN_SETTLE_MS > 0) await page.waitForTimeout(RUN_SETTLE_MS);
           break;
         case 'fill':     await page.fill(sel, s.value); break;
+        case 'type':     await aria.typeKeys(page, sel, s.value, s.delay_ms, { timeoutMs: STEP_TIMEOUT }); break;
         case 'click':    await page.click(sel); break;
         case 'wait_for': await page.waitForSelector(sel); break;
         case 'select':   await page.selectOption(sel, s.value); break;

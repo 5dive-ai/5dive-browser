@@ -133,13 +133,25 @@ name it: `5dive browser act github.com_work <url> --steps=…`.
                                   {"op":"click","selector":"ref=button/Save draft"}]' --expect='Draft saved'
 ```
 
-Steps are `goto fill click wait_for select press`, run in order, in one tab. Without a URL,
-`act` continues on the page a served browser is holding. `--expect=<regex>` is graded against
-the page as the steps left it, re-read for up to 5 s (`--expect-wait=<ms>`) so a toast that lands
-after the click counts, and it matches the text on screen as well as the document. Without it the
-command only says the steps ran — look at the `page.png` it writes before you tell anyone it
-worked. `act` also writes `tree.json` and `page.md` of the page it left, so you do not need a
-second `snapshot` to read the refs there.
+Steps are `goto fill type click wait_for select press`, run in order, in one tab. Use `type`
+for search boxes and autocompletes that react to keystrokes, and `fill` for plain inputs: `fill`
+sets the value in one event with no key presses, so a suggestion list that opens on typing never
+opens. `type` clears the field and types the value key by key, `delay_ms` apart (default 50, at
+most 1000). A line break in its value is refused — typed, it is the Enter key; press Enter as its
+own step:
+
+```bash
+5dive browser act <url> --steps='[{"op":"type","selector":"ref=textbox/Where to?","value":"Lisbon"},
+                                  {"op":"wait_for","selector":"text=Lisbon, Portugal"},
+                                  {"op":"click","selector":"text=Lisbon, Portugal"}]'
+```
+
+Without a URL, `act` continues on the page a served browser is holding. `--expect=<regex>` is
+graded against the page as the steps left it, re-read for up to 5 s (`--expect-wait=<ms>`) so a
+toast that lands after the click counts, and it matches the text on screen as well as the
+document. Without it the command only says the steps ran — look at the `page.png` it writes
+before you tell anyone it worked. `act` also writes `tree.json` and `page.md` of the page it
+left, so you do not need a second `snapshot` to read the refs there.
 
 **Paying, posting, sending and deleting follow the owner's policy.** The default is yolo
 (DIVE-5006): `act` runs them, says `ALLOWED (default yolo)`, and logs each one, with what it sent

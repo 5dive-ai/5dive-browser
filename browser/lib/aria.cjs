@@ -313,6 +313,51 @@ async function resolveStepSelector(page, step, { timeoutMs = 30000, pollMs = 250
   return resolveRef(page, sel);
 }
 
+// ---- TYPE: KEY BY KEY --------------------------------------------------------
+//
+// `fill` sets the value in ONE input event, with no keydown, keypress or keyup,
+// so a search box whose suggestions open on keystrokes never opens. Measured on
+// a hotel search: fill "Lisbon" then Search went to the results for an empty
+// city ("0 properties found"); fill "Lisbo", press "n", wait_for the suggestion
+// timed out at 30s. `type` sends the value one key at a time, as a person types
+// it. It clears the field first, as fill does, so the step means "the field now
+// says this", never "this was appended". Here, not in either step loop, because
+// there are two of them.
+//
+// THE FIRST MATCH, as page.fill takes it: a bare locator is strict and would throw
+// on a selector that matches twice, where the same selector in a `fill` works.
+//
+// THE BOUND GROWS WITH THE TEXT. Playwright's timeout covers the whole typing,
+// delays included, so 600 characters at 50 ms is the whole default 30 s: a flat
+// bound would cut a long message off half-typed.
+//
+// A LINE BREAK IS THE ENTER KEY. pressSequentially sends "\n" and "\r" as Enter,
+// which submits the form the box is in, and Enter is a step the owner's policy
+// reads (stepRisk). Typed inside a value it would never be read, so a `type`
+// value with a line break is refused: press Enter as its own step.
+const TYPE_DELAY_DEFAULT = 50;
+const TYPE_DELAY_MAX = 1000;
+function typeDelay(v) {  // a step's delay_ms -> ms between keys, or null when it is not one
+  if (v === undefined) return TYPE_DELAY_DEFAULT;
+  return Number.isInteger(v) && v >= 0 && v <= TYPE_DELAY_MAX ? v : null;
+}
+function typeRefusal(delayMs, value) {  // why a `type` step cannot run, or null
+  if (typeDelay(delayMs) === null) {
+    return `has delay_ms ${JSON.stringify(delayMs)} — it takes whole milliseconds between keys, ` +
+      `0 to ${TYPE_DELAY_MAX} (default ${TYPE_DELAY_DEFAULT})`;
+  }
+  if (/[\r\n]/.test(value)) {
+    return 'has a line break in its value — typed, that is the Enter key, which sends the form ' +
+      'without the owner\'s policy reading it. Press Enter as its own step, or fill multi-line text';
+  }
+  return null;
+}
+async function typeKeys(page, sel, value, delayMs, { timeoutMs = 30000 } = {}) {
+  const box = page.locator(sel).first();
+  await box.clear({ timeout: timeoutMs });
+  await box.pressSequentially(value, { delay: delayMs, timeout: timeoutMs + [...value].length * delayMs });
+}
+
 // ---- THE OWNER'S FOUR (DIVE-4943) ------------------------------------------
 //
 // An agent may click and type anywhere, but four kinds of act are the owner's to
@@ -627,6 +672,7 @@ function render(nodes, { json = false } = {}) {
 
 module.exports = { INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSelector,
   resolveRefWithin, resolveStepSelector, isRef, render, REF_PREFIX,
+  typeDelay, typeRefusal, typeKeys, TYPE_DELAY_DEFAULT, TYPE_DELAY_MAX,
   classifyLabel, stepRisk, pageAfter, NEEDS_OWNER_PREFIX, E_NEEDS_OWNER, OWNER_ALLOWED_PREFIX,
   _payloadIn, cleanText, cleanPayload,
   waitForVisible, _visibleIn, _textIn, _scopeIn };

@@ -10,6 +10,45 @@ that file stays where it is.
 
 ## Released
 
+### Added — a `type` step: key by key, for search boxes and autocompletes that open on keystrokes, browser 1.19.0
+
+**Before:** `act` and `run` could only `fill` a text box, and `fill` puts the value in with one
+input event and no key presses. A search box whose suggestion list opens on typed keys never
+opened. Measured on a live hotel search with nothing connected, at 1.18.0: `fill` "Lisbon" and
+then Search went to the results for an empty city ("0 properties found"); `fill` "Lisbo",
+`press` "n" and a `wait_for` the suggestion timed out after 30 s.
+
+**Now:** a `type` step clears the field, as `fill` does, and types the value one key at a time,
+so the suggestion list opens and a `wait_for` and a `click` pick from it:
+
+```bash
+5dive browser act <url> --steps='[{"op":"type","selector":"ref=textbox/Where to?","value":"Lisbon"},
+                                  {"op":"wait_for","selector":"text=Lisbon, Portugal"}]'
+```
+
+- Use `type` for search boxes and autocompletes that react to keystrokes, and `fill` for plain
+  inputs.
+- `{"op":"type","selector":…,"value":…}` takes an optional **`delay_ms`** between keys: whole
+  milliseconds, default 50, at most 1000. Anything else is refused before the browser opens
+  (69: nothing ran).
+- `act` and adapter steps both take it: the vocabularies are now
+  `goto fill type click wait_for select press` and, for an adapter,
+  `goto fill type click wait_for select upload press`. Its value takes `{key}` arguments exactly
+  as `fill` does, and a missing one is refused the same way.
+- It is not one of the owner's four: typing runs without asking, under `careful` too. The click
+  that sends is still the step that asks.
+- A line break in a `type` value is refused before the browser opens (69: nothing ran), from a
+  `{key}` argument too: typed, it is the Enter key, which sends the form without the owner's
+  policy reading it. Press Enter as its own step.
+- The step's bound is the step timeout plus the typing time, so a long value is not cut off
+  half-typed.
+- Both step loops (`driver-playwright`, `session-daemon`) run it through one function in
+  `lib/aria.cjs` (`typeKeys`, `locator.pressSequentially`).
+- Harness: T38 (a stub search box whose suggestions open only on keydown: `type` opens it and
+  `fill` does not, cold and warm; `type` in `act`, on a ref, and in an adapter step; `{key}`;
+  `delay_ms`; not one of the owner's four; a line break refused, cold and warm; a mutant that
+  maps `type` to `page.fill` in both executors and goes red).
+
 ### Changed — approvals default to yolo: pay, publish, send and delete run and are logged; presets `yolo`/`careful`, a `mode` field (DIVE-5006), browser 1.18.0
 
 **Before:** every pay, publish, send and delete step stopped in front of the button with exit 73
