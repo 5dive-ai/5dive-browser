@@ -236,7 +236,7 @@ t 'T1f the registry marketplace lists it' 'browser' \
 # So the way a file goes missing on a real box is now exactly one thing: it is
 # not COMMITTED here. Grade that, against git, not against a list.
 for f in browser/.claude-plugin/plugin.json browser/README.md browser/bin/browser browser/adapters/example.json browser/adapters/google.com.json \
-         browser/lib/extract.bundle.cjs browser/lib/extract.src.mjs browser/lib/pins.json; do
+         browser/adapters/booking.com.json browser/lib/extract.bundle.cjs browser/lib/extract.src.mjs browser/lib/pins.json; do
   t "T1g $f is committed, so a clone of this repo carries it" "yes" \
     "$(git -C "$ROOT" ls-files --error-unmatch "$f" >/dev/null 2>&1 && echo yes || echo no)"
 done
@@ -6436,6 +6436,89 @@ for f in browser/README.md browser/AGENTS.md browser/skills/use-browser/SKILL.md
      'Use `type` for search boxes and autocompletes that react to keystrokes, and `fill` for plain inputs' \
      "$(tr -s ' \n' '  ' < "$ROOT/$f")"
 done
+
+# ============ T39 the shipped booking.com adapter: a login probe and two dated searches
+#
+# Measured 2026-09-26 at browser 1.18.0 on a box with a booking.com login (the
+# file's `_comment` has the numbers): logged out, the home page's header Sign in
+# link goes to account.booking.com/auth/oauth2?client_id=, 4 matches in the
+# --dump-dom render; logged in, the header reads "Your account" with a Genius
+# level, 0 matches, and `status booking.com` read authenticated. The fixtures are
+# those two headers cut to the element: the href prefix and the words are what was
+# measured, the rest of each element is not. A plain fetch of the home page is a
+# 202 with an empty body, so there is no render to capture without a browser.
+# THE MARKER IS A REGEX, and the first draft of this file carried the counted
+# string as it was counted: account.booking.com/auth/oauth2?client_id= . As an
+# ERE `2?` is an optional 2 with no literal `?` after it, so it missed the link
+# it was counted in and `status` read authenticated on the logged-out render.
+# T39b and T39c went red on exactly that; the shipped marker escapes it.
+#   T39a  the file parses and names its site and the page it probes
+#   T39b  the marker, read as the probe reads it (grep -iE), matches the logged-out
+#         header link and not the logged-in header
+#   T39c  `status booking.com` through the real probe and the real adapter search
+#         path — no override, so the package's adapters/ is the fallback it resolves
+#   T39d  both actions use only the fixed step vocabulary, read out of bin/browser,
+#         and each declares the out-of-band verify the executor demands
+#   T39e  MUTANT: the package without this file, which is the tree before this
+#         change — status cannot tell the two renders apart
+#   T39f  documented where people read it
+BKA="$ROOT/browser/adapters/booking.com.json"
+BKOUT39='<header><a href="https://account.booking.com/auth/oauth2?client_id=ID"><span>Sign in</span></a></header>'
+BKIN39='<header><button><span>Your account</span><span>Genius level</span></button></header>'
+mkdir -p "$TMP/t39"
+rm -f "$FIVEDIVE_BROWSER_PROFILE_ROOT/$SEAT/.adapters/booking.com.json"
+
+# --- T39a the file ------------------------------------------------------------------------
+run jq -e . "$BKA";                                  t 'T39a the shipped booking.com adapter is valid JSON' 0 "$RC"
+t  'T39a it names its site' 'booking.com' "$(jq -r '.site' "$BKA")"
+t  'T39a it probes the home page, whose header carries the Sign in link' 'https://www.booking.com/' "$(jq -r '.probe.url' "$BKA")"
+
+# --- T39b the marker against both headers -------------------------------------------------
+BKMARK="$(jq -r '.probe.logged_out_when_dom_matches' "$BKA")"
+t  'T39b (anchor) it declares a logged-out marker' 'yes' "$([[ -n "$BKMARK" && "$BKMARK" != null ]] && echo yes || echo no)"
+t  'T39b the marker MATCHES the logged-out header Sign in link' 'match' \
+   "$(grep -qiE "$BKMARK" <<<"$BKOUT39" && echo match || echo miss)"
+t  'T39b it does NOT match the logged-in "Your account" header' 'miss' \
+   "$(grep -qiE "$BKMARK" <<<"$BKIN39" && echo match || echo miss)"
+t  'T39b-control the counted string, unescaped, MISSES the same link: as a regex `2?` is an optional 2' 'miss' \
+   "$(grep -qiE 'account.booking.com/auth/oauth2?client_id=' <<<"$BKOUT39" && echo match || echo miss)"
+
+# --- T39c status, through the probe, with the adapter found where every box finds it -----
+mkprofile booking.com "$BKOUT39" >/dev/null
+run env -u FIVEDIVE_BROWSER_ADAPTER_DIR "$BROWSER" status booking.com
+t  'T39c logged out, `status booking.com` reports the session cold' 75 "$RC"
+tc 'T39c ...as expired, which names a person' 'session expired — human action required' "$OUT"
+mkprofile booking.com "$BKIN39" >/dev/null
+run env -u FIVEDIVE_BROWSER_ADAPTER_DIR "$BROWSER" status booking.com
+t  'T39c logged in, it exits 0' 0 "$RC"
+tc 'T39c ...and reads authenticated' 'authenticated (checked' "$OUT"
+
+# --- T39d the two actions -----------------------------------------------------------------
+BKSTEPS="$(sed -n 's/^ADAPTER_STEPS="\(.*\)"$/\1/p' "$BROWSER")"
+t  'T39d (anchor) the step vocabulary was read out of bin/browser' 'yes' "$([[ "$BKSTEPS" == *goto*wait_for* ]] && echo yes || echo no)"
+BKOPS='($v|split(" ")) as $ok | [.actions[].steps[].op | select(. as $o | $ok | index($o) | not)] | unique
+       | if length == 0 then "none" else join(", ") end'
+t  'T39d it ships the two dated searches, each with steps' 'hotels:2 search:2' \
+   "$(jq -r '[.actions | to_entries[] | "\(.key):\(.value.steps|length)"] | sort | join(" ")' "$BKA")"
+t  'T39d both actions use only ops in ADAPTER_STEPS' 'none' "$(jq -r --arg v "$BKSTEPS" "$BKOPS" "$BKA")"
+t  'T39d-control an op outside the vocabulary is named, so the arm can say no' 'eval' \
+   "$(jq '.actions.hotels.steps[1].op = "eval"' "$BKA" | jq -r --arg v "$BKSTEPS" "$BKOPS")"
+t  'T39d each declares the out-of-band verify (url and expect) the executor demands' 'yes' \
+   "$(jq -e '[.actions[].verify | (.url and .expect)] | all' "$BKA" >/dev/null 2>&1 && echo yes || echo no)"
+
+# --- T39e MUTANT: no shipped adapter, which is the tree before this change ----------------
+MUT39="$TMP/t39/mut"; rm -rf "$MUT39"; cp -r "$ROOT/browser" "$MUT39"; rm -f "$MUT39/adapters/booking.com.json"
+t  'T39e (anchor) the mutant package has no booking.com adapter' 'no' \
+   "$([[ -e "$MUT39/adapters/booking.com.json" ]] && echo yes || echo no)"
+mkprofile booking.com "$BKOUT39" >/dev/null
+run env -u FIVEDIVE_BROWSER_ADAPTER_DIR "$MUT39/bin/browser" status booking.com
+tc 'T39e MUTANT (no shipped adapter), logged out: status can only say UNKNOWN' 'UNKNOWN (no adapter for booking.com' "$OUT"
+tn 'T39e ...so the expired session is never reported' 'session expired' "$OUT"
+
+# --- T39f the words -----------------------------------------------------------------------
+tc 'T39f the README lists it with the shipped adapters' '| `booking.com` | `/` | `account\.booking\.com/auth/oauth2\?client_id=` |' \
+   "$(cat "$ROOT/browser/README.md")"
+tc 'T39f CHANGES.md says search needs the served browser' '5dive browser serve booking.com' "$(cat "$ROOT/CHANGES.md")"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

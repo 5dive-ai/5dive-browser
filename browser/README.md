@@ -568,11 +568,12 @@ when.
 | `x.com` | `/i/flow/login` | `name="username_or_email"` | logged-out form, three renders (8s, 25s, Playwright 15s); the logged-in half is unmeasured because no x.com profile exists — that gap fails SAFE (a false "expired" asks a person; never a false "authenticated") |
 | `github.com` | `/settings/profile` | `action="/session"` | BOTH halves: 3 matches on the sign-in page logged out, 0 on "Your profile" logged in |
 | `google.com` | none | none | **the login check is not measured**, so there is no probe: `status google.com` reads UNKNOWN and `run google.com send` refuses (75) before a step, which is the fail-closed half. Measure it with `capture google.com` and reflex (below), and put the probe in the seat's `.adapters/google.com.json`. The `send` action's steps and its Sent-folder verify were measured on a live Gmail on 2026-09-25 (see the file's `_comment`) |
+| `booking.com` | `/` | `account\.booking\.com/auth/oauth2\?client_id=` | BOTH halves: the header Sign in link, 4 matches in the logged-out render; 0 on the logged-in header ("Your account", Genius level), where `status` read authenticated. The dots and the `?` are escaped because the marker is a regex: unescaped, `2?` is an optional 2 and the marker misses the very link it was counted in. It ships two actions, `search` and `hotels` (`--city --checkin --checkout --adults --rooms --max_eur`, dates YYYY-MM-DD, cheapest first): run `serve booking.com` first — a cold `run` of a results URL is redirected to an undated city page — and expect NOT VERIFIED, because the verify is a public fetch and Booking answers that with a different page |
 | `web.telegram.org` | `/k/` | out: `(page-signQR\|auth-qr-form\|…)`, **in:** `class="[^"]*chatlist` | the POSITIVE marker on both halves (9 matches on the settled live session, 0 on the shell and on a logged-out render); the logged-out marker matched 0 on the live session but its logged-out render was never observed — the K app does not paint sign-in inside the probe's window on a fresh profile. That gap fails SAFE only because of the positive marker: neither matching is `UNKNOWN`, not a login |
 
-Every shipped adapter but one has `"actions": {}`: they classify a session, and the actions a
-site's owner wants are theirs to write in their seat's `.adapters/`. The one is google.com's
-`send` (DIVE-4984):
+Every shipped adapter but two has `"actions": {}`: they classify a session, and the actions a
+site's owner wants are theirs to write in their seat's `.adapters/`. booking.com's `search` and
+`hotels` are in its row above. The other is google.com's `send` (DIVE-4984):
 
 ```bash
 5dive browser run google.com send --to=<addr> --subject='<subject>' --body='<text>'
