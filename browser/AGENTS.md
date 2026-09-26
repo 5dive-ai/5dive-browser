@@ -176,9 +176,9 @@ does. Relay it: the owner's `approve` shows the `--to`,
 SAME arguments plus `--approved-id=<id>` — a different subject is a different ask. It then sends
 and reads the Sent folder back in the same login (`verify.in_session`); only
 `verified: send is live at …#sent` means it went. **NOT VERIFIED means open Sent and look before
-anything else — never send it again blind.** Exit 75 before anything ran means this box has no
-measured google.com login check yet (the adapter ships without one): tell the owner, it is theirs
-to measure with `5dive browser capture google.com`.
+anything else — never send it again blind.** Exit 75 before anything ran means the google.com
+login check did not read `authenticated` (logged out, it reads the Google sign-in page): tell the
+owner, and connect the site with them by the shipped flow above.
 
 The ask shows what the step will act on (recipients, subject and first line of a mail; payee and
 amount; the post's text; the item deleted). Relay THAT to the owner, not the button's name. If

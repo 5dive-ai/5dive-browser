@@ -10,6 +10,50 @@ that file stays where it is.
 
 ## Released
 
+### Added — a booking.com adapter (a login probe and two dated searches) and google.com's login probe, browser 1.20.0
+
+**Before:** no booking.com adapter shipped, and the shipped google.com adapter had no `probe`.
+`status booking.com` and `status google.com` read `UNKNOWN` whether the profile was logged in or
+not, so `run` refused on both — `run google.com send` included, until someone wrote a probe into
+the seat's `.adapters/` — and a dated hotel search meant writing an adapter by hand.
+
+**Now:** `status booking.com` and `status google.com` read `session expired — human action
+required` (exit 75) on a logged-out profile and `authenticated` on a logged-in one, so `run
+google.com send` works on a logged-in box with nothing written by hand. booking.com also ships two
+actions that search by date:
+
+```bash
+5dive browser serve booking.com
+5dive browser run booking.com hotels --city=Lisbon --checkin=2026-10-14 --checkout=2026-10-15 \
+                                     --adults=2 --rooms=1 --max_eur=120
+# -> step 1 (goto) ok / step 2 (wait_for) ok, then NOT VERIFIED (exit 1, see below);
+#    the result page lists the hotels, cheapest first
+```
+
+- `search`: every property type under `--max_eur` per stay, cheapest first. `hotels`: the same,
+  hotels only (`ht_id=204`) rated 8+ (`review_score=80`). Both take `--city --checkin --checkout
+  --adults --rooms --max_eur`, dates YYYY-MM-DD; `--city` is the name as a person types it, no
+  dest_id needed.
+- Run `5dive browser serve booking.com` first. A cold `act` or `run` of any results URL, even one
+  copied from a real browser, is redirected to an undated city page; the same URL through the
+  served browser returns the dated results. Measured 2026-09-26: `ss=Lisbon` alone, 477 properties
+  found; `hotels` for Lisbon 14–15 Oct, 2 adults, at most 120: 25 hotels, the cheapest EUR 95.
+- Expect NOT VERIFIED. The verify is a public fetch of the results URL, and Booking answers a
+  public fetch with a different page, so it cannot re-read the results. Read the result page.
+- Both probes were measured on both halves, and both markers are regexes (`grep -iE` cold,
+  `RegExp` in the served browser):
+  - booking.com probes `/` for `data-testid=["']?auth-link-in-view`: 1 match in each of two
+    logged-out renders, 0 logged in. Not the Sign in link's href,
+    `account.booking.com/auth/oauth2?client_id=`: as a regex `2?` is an optional 2, it matched 0
+    logged-out renders, and every logged-out profile would have read `authenticated`.
+  - google.com probes `https://accounts.google.com/signin/v2/identifier` for its title,
+    `<title>Sign in - Google Accounts</title>`: 1 match logged out, 0 logged in. Not
+    `myaccount.google.com`: logged out, that is a marketing page with 0 matches.
+- A seat file of the same name in `.adapters/` still wins over the shipped one.
+- Harness: T39 (both files, both markers as regexes against both halves, `status` through the real
+  probe, the tree before this change as the mutant); T35g now runs the shipped google.com file on a
+  logged-out profile.
+
 ### Added — a `type` step: key by key, for search boxes and autocompletes that open on keystrokes, browser 1.19.0
 
 **Before:** `act` and `run` could only `fill` a text box, and `fill` puts the value in with one
