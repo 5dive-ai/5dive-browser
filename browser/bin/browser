@@ -2463,10 +2463,11 @@ _as_seat() {  # <seat> <cmd...>
 
 # How to reach `5dive reflex`. The key is root's (/etc/5dive/reflex-openrouter.key),
 # so a seat with the grant goes through sudo; without it the plain CLI still works
-# for a custom endpoint, and otherwise says why it cannot.
-_reflex_cli() {
+# for a custom endpoint, and otherwise says why it cannot. The grant looked for is
+# the verb's own: login-marker by default, pick-ref for the step loops' retry.
+_reflex_cli() {  # [<reflex verb>]
   if [[ -n "${FIVEDIVE_BROWSER_CLI:-}" ]]; then _RFX=("$FIVEDIVE_BROWSER_CLI" reflex); return 0; fi
-  if [[ $EUID -ne 0 ]] && sudo -n -l /usr/local/bin/5dive reflex login-marker >/dev/null 2>&1; then
+  if [[ $EUID -ne 0 ]] && sudo -n -l /usr/local/bin/5dive reflex "${1:-login-marker}" >/dev/null 2>&1; then
     _RFX=(sudo -n /usr/local/bin/5dive reflex); return 0
   fi
   command -v 5dive >/dev/null 2>&1 || return 1
@@ -2571,6 +2572,42 @@ cmd_propose() {
   _propose_stamp "$pd" "$base" proposed
   _audit_row "$dir" propose "$base"
   _proposal_print "$pf"
+}
+
+# WHICH ELEMENT A STEP MEANT, when its ref matches nothing (lib/aria.cjs
+# resolveOrRepick). Not in usage: both executors re-enter here with the page's
+# interactive tree on stdin, so the step loops reach reflex through _reflex_cli
+# like every other reflex call. Always exit 0 and one line of JSON:
+#   {"reflex":"off"}               no reflex on this box (the executor's name match decides)
+#   {"reflex":"error","why":"…"}   reflex could not answer (the name match decides)
+#   {"reflex":"ok", …}             `pick-ref --json`'s report
+# The pick-ref argv is built HERE from five known flags, never passed through: a
+# brokered seat's step reaches this as the profile's owner, and a `--backend=`
+# that rode along would run as whoever holds the reflex grant.
+cmd_reflex_pick() {  # _reflex-pick <site> --op=<op> --intent=<text> [--value=|--key=|--path=]  < tree.json
+  local site="" a tree rc=0 rep why
+  local -a pa=()
+  for a in "$@"; do
+    case "$a" in
+      --op=*|--intent=*|--value=*|--key=*|--path=*) pa+=("$a") ;;
+      -*) die "$E_USAGE" "_reflex-pick: unknown flag: $a" ;;
+      *) [[ -z "$site" ]] || die "$E_USAGE" "_reflex-pick: one site"; site="$a" ;;
+    esac
+  done
+  [[ "$site" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]] || die "$E_USAGE" "_reflex-pick: '$site' is not a host name"
+  # The tree first: the status call below would otherwise inherit, and eat, stdin.
+  tree="$(mktemp "${TMPDIR:-/tmp}/5dive-browser-pick.XXXXXXXX")" || { jq -nc '{reflex:"error", why:"cannot stage the tree"}'; return 0; }
+  cat > "$tree"
+  if ! _reflex_cli pick-ref || ! _reflex_configured; then
+    rm -f -- "$tree"; echo '{"reflex":"off"}'; return 0
+  fi
+  rep=$("${_RFX[@]}" pick-ref "$site" "--tree=$tree" "${pa[@]}" --json </dev/null 2>"$tree.err") || rc=$?
+  why="$(tail -n1 "$tree.err" 2>/dev/null)"
+  rm -f -- "$tree" "$tree.err"
+  if (( rc )) || ! jq -e 'type == "object"' <<<"$rep" >/dev/null 2>&1; then
+    jq -nc --arg w "${why:-pick-ref exited $rc}" '{reflex:"error", why:$w}'; return 0
+  fi
+  jq -c '. + {reflex:"ok"}' <<<"$rep"
 }
 
 # One proposal, for a person: the pick, then EVERY candidate with its counts.
@@ -5802,6 +5839,8 @@ case "${1:-}" in
   # Not in usage: the session daemon re-enters here as the profile's owner.
   _broker-lease) shift; cmd_broker_lease "$@" ;;
   _broker-audit) shift; cmd_broker_audit "$@" ;;
+  # Not in usage: both executors re-enter here when a step's ref matches nothing.
+  _reflex-pick) shift; cmd_reflex_pick "$@" ;;
   links) shift; cmd_links "$@" ;;
   serve) shift; cmd_serve "$@" ;;
   viewer) shift; cmd_viewer "$@" ;;

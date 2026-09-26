@@ -10,6 +10,44 @@ that file stays where it is.
 
 ## Released
 
+### Added — a step whose ref matches nothing is retried once, on the element reflex or a name match picks, browser 1.21.0
+
+**Before:** a step whose `ref=` matched nothing failed with `ref=… matches nothing on this page`,
+and the agent had to snapshot, read the refs and send the whole `act` again. Measured on a hotel
+site: step 2, `click ref=button/Decline`, failed while the consent banner's button was on the page
+under another accessible name. `5dive reflex pick-ref` could already pick a step's element off a
+page tree, and nothing in the browser called it.
+
+**Now:** a step whose ref matches nothing is retried once, on the element reflex picks at
+confidence 0.9 or more, and the output says so:
+
+```
+  step 2: ref=button/Decline matched nothing; reflex picked ref=button/Decline all (conf 0.99); retried: ok
+```
+
+- `click`, `fill`, `type`, `select`, `press`, `wait_for` and `upload`, in both executors (a cold
+  `act`/`run` and a served browser). pick-ref gets the page's interactive refs, the op (`fill` for
+  a `type`), and what the step is for: a new optional step field, `"intent"`, or else the ref's
+  role and name (`button named Decline`). A value goes as `{value}`: pick-ref never shows the model
+  the value, and a command line is readable by every seat on the box.
+- Reflex answering `none`, or under 0.9, is an answer: no retry, and the failure names it
+  (`Reflex suggested ref=… at confidence 0.62, under 0.9, so it was not retried.`).
+- Without reflex, or when reflex errors: the ONE element of the same role whose accessible name
+  equals the ref's ignoring case and outer whitespace, contains it, or is contained in it
+  (`name match picked ref=…`). Two such elements, or none, and the step fails exactly as before.
+- A step that pays, posts, sends or deletes is never retargeted: read from the ref's own name, the
+  picked element's live label and pick-ref's `review_required`. The owner's yes, and the policy
+  that lets a kind through, cover the step as written. It fails as before and names the suggestion.
+- One retry per step, and only for a `ref=` miss: a CSS selector that matches nothing still times
+  out. A first-step miss that is not retried is still "nothing ran" (70).
+- Reflex is reached as `propose` reaches it: `_reflex_cli` now looks for the verb's own grant,
+  `sudo -n /usr/local/bin/5dive reflex pick-ref`, and uses the plain CLI without it. The standard
+  seat sudoers of 5dive 0.54.0 grants no `5dive reflex` verb (not `login-marker` either), so on
+  such a seat the root-only key is unreadable and the name match decides; the grant is 5dive's.
+- Harness: T40 (reflex's pick retried, cold and warm; the four never retargeted by name, label,
+  `review_required` and name match; under 0.9 and `none`; no pick-ref call without reflex; one
+  retry; the name match with one, two and no candidates; the retry removed as the mutant).
+
 ### Added — a booking.com adapter (a login probe and two dated searches) and google.com's login probe, browser 1.20.0
 
 **Before:** no booking.com adapter shipped, and the shipped google.com adapter had no `probe`.

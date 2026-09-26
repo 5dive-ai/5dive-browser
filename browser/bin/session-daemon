@@ -753,6 +753,8 @@ async function planRequest(ctx, req, send, end) {
         if (why) { const e = new Error(`step ${i + 1} (type) ${why}`); e.nothingRan = true; throw e; }
         out.delay_ms = aria.typeDelay(s.delay_ms);
       }
+      // `intent`, as the one-shot driver keeps it: never interpolated.
+      if (typeof s.intent === 'string' && s.intent) out.intent = s.intent;
       return out;
     });
   } catch (e) {
@@ -763,7 +765,7 @@ async function planRequest(ctx, req, send, end) {
   // that throws may already have navigated, a click may already have posted. The
   // expensive direction is claiming nothing ran when something did — that is the
   // blind retry that double-posts.
-  let stepsRun = 0, needsOwner = null;
+  let stepsRun = 0, needsOwner = null, retry = null;
   let page;
   try { page = await pageOf(ctx); }
   catch (e) {
@@ -781,7 +783,11 @@ async function planRequest(ctx, req, send, end) {
       // A ref `wait_for` WAITS, like its CSS twin always did (DIVE-4674). The
       // choice of which ops wait lives in lib/aria.cjs, shared by this loop and
       // the other one, because the defect was that there are two of them.
-      const sel = await aria.resolveStepSelector(page, s, { timeoutMs: STEP_TIMEOUT });
+      // One retry on a picked element when a ref matches nothing — the same call
+      // as the one-shot driver's loop (lib/aria.cjs resolveOrRepick).
+      const { sel, retry: r } = await aria.resolveOrRepick(page, s, i + 1, { timeoutMs: STEP_TIMEOUT });
+      if (r) assertLease(req, where);
+      retry = r;
       // THE OWNER'S FOUR (DIVE-4943) — the same check, in the same place, as the
       // one-shot driver's loop; lib/aria.cjs holds it so the two cannot differ.
       if (req.guard && !req.approved) {
@@ -807,9 +813,12 @@ async function planRequest(ctx, req, send, end) {
         case 'upload':   await page.setInputFiles(sel, s.path); break;
         case 'press':    await page.press(sel, s.key); break;
       }
+      if (retry) send({ t: 'log', line: `  ${retry}ok` });
+      retry = null;
       send({ t: 'log', line: `  ${where} ok` });
     }
   } catch (e) {
+    if (retry) send({ t: 'log', line: `  ${retry}failed` });
     send({ t: 'err', msg: e.message });
     if (!stepsRun) {
       send({ t: 'err', msg: 'the session was open but not one step ran, so nothing was published and ' +

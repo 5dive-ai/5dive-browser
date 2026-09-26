@@ -480,6 +480,10 @@ async function main() {
       if (why) die(E_NOTHING_RAN, `step ${i + 1} (type) ${why}`);
       out.delay_ms = aria.typeDelay(s.delay_ms);
     }
+    // `intent`: what a step is for, in words, read only when its ref matches
+    // nothing (lib/aria.cjs resolveOrRepick). Never interpolated, for the reason a
+    // selector is not: it steers which element gets picked.
+    if (typeof s.intent === 'string' && s.intent) out.intent = s.intent;
     return out;
   });
 
@@ -496,7 +500,7 @@ async function main() {
   // where a second caller cannot get a laxer one.
   const ctx = await openProfile(profile);
 
-  let rc = 0, needsOwner = null, page = null;
+  let rc = 0, needsOwner = null, page = null, retry = null;
   try {
     page = ctx.pages()[0] || await ctx.newPage();
     page.setDefaultTimeout(STEP_TIMEOUT);
@@ -515,7 +519,12 @@ async function main() {
       // A ref `wait_for` WAITS, like its CSS twin always did (DIVE-4674). The
       // choice of which ops wait lives in lib/aria.cjs, shared by this loop and
       // the other one, because the defect was that there are two of them.
-      const sel = await aria.resolveStepSelector(page, s, { timeoutMs: STEP_TIMEOUT });
+      // A ref that matches nothing gets ONE retry on a picked element, never for a
+      // step that pays, posts, sends or deletes (lib/aria.cjs resolveOrRepick).
+      // The pick can take reflex seconds, so the lease is read again before a retry.
+      const { sel, retry: r } = await aria.resolveOrRepick(page, s, i + 1, { timeoutMs: STEP_TIMEOUT });
+      if (r) assertLease(where);
+      retry = r;
       // THE OWNER'S FOUR (DIVE-4943), checked on the live element BEFORE the
       // counter: a refused step was not entered, so a refusal on step one is
       // still "nothing ran". Only `act` sets guard; an adapter recipe is a
@@ -545,6 +554,8 @@ async function main() {
         case 'upload':   await page.setInputFiles(sel, s.path); break;
         case 'press':    await page.press(sel, s.key); break;
       }
+      if (retry) process.stderr.write(`  ${retry}ok\n`);
+      retry = null;
       process.stderr.write(`  ${where} ok\n`);
     }
     if (needsOwner) {
@@ -557,6 +568,7 @@ async function main() {
     // re-reads the artifact by a different path whatever this exits, because
     // "failed" here and "published" are not mutually exclusive — that is the
     // case that double-posts on a blind retry.
+    if (retry) process.stderr.write(`  ${retry}failed\n`);
     process.stderr.write(`${PROG}: ${e.message}\n`);
     rc = stepFailure();
     if (rc === E_NOTHING_RAN) {

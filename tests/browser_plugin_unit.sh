@@ -2368,6 +2368,15 @@ const page = {
     if (mark) markWalks++;
     rec({ call: 'evaluate', fnlen: String(fn).length, mark, walkN: mark ? markWalks : null,
           interactiveOnly: !!(arg && arg.interactiveOnly), snapshot: !!(arg && arg.snapshot) });
+    // PWREFS: A PAGE THAT KNOWS ITS OWN REFS (T40). A file of {nodes}; a mark walk
+    // stamps the one node whose ref it names, and finds nothing for any other, so
+    // a missed ref and the one picked for the retry answer differently on the same
+    // page. Inert unless the variable is set.
+    if (process.env.PWREFS) {
+      const nodes = JSON.parse(fs.readFileSync(process.env.PWREFS, 'utf8')).nodes;
+      const at = mark ? nodes.findIndex((x) => x.ref === mark) : -1;
+      return { nodes, marker: at >= 0 ? `r${at}` : null };
+    }
     // PWWALK_MISS=<n> (DIVE-4674) — A REF THAT IS NOT THERE YET, which is a shape
     // no other fixture here can produce: the first <n> mark-walks find nothing
     // and the (n+1)th finds it. Every existing arm sees a page whose answer never
@@ -3533,6 +3542,13 @@ const mkpage = (kind) => { let clock = 0, keydowns = 0;
     const mark = (arg && arg.mark) || null;
     if (mark) markWalks++;
     rec({ call: 'evaluate', kind, mark, walkN: mark ? markWalks : null, snapshot: !!(arg && arg.snapshot) });
+    // DPWREFS: the driver stub's page that knows its refs (PWREFS), from a FILE read
+    // per call — the env is fixed at `serve`, the page is the arm's.
+    if (process.env.DPWREFS && !(arg && arg.snapshot)) {
+      const nodes = JSON.parse(fs.readFileSync(process.env.DPWREFS, 'utf8')).nodes;
+      const at = mark ? nodes.findIndex((x) => x.ref === mark) : -1;
+      return { nodes, marker: at >= 0 ? `r${at}` : null };
+    }
     // PWWALK_MISS: the same not-there-yet page the driver stub can produce
     // (DIVE-4674). The warm loop is a SECOND copy of the step loop, so it needs
     // the same fixture or half the product stays ungraded.
@@ -6568,6 +6584,244 @@ tc "T39g the README lists google.com's probe" '| `google.com` | `accounts.google
    "$(cat "$ROOT/browser/README.md")"
 tc 'T39g CHANGES.md says search needs the served browser' '5dive browser serve booking.com' "$(cat "$ROOT/CHANGES.md")"
 tc 'T39g CHANGES.md names the google.com probe' 'google.com probes `https://accounts.google.com/signin/v2/identifier`' "$(cat "$ROOT/CHANGES.md")"
+
+# ============ T40 a step whose ref matches nothing: one retry, on one picked element
+#
+# Measured on a hotel site at 1.13.0: `act` step 2, `click ref=button/Decline`,
+# failed "matches nothing on this page" — the consent banner's button was there,
+# under another accessible name. `5dive reflex pick-ref` picks a step's element
+# off a page tree (8 intents measured: 7 right, 1 right abstention), and nothing
+# called it. The stubs model a page that knows its refs (PWREFS / DPWREFS) and a
+# reflex whose answer each arm sets (RFX40). Each arm is the mutant:
+#   T40a  a miss, reflex picks at >= 0.9: retried on the pick and said so, cold and
+#         warm; the intent field, the op and {value} (never the value) reach pick-ref
+#   T40b  a step that would send, pay, post or delete is never retargeted: by its
+#         own ref name, by pick-ref's review_required, by the picked element's live
+#         label, and by the name match — cold, and warm
+#   T40c  reflex under 0.9, or no pick: fails as before and names the answer, even
+#         with a name match on the page; cold and warm
+#   T40d  reflex not configured: no pick-ref call at all; the name match retries
+#   T40e  one retry: a pick that matches nothing, or a retried step that fails, is
+#         not retried again
+#   T40f  the name match: reflex erroring falls back to it; two candidates, or
+#         none, fail exactly as before; cold and warm
+#   T40g  MUTANT: the retry removed from lib/aria.cjs — the miss fails, cold and warm
+#   T40h  documented where agents and people read it
+unset FIVEDIVE_BROWSER_DRIVER
+T40="$TMP/t40"; mkdir -p "$T40"
+RFX40="$T40/5dive"; RFXREC40="$T40/rfx.rec"; : > "$RFXREC40"
+cat > "$RFX40" <<CLI
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$RFXREC40"
+[[ "\$1" == reflex ]] || { echo "unknown command: \$1" >&2; exit 64; }
+case "\$2" in
+  status) if [[ -e "$T40/rfx-off" ]]; then echo '{"configured":false}'; else echo '{"configured":true}'; fi ;;
+  pick-ref)
+    for a in "\$@"; do [[ "\$a" == --tree=* ]] && cp "\${a#--tree=}" "$T40/tree-seen.json"; done
+    if [[ -e "$T40/rfx-fail" ]]; then echo "reflex: the model did not answer" >&2; exit 69; fi
+    # a PERSON takes the browser while reflex is thinking (the driver's lease file)
+    if [[ -e "$T40/preempt" && -n "\${FIVEDIVE_BROWSER_LEASE:-}" ]]; then
+      printf 'token=belongs-to-the-person-at-the-viewer\nholder=someone\nholder_pid=1\nkind=human\n' > "\$FIVEDIVE_BROWSER_LEASE"
+    fi
+    cat "$T40/pick.json" ;;
+  *) echo "unknown reflex verb: \$2" >&2; exit 64 ;;
+esac
+CLI
+chmod +x "$RFX40"
+pick40() {  # pick40 <ref|""> <confidence|null> [review_required] — what pick-ref answers
+  rm -f "$T40/rfx-off" "$T40/rfx-fail"
+  jq -nc --arg r "$1" --argjson c "$2" --argjson rv "${3:-false}" \
+    '{site:"stub.test", op:"click", mode:"shadow", written:false, candidates:[],
+      choice:(if $r == "" then "none" else "r1" end), confidence:$c, error:null,
+      ref:(if $r == "" then null else $r end), review_required:$rv}' > "$T40/pick.json"
+}
+# The page: a consent banner whose Decline button is named "Decline all".
+cat > "$T40/refs.json" <<'RJ'
+{ "nodes": [ {"ref":"button/Decline all","role":"button","name":"Decline all","tag":"button"},
+             {"ref":"button/Accept all","role":"button","name":"Accept all","tag":"button"},
+             {"ref":"button/Send","role":"button","name":"Send","tag":"button"},
+             {"ref":"textbox/Search in your own words","role":"textbox","name":"Search in your own words","tag":"input"},
+             {"ref":"heading/Stays","role":"heading","name":"Stays","tag":"h1"} ] }
+RJ
+# ...and one with TWO buttons a name match could mean.
+cat > "$T40/refs2.json" <<'RJ'
+{ "nodes": [ {"ref":"button/Decline all","role":"button","name":"Decline all","tag":"button"},
+             {"ref":"button/Decline optional","role":"button","name":"Decline optional","tag":"button"} ] }
+RJ
+t40env() { env -u SUDO_USER FIVEDIVE_BROWSER_PROFILE_ROOT="$P31" FIVEDIVE_BROWSER_SESSION_ROOT="$TMP/p31/sessions" \
+               FIVEDIVE_BROWSER_APPROVAL_DIR="$T40/approvals" FIVEDIVE_BROWSER_APPROVAL_POLICY="$T40/policy.json" \
+               FIVEDIVE_BROWSER_GRANT_UID="$(id -u)" FIVEDIVE_BROWSER_RUN_SETTLE_MS=0 \
+               NODE_PATH="$PWROOT/node_modules" PWREC="$PWREC" PWREFS="$T40/refs.json" \
+               FIVEDIVE_BROWSER_CLI="$RFX40" "$@"; }
+act40() {  # act40 <steps> [env assignments...] — cold, on the consent banner
+  local st="$1"; shift
+  : > "$PWREC"; : > "$RFXREC40"; rm -f "$T40/tree-seen.json"
+  run t40env "$@" "${T40BIN:-$BROWSER}" act "https://shop40.test/" --steps="$st" --out="$T40/cold"
+}
+tape40() { jq -rs "[.[]|select(.call==\"$1\")|.sel]|join(\" \")" "$PWREC"; }
+picks40() { grep -c '^reflex pick-ref ' "$RFXREC40"; }
+CLICK40='[{"op":"click","selector":"ref=button/Decline"}]'
+
+# --- T40a reflex picks, and the step is retried on the pick -------------------------------
+pick40 'button/Decline all' 0.99
+act40 "$CLICK40"
+t  'T40a a ref that matches nothing, reflex picks at 0.99: act exits 0' 0 "$RC"
+t  'T40a ...the click went to the picked element (r0, "Decline all")' '[data-5dive-ref="r0"]' "$(tape40 click)"
+tc 'T40a ...and it says so, plainly' \
+   'step 2: ref=button/Decline matched nothing; reflex picked ref=button/Decline all (conf 0.99); retried: ok' "$ERR"
+t  'T40a ...pick-ref was asked once' 1 "$(picks40)"
+tc 'T40a ...with the op, and (no intent field) the ref in words' '--op=click --intent=button named Decline --json' \
+   "$(cat "$RFXREC40")"
+tc 'T40a ...about the page it was on' 'reflex pick-ref stub.test --tree=' "$(cat "$RFXREC40")"
+t  'T40a ...and the tree it read is the interactive nodes of that page' \
+   'button/Decline all,button/Accept all,button/Send,textbox/Search in your own words' \
+   "$(jq -r '[.nodes[].ref]|join(",")' "$T40/tree-seen.json" 2>/dev/null)"
+pick40 'textbox/Search in your own words' 0.95
+act40 '[{"op":"fill","selector":"ref=textbox/Where","value":"s3cret Lisbon","intent":"the destination box"}]'
+t  'T40a a fill: retried on the pick, with the value' '0 [data-5dive-ref="r3"] s3cret Lisbon' \
+   "$RC $(tape40 fill) $(jq -rs '[.[]|select(.call=="fill")|.val]|first' "$PWREC")"
+tc 'T40a ...the step'"'"'s intent field is the intent, and the value goes as {value}' \
+   '--op=fill --intent=the destination box --value={value} --json' "$(cat "$RFXREC40")"
+tn 'T40a ...the value itself never reaches argv' 's3cret' "$(cat "$RFXREC40")"
+pick40 'textbox/Search in your own words' 0.95
+act40 '[{"op":"type","selector":"ref=textbox/Where","value":"Lisbon"}]'
+t  'T40a a type step: asked as a fill, typed into the pick' '0 --op=fill [data-5dive-ref="r3"]' \
+   "$RC $(grep -o -- '--op=fill' "$RFXREC40" | head -1) $(jq -rs '[.[]|select(.call=="type")|.sel]|first' "$PWREC")"
+
+# --- T40b the owner's four are never retargeted -------------------------------------------
+pick40 'button/Send' 0.99
+act40 '[{"op":"click","selector":"ref=button/Send now"}]'
+t  'T40b a Send whose ref missed: reflex picks Send at 0.99, and nothing is clicked (1)' '1 ' "$RC $(tape40 click)"
+tc 'T40b ...the failure names the pick and why it was not retried' \
+   'Reflex picked ref=button/Send (conf 0.99), and it was not retried: this step would send' "$ERR"
+pick40 'button/Accept all' 0.99 true
+act40 '[{"op":"click","selector":"ref=button/Continue"}]'
+t  'T40b pick-ref flags review_required: nothing is clicked (1)' '1 ' "$RC $(tape40 click)"
+tc 'T40b ...and says so' 'it was not retried: this step would pay, post, send or delete' "$ERR"
+pick40 'button/Accept all' 0.99
+act40 '[{"op":"click","selector":"ref=button/Next"}]' PWLABEL='Place your order'
+t  'T40b the picked element reads "Place your order": nothing is clicked (1)' '1 ' "$RC $(tape40 click)"
+tc 'T40b ...it would pay' 'this step would pay' "$ERR"
+touch "$T40/rfx-off"
+act40 '[{"op":"click","selector":"ref=button/Send now"}]'
+t  'T40b no reflex, the one name match is Send: nothing is clicked (1)' '1 ' "$RC $(tape40 click)"
+tc 'T40b ...the failure names the name match' 'A name match picked ref=button/Send, and it was not retried' "$ERR"
+
+# --- T40c under 0.9, or no pick, is an answer ----------------------------------------------
+pick40 'button/Decline all' 0.62
+act40 "$CLICK40"
+t  'T40c reflex at 0.62: nothing is clicked (1), though a name match is on the page' '1 ' "$RC $(tape40 click)"
+tc 'T40c ...the failure names reflex'"'"'s answer' \
+   'Reflex suggested ref=button/Decline all at confidence 0.62, under 0.9, so it was not retried' "$ERR"
+tc 'T40c ...after the miss, as before' 'ref=button/Decline matches nothing on this page' "$ERR"
+pick40 '' null
+act40 "$CLICK40"
+t  'T40c reflex picks none: nothing is clicked (1)' '1 ' "$RC $(tape40 click)"
+tc 'T40c ...and it says so' 'Reflex proposed no element for it.' "$ERR"
+
+# --- T40d reflex not configured: never asked ----------------------------------------------
+touch "$T40/rfx-off"
+act40 "$CLICK40"
+t  'T40d not configured: pick-ref is never called' 0 "$(picks40)"
+t  'T40d ...(anchor) the CLI was reached, and asked only whether reflex is on' 'reflex status --json' \
+   "$(sort -u "$RFXREC40" | paste -sd '|')"
+t  'T40d ...the one near name is retried (0), on Decline all' '0 [data-5dive-ref="r0"]' "$RC $(tape40 click)"
+tc 'T40d ...and it says a name match picked it' \
+   'step 2: ref=button/Decline matched nothing; name match picked ref=button/Decline all; retried: ok' "$ERR"
+
+# --- T40e one retry ------------------------------------------------------------------------
+pick40 'button/Gone' 0.99
+act40 "$CLICK40"
+t  'T40e a pick that matches nothing either: nothing clicked, pick-ref asked once (1)' '1  1' \
+   "$RC $(tape40 click) $(picks40)"
+tc 'T40e ...and it is not retried again' 'Reflex picked ref=button/Gone (conf 0.99), and that matches nothing either.' "$ERR"
+pick40 'button/Decline all' 0.99
+act40 "$CLICK40" PWFAIL=1
+t  'T40e a retried click that fails: one click, one pick-ref call (1)' '1 1 1' \
+   "$RC $(jq -rs '[.[]|select(.call=="click")]|length' "$PWREC") $(picks40)"
+tc 'T40e ...said as a failed retry' 'reflex picked ref=button/Decline all (conf 0.99); retried: failed' "$ERR"
+pick40 'button/Decline all' 0.99; touch "$T40/preempt"
+act40 "$CLICK40"
+rm -f "$T40/preempt"
+t  'T40e the lease is taken while reflex picks: the retry clicks nothing' '' "$(tape40 click)"
+tc 'T40e ...the lease is read again before the retry' 'TAKEN by someone else' "$ERR"
+rm -rf "$P31/$SEAT/_public/.5dive-lease"   # the person's lease, which the arms after this are not about
+
+# --- T40f the name match ------------------------------------------------------------------
+pick40 'button/Decline all' 0.99; touch "$T40/rfx-fail"
+act40 "$CLICK40"
+t  'T40f reflex errors: the name match retries it (0)' '0 [data-5dive-ref="r0"]' "$RC $(tape40 click)"
+tc 'T40f ...and says it was the name match' 'name match picked ref=button/Decline all; retried: ok' "$ERR"
+touch "$T40/rfx-off"
+act40 "$CLICK40" PWREFS="$T40/refs2.json"
+t  'T40f two buttons a name match could mean: nothing is clicked (1)' '1 ' "$RC $(tape40 click)"
+tn 'T40f ...and the failure reads as before' 'picked' "$ERR"
+tc 'T40f ...(anchor) the miss itself' 'ref=button/Decline matches nothing on this page' "$ERR"
+act40 '[{"op":"click","selector":"ref=button/Checkout"}]'
+t  'T40f no near name at all: nothing is clicked (1)' '1 ' "$RC $(tape40 click)"
+act40 '[{"op":"click","selector":"ref=link/Decline"}]'
+t  'T40f a near name of ANOTHER role is not a match (1)' '1 ' "$RC $(tape40 click)"
+
+# --- warm: the second copy of the step loop -----------------------------------------------
+cp "$T40/refs.json" "$T40/wrefs.json"
+mkprofile warm40.test "$LIVE_DOM" >/dev/null
+dserve warm40.test FIVEDIVE_BROWSER_CLI="$RFX40" DPWREFS="$T40/wrefs.json"
+t  'T40 (precondition) a warm session is up' 0 "$RC"
+w40() {  # w40 <steps> [site] — act on the served browser; N40 marks where its tape starts
+  N40=$(wc -l < "$DREC"); : > "$RFXREC40"
+  dwarm "$BROWSER" act "${2:-warm40.test}" "https://${2:-warm40.test}/" --steps="$1" --out="$T40/warm"
+}
+wtape40() { tail -n +$((N40+1)) "$DREC" | jq -rs "[.[]|select(.call==\"$1\")|.sel]|join(\" \")"; }
+pick40 'button/Decline all' 0.99
+w40 "$CLICK40"
+t  'T40a warm: reflex picks at 0.99, retried on the pick (0)' '0 [data-5dive-ref="r0"]' "$RC $(wtape40 click)"
+tc 'T40a warm: ...and says so' \
+   'step 2: ref=button/Decline matched nothing; reflex picked ref=button/Decline all (conf 0.99); retried: ok' "$ERR"
+tc 'T40a warm: ...about the page it was on' 'reflex pick-ref warm.test --tree=' "$(cat "$RFXREC40")"
+pick40 'button/Send' 0.99
+w40 '[{"op":"click","selector":"ref=button/Send now"}]'
+t  'T40b warm: a Send is never retargeted (1)' '1 ' "$RC $(wtape40 click)"
+tc 'T40b warm: ...and says why' 'it was not retried: this step would send' "$ERR"
+pick40 'button/Decline all' 0.62
+w40 "$CLICK40"
+t  'T40c warm: reflex at 0.62, nothing clicked (1)' '1 ' "$RC $(wtape40 click)"
+tc 'T40c warm: ...naming the answer' 'at confidence 0.62, under 0.9' "$ERR"
+touch "$T40/rfx-off"
+w40 "$CLICK40"
+t  'T40d warm: not configured, pick-ref never called; the name match retries (0)' '0 0 [data-5dive-ref="r0"]' \
+   "$(picks40) $RC $(wtape40 click)"
+pick40 'button/Gone' 0.99
+w40 "$CLICK40"
+t  'T40e warm: a pick that matches nothing either: nothing clicked, one pick-ref call (1)' '1  1' \
+   "$RC $(wtape40 click) $(picks40)"
+touch "$T40/rfx-off"; cp "$T40/refs2.json" "$T40/wrefs.json"
+w40 "$CLICK40"
+t  'T40f warm: two near names, nothing clicked (1)' '1 ' "$RC $(wtape40 click)"
+tn 'T40f warm: ...the failure reads as before' 'picked' "$ERR"
+env PATH="$SPATH" "$BROWSER" serve warm40.test --stop >/dev/null 2>&1
+
+# --- T40g MUTANT: the retry removed ---------------------------------------------------------
+MUT40="$T40/mut"; rm -rf "${MUT40:?}"; cp -r "$ROOT/browser" "$MUT40"
+sed -i 's#^\(  catch (e) { \)if (!e.refMiss || !REPICK_OP.*$#\1throw e; }  // MUTANT (no retry)#' "$MUT40/lib/aria.cjs"
+t  'T40g (anchor) the mutation landed in the shared step resolve' 1 "$(grep -c 'MUTANT (no retry)' "$MUT40/lib/aria.cjs")"
+pick40 'button/Decline all' 0.99
+T40BIN="$MUT40/bin/browser" act40 "$CLICK40"
+t  'T40g MUTANT (no retry), cold: the miss fails (1), nothing clicked, reflex never asked' '1  0' \
+   "$RC $(tape40 click) $(picks40)"
+cp "$T40/refs.json" "$T40/wrefs.json"
+mkprofile mut40.test "$LIVE_DOM" >/dev/null
+dserve mut40.test FIVEDIVE_BROWSER_CLI="$RFX40" DPWREFS="$T40/wrefs.json" FIVEDIVE_BROWSER_SESSION_DAEMON="$MUT40/bin/session-daemon"
+t  'T40g (precondition) the mutant warm session is up' 0 "$RC"
+w40 "$CLICK40" mut40.test
+t  'T40g MUTANT (no retry), warm: the miss fails (1), nothing clicked' '1 ' "$RC $(wtape40 click)"
+env PATH="$SPATH" "$BROWSER" serve mut40.test --stop >/dev/null 2>&1
+
+# --- T40h the words ---------------------------------------------------------------------------
+for f in browser/README.md browser/AGENTS.md CHANGES.md; do
+  tc "T40h $f says a missed ref is retried once, and never for the owner's four" \
+     'is retried once, on the element reflex picks at confidence 0.9 or more' "$(tr -s ' \n' '  ' < "$ROOT/$f")"
+done
+tc 'T40h CHANGES.md names the intent field' '"intent"' "$(cat "$ROOT/CHANGES.md")"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
