@@ -153,6 +153,12 @@ document. Without it the command only says the steps ran — look at the `page.p
 before you tell anyone it worked. `act` also writes `tree.json` and `page.md` of the page it
 left, so you do not need a second `snapshot` to read the refs there.
 
+**A step that fails fails the run, whatever --expect matched** — the page before your steps may
+already carry the text. The failure names the step: `act: step 2 (click ref=button/Decline)
+failed: ref=button/Decline matches nothing on this page — the run is NOT verified, whatever
+--expect matched.` and `--json` carries it as `failed_step: {index, op, selector, error}`.
+Steps before it may have run; look at `page.png` before you retry.
+
 **A redirect is said.** After every goto, `act` and `run` compare where the page landed with the
 URL you gave; a changed path, or most of your query dropped, prints
 `redirected: <asked> → <landed> (<why>)`. If nothing but a goto had run, the cold browser stops

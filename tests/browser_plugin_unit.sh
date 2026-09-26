@@ -7023,5 +7023,105 @@ for f41 in README.md AGENTS.md; do
 done
 tc 'T41i CHANGES.md carries the entry' 'DIVE-4991' "$(cat "$ROOT/CHANGES.md")"
 
+# ============================================================== T42 DIVE-4990
+# A FAILED STEP FAILS `act`, WHATEVER --expect MATCHED, AND THE FAILURE NAMES THE
+# STEP. Measured at 1.13.0 on a hotel site: step 2, `click ref=button/Decline`,
+# failed "matches nothing on this page", and the run printed "verified: the page
+# after the steps matches --expect" and exited 0 — the expected text was on the
+# page before any step ran. The T40 stubs (a page that knows its refs, reflex
+# off): a ref with no near name fails step 2 on the page the goto left, and that
+# page carries the text --expect asks for. Cold and warm:
+#   T42a  a failed step 2 + an --expect that matches the unchanged page: rc 1, no
+#         `verified`, stderr names step 2 and its error; --json is step_failed
+#         with failed_step.index 2
+#   T42b  CONTROL: every step ok + a matching --expect: verified, rc 0
+#   T42c  every step ok + no match: NOT VERIFIED, as before
+#   T42d  a failed step and no --expect: step_failed, naming the step
+#   T42e  MUTANT: the old verdict (--expect alone decides, no step named) — a and d red
+#   T42f  documented where agents and people read it
+T42="$TMP/t42"; mkdir -p "$T42"
+FAIL42='[{"op":"click","selector":"ref=button/Checkout"}]'
+OK42='[{"op":"click","selector":"ref=button/Decline all"}]'
+NAMED42='step 2 (click ref=button/Checkout) failed: ref=button/Checkout matches nothing on this page'
+act42() {  # act42 <steps> [act flags...] — cold, on the T40 page, reflex off
+  local st="$1"; shift
+  : > "$PWREC"; touch "$T40/rfx-off"
+  run t40env "${T42BIN:-$BROWSER}" act "https://shop40.test/" --steps="$st" --out="$T42/cold" "$@"
+}
+
+# --- cold ------------------------------------------------------------------------------------
+act42 "$FAIL42" --expect='stub after'
+t  'T42a cold: step 2 failed, --expect matches the unchanged page: act fails (1)' 1 "$RC"
+tn 'T42a cold: ...and says nothing is verified on stdout' 'verified' "$OUT"
+tc 'T42a cold: ...the failure names step 2 and its error' "$NAMED42" "$ERR"
+tc 'T42a cold: ...and says --expect did not save it' 'the run is NOT verified, whatever --expect matched' "$ERR"
+t  'T42a cold: (anchor) the page did carry the expected text' 1 "$(grep -c 'stub after' "$T42/cold/page.html")"
+act42 "$FAIL42" --expect='stub after' --json
+t  'T42a cold --json: step_failed, failed_step index 2, op click, the selector, the error' \
+   'step_failed 2 click ref=button/Checkout true 1' \
+   "$(jq -r '"\(.verdict) \(.failed_step.index) \(.failed_step.op) \(.failed_step.selector) \(.failed_step.error|startswith("ref=button/Checkout matches nothing on this page")) \(.executor_rc)"' <<<"$OUT")"
+act42 "$OK42" --expect='stub after'
+t  'T42b cold CONTROL: every step ok, --expect matches: verified (0)' '0 verified: the page after the steps matches --expect' \
+   "$RC $(grep '^verified' <<<"$OUT")"
+act42 "$OK42" --expect='stub after' --json
+t  'T42b cold CONTROL --json: verified, no failed_step' 'verified null' "$(jq -r '"\(.verdict) \(.failed_step)"' <<<"$OUT")"
+act42 "$OK42" --expect='Booking confirmed' --expect-wait=0
+t  'T42c cold: every step ok, no match: NOT VERIFIED (1), as before' 1 "$RC"
+tc 'T42c cold: ...said as NOT VERIFIED' 'NOT VERIFIED — the executor exited 0' "$ERR"
+act42 "$FAIL42"
+t  'T42d cold: a failed step, no --expect: step_failed (1)' 1 "$RC"
+tc 'T42d cold: ...naming the step' "$NAMED42" "$ERR"
+tn 'T42d cold: ...and no word about --expect it was not given' 'whatever --expect' "$ERR"
+
+# --- warm: the second copy of the step loop ----------------------------------------------------
+cp "$T40/refs.json" "$T42/wrefs.json"; touch "$T40/rfx-off"
+mkprofile warm42.test "$LIVE_DOM" >/dev/null
+dserve warm42.test FIVEDIVE_BROWSER_CLI="$RFX40" DPWREFS="$T42/wrefs.json"
+t  'T42 (precondition) a warm session is up' 0 "$RC"
+w42() {  # w42 <steps> [act flags...] — act on the served browser, whose page says "posts"
+  local st="$1"; shift
+  dwarm "${T42BIN:-$BROWSER}" act warm42.test "https://warm42.test/" --steps="$st" --out="$T42/warm" "$@"
+}
+w42 "$FAIL42" --expect='posts'
+t  'T42a warm: step 2 failed, --expect matches the unchanged page: act fails (1)' 1 "$RC"
+tn 'T42a warm: ...and says nothing is verified on stdout' 'verified' "$OUT"
+tc 'T42a warm: ...the failure names step 2 and its error' "$NAMED42" "$ERR"
+w42 "$FAIL42" --expect='posts' --json
+t  'T42a warm --json: step_failed, failed_step index 2' 'step_failed 2 click' \
+   "$(jq -r '"\(.verdict) \(.failed_step.index) \(.failed_step.op)"' <<<"$OUT")"
+w42 "$OK42" --expect='posts'
+t  'T42b warm CONTROL: every step ok, --expect matches: verified (0)' '0 verified: the page after the steps matches --expect' \
+   "$RC $(grep '^verified' <<<"$OUT")"
+w42 "$OK42" --expect='Booking confirmed' --expect-wait=0
+t  'T42c warm: every step ok, no match: NOT VERIFIED (1)' 1 "$RC"
+tc 'T42c warm: ...said as NOT VERIFIED' 'NOT VERIFIED' "$ERR"
+w42 "$FAIL42"
+t  'T42d warm: a failed step, no --expect: step_failed (1)' 1 "$RC"
+tc 'T42d warm: ...naming the step' "$NAMED42" "$ERR"
+
+# --- T42e MUTANT: the old verdict -------------------------------------------------------------
+MUT42="$T42/mut"; rm -rf "${MUT42:?}"; cp -r "$ROOT/browser" "$MUT42"
+sed -i -e 's/^  if (( drc != 0 )); then$/  if false; then  # MUTANT (old verdict)/' \
+       -e 's/^    verdict=executed; rc=0$/    verdict=$([[ "$drc" == 0 ]] \&\& echo executed || echo step_failed); rc=$(( drc == 0 ? 0 : 1 ))  # MUTANT (old verdict)/' \
+       -e 's/^  fstep=\$(grep .*$/  fstep=""  # MUTANT (old verdict)/' "$MUT42/bin/browser"
+t  'T42e (anchor) the three mutations landed in act'"'"'s verdict' 3 "$(grep -c 'MUTANT (old verdict)' "$MUT42/bin/browser")"
+T42BIN="$MUT42/bin/browser" act42 "$FAIL42" --expect='stub after'
+t  'T42e MUTANT (old verdict), cold: the failed step 2 reads verified (0) — T42a is red' '0 verified: the page after the steps matches --expect' \
+   "$RC $(grep '^verified' <<<"$OUT")"
+T42BIN="$MUT42/bin/browser" act42 "$FAIL42"
+tn 'T42e MUTANT (old verdict), cold: no step named — T42d is red' 'step 2 (click' "$ERR"
+tc 'T42e ...(anchor) it did fail, the old way' 'a step failed (the executor exited 1)' "$ERR"
+T42BIN="$MUT42/bin/browser" w42 "$FAIL42" --expect='posts'
+t  'T42e MUTANT (old verdict), warm: the failed step 2 reads verified (0)' '0 verified: the page after the steps matches --expect' \
+   "$RC $(grep '^verified' <<<"$OUT")"
+env PATH="$SPATH" "$BROWSER" serve warm42.test --stop >/dev/null 2>&1
+
+# --- T42f the words -----------------------------------------------------------------------------
+for f in browser/README.md browser/AGENTS.md CHANGES.md; do
+  tc "T42f $f says a failed step fails act whatever --expect matched" \
+     'step that fails fails the run, whatever --expect matched' "$(tr -s ' \n' '  ' < "$ROOT/$f")"
+done
+tc 'T42f CHANGES.md names the --json field' 'failed_step' "$(cat "$ROOT/CHANGES.md")"
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

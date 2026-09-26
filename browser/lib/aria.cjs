@@ -789,6 +789,18 @@ const E_NEEDS_OWNER = 73;
 // the step runs, and bin/browser writes it to the owner's log.
 const OWNER_ALLOWED_PREFIX = '5dive-owner-allowed: ';
 
+// ...and the line for THE STEP THAT FAILED (DIVE-4990), from both loops alike: an
+// `act` whose step 2 failed printed "verified" because --expect matched the page
+// the goto left, and the failure named no step. bin/browser keys on this line to
+// fail the run whatever --expect matched, and to say which step it was.
+const STEP_FAILED_PREFIX = '5dive-step-failed: ';
+function failedStep(index, step, e) {
+  const where = `step ${index} (${step.op})`;
+  let error = String((e && e.message) || e || 'failed').split('\n')[0].trim();
+  if (error.startsWith(`${where}: `)) error = error.slice(where.length + 2);
+  return { index, op: step.op, selector: step.selector || null, error: error.replace(/\.$/, '') };
+}
+
 // ---- WHERE A GOTO LANDED (DIVE-4991) ----------------------------------------
 //
 // A cold `act` of a Booking search URL landed on the undated city page every
@@ -897,6 +909,7 @@ module.exports = { INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSel
   isRef, render, REF_PREFIX,
   typeDelay, typeRefusal, typeKeys, TYPE_DELAY_DEFAULT, TYPE_DELAY_MAX,
   classifyLabel, stepRisk, pageAfter, NEEDS_OWNER_PREFIX, E_NEEDS_OWNER, OWNER_ALLOWED_PREFIX,
+  STEP_FAILED_PREFIX, failedStep,
   redirectWhy, checkLanding, E_REDIRECTED,
   _payloadIn, cleanText, cleanPayload,
   waitForVisible, _visibleIn, _textIn, _scopeIn };
