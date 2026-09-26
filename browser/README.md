@@ -584,7 +584,7 @@ when.
 | `x.com` | `/i/flow/login` | `name="username_or_email"` | logged-out form, three renders (8s, 25s, Playwright 15s); the logged-in half is unmeasured because no x.com profile exists — that gap fails SAFE (a false "expired" asks a person; never a false "authenticated") |
 | `github.com` | `/settings/profile` | `action="/session"` | BOTH halves: 3 matches on the sign-in page logged out, 0 on "Your profile" logged in |
 | `google.com` | `accounts.google.com/signin/v2/identifier` | `<title>Sign in - Google Accounts</title>` | BOTH halves: the sign-in page's title, exactly, 1 match logged out (an 857 KB render, throwaway profile); 0 logged in, where `status` read authenticated. It probes the sign-in page because a logged-out `myaccount.google.com` renders a marketing page with 0 matches, and it matches the title, not the words "Sign in". The `send` action's steps and its Sent-folder verify were measured on a live Gmail on 2026-09-25 (see the file's `_comment`) |
-| `booking.com` | `/` | `data-testid="auth-link-in-view"` | BOTH halves: 1 match in each of two logged-out renders, 0 in the logged-in one (header "Your account", Genius level), where `status` read authenticated. The first draft's marker was the Sign in link's href, `account.booking.com/auth/oauth2?client_id=`, as counted; the marker is a regex, `2?` is an optional 2, and it matched 0 logged-out renders. It ships two actions, `search` and `hotels` (`--city --checkin --checkout --adults --rooms --max_eur`, dates YYYY-MM-DD, cheapest first): run `serve booking.com` first — a cold `run` of a results URL is redirected to an undated city page — and expect NOT VERIFIED, because the verify is a public fetch and Booking answers that with a different page |
+| `booking.com` | `/` | `data-testid="auth-link-in-view"` | BOTH halves: 1 match in each of two logged-out renders, 0 in the logged-in one (header "Your account", Genius level), where `status` read authenticated. The first draft's marker was the Sign in link's href, `account.booking.com/auth/oauth2?client_id=`, as counted; the marker is a regex, `2?` is an optional 2, and it matched 0 logged-out renders. It ships two actions, `search` and `hotels` (`--city --checkin --checkout --adults --rooms --max_eur`, dates YYYY-MM-DD, cheapest first): a cold `run` of a results URL is redirected to an undated city page and retried once in the served browser (DIVE-4991), so `serve booking.com` first saves that round trip — and expect NOT VERIFIED, because the verify is a public fetch and Booking answers that with a different page |
 | `web.telegram.org` | `/k/` | out: `(page-signQR\|auth-qr-form\|…)`, **in:** `class="[^"]*chatlist` | the POSITIVE marker on both halves (9 matches on the settled live session, 0 on the shell and on a logged-out render); the logged-out marker matched 0 on the live session but its logged-out render was never observed — the K app does not paint sign-in inside the probe's window on a fresh profile. That gap fails SAFE only because of the positive marker: neither matching is `UNKNOWN`, not a login |
 
 Every shipped adapter but two has `"actions": {}`: they classify a session, and the actions a
@@ -738,6 +738,34 @@ allows one instance per profile directory and a second one hands its work to the
 and exits with an empty document. The login lives in the directory, not in the process. A **live
 viewer** is the exception: that is a person at a keyboard part-way through the login the viewer
 exists for, so it is a refusal rather than a cycle.
+
+**A redirected landing is said, and a cold run is retried once in the served browser (DIVE-4991).**
+Some sites answer the headless cold browser with a different page: a cold `act` of a Booking search
+URL, even one copied from a real browser, landed on the undated city page, and all anyone saw was
+the next step failing. After every `goto` (the `act` URL included) both executors compare the URL
+asked for with the one the page is on. It is a redirect when the path changed, or when more than
+half of the requested query keys are gone; a fragment that moved, a trailing slash, or the same path
+with params only added is the page that was asked for. A redirect prints, every time:
+
+```
+redirected: <asked> → <landed> (<why>); retrying once in the served browser
+```
+
+The retry clause appears only on the cold executor, and only while nothing but a `goto` has run: the
+cold run stops there and `act` or `run` takes the whole step list, once, through the served browser —
+serving the site if nothing was, and stopping it afterwards only if this run started it. Its result is
+the verdict. After a click, a fill or any other step, the line is printed on its own and nothing is
+replayed. A box with no session daemon or no Xvfb (or `FIVEDIVE_BROWSER_NO_DAEMON=1`) gets the line
+and the old behaviour; if the served browser will not start, the run stops at the redirect and says
+why. The served run is never retried again.
+
+Where reflex is configured, it is also asked whether the landing answered the request (requested
+and landed URL, the title, at most 300 characters of visible text; page text leaves the box only
+under that opt-in). `generic_page` or `bot_block` is a redirect; `login_wall` fails the run with
+`log in first: 5dive browser auth <site>`; `answered` at 0.9 or more overrides a base redirect. If
+reflex errors or is not configured, the URLs alone decide. It is reached as `5dive reflex landing
+<site> --state=<file> --json`, bounded by `FIVEDIVE_BROWSER_REFLEX_TIMEOUT_MS` (default 60000).
+The 5dive CLI has no `reflex landing` verb yet; until it ships, that call errors and the URLs decide.
 
 **Exit 70 means nothing ran.** `run`'s verdict is an out-of-band re-read of the artifact, which is
 the right grade for an action that executed and the wrong one for an action that never started —

@@ -153,6 +153,14 @@ document. Without it the command only says the steps ran — look at the `page.p
 before you tell anyone it worked. `act` also writes `tree.json` and `page.md` of the page it
 left, so you do not need a second `snapshot` to read the refs there.
 
+**A redirect is said.** After every goto, `act` and `run` compare where the page landed with the
+URL you gave; a changed path, or most of your query dropped, prints
+`redirected: <asked> → <landed> (<why>)`. If nothing but a goto had run, the cold browser stops
+there and your whole step list runs once in the served browser — the line ends
+`; retrying once in the served browser`, and that run's result is the one you get. After a click
+or a fill it is never replayed: read `page.png` and decide. `log in first: 5dive browser auth
+<site>` means reflex read the page as a login wall — ask the owner to connect the site.
+
 **Paying, posting, sending and deleting follow the owner's policy.** The default is yolo
 (DIVE-5006): `act` runs them, says `ALLOWED (default yolo)`, and logs each one, with what it sent
 and a screenshot, for the owner. Under the owner's `careful`
