@@ -25,8 +25,12 @@ repo — and that is the `connect-site` skill, not this one.
    a loading screen first: add `--wait-for='[role=main]'` (or `text=<words>` the loaded page
    has). **Exit 76 is not the page** — a loading screen or a `--wait-for` that never came; run it
    again with a `--wait-for`, and do not ask anyone to log in.
-2. **Act** on those refs. Steps are `goto fill click wait_for select press`, run in order, in
-   one tab under one lease. Without a URL, `act` continues on the page a served browser holds.
+2. **Act** on those refs. Steps are `goto fill type click wait_for select press`, run in order,
+   in one tab under one lease. Without a URL, `act` continues on the page a served browser holds.
+   Use `type` for search boxes and autocompletes that react to keystrokes, and `fill` for plain
+   inputs: `fill` sets the value with no key presses, so a suggestion list never opens. `type`
+   goes key by key (`"delay_ms"`, default 50); pick the suggestion with a `wait_for` and a
+   `click`.
 3. **Verify.** `--expect=<regex>` grades the page as the steps left it, re-read for up to 5 s so
    a toast counts. Without it, `act` only says the steps ran — open the `page.png` it wrote
    before you tell anyone it worked.

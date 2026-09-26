@@ -113,6 +113,7 @@ function seatOfUid(uid) {
 const STEPS = {
   goto:     ['url'],
   fill:     ['selector', 'value'],
+  type:     ['selector', 'value'],
   click:    ['selector'],
   wait_for: ['selector'],
   select:   ['selector', 'value'],
@@ -746,6 +747,12 @@ async function planRequest(ctx, req, send, end) {
         out[field] = field === 'selector' || req.literal ? s[field]
           : interpOrThrow(s[field], args, `step ${i + 1} (${s.op})`, field === 'url' ? encodeURIComponent : null);
       }
+      // `type`'s delay_ms and value, checked with the rest, as the one-shot driver does.
+      if (s.op === 'type') {
+        const why = aria.typeRefusal(s.delay_ms, out.value);
+        if (why) { const e = new Error(`step ${i + 1} (type) ${why}`); e.nothingRan = true; throw e; }
+        out.delay_ms = aria.typeDelay(s.delay_ms);
+      }
       return out;
     });
   } catch (e) {
@@ -793,6 +800,7 @@ async function planRequest(ctx, req, send, end) {
           break;
         }
         case 'fill':     await page.fill(sel, s.value); break;
+        case 'type':     await aria.typeKeys(page, sel, s.value, s.delay_ms, { timeoutMs: STEP_TIMEOUT }); break;
         case 'click':    await page.click(sel); break;
         case 'wait_for': await page.waitForSelector(sel); break;
         case 'select':   await page.selectOption(sel, s.value); break;

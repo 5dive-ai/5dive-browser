@@ -190,11 +190,13 @@ usage() {
                                       # loading screen, or a --wait-for that never came,
                                       # is NOT the page: exit 76, partial: true.
   5dive browser act <url> --steps='[{"op":"click","selector":"ref=button/Star"}]'
-                                      # click / fill / select / press on refs, in one
-                                      # tab under one lease; --expect=<regex> grades
-                                      # the page the steps left, re-read for up to
-                                      # --expect-wait ms (5000) so a toast counts. It
-                                      # leaves page.md and tree.json like a snapshot.
+                                      # click / fill / type / select / press on refs, in
+                                      # one tab under one lease. `type` goes key by key,
+                                      # for a box whose suggestions open on keystrokes.
+                                      # --expect=<regex> grades the page the steps left,
+                                      # re-read for up to --expect-wait ms (5000) so a
+                                      # toast counts. It leaves page.md and tree.json
+                                      # like a snapshot.
                                       # Paying, posting, sending and deleting run and
                                       # are logged (the default, yolo). Under the
                                       # owner's `careful` they STOP (exit 73) and name
@@ -1323,7 +1325,7 @@ _ls_box_offers() {
 # whole reason the adapter exists rather than a model reading the page. There is
 # deliberately no `eval`, no `script`, and no free-text instruction step: any of
 # those would make the adapter a program the executor merely hosts.
-ADAPTER_STEPS="goto fill click wait_for select upload press"
+ADAPTER_STEPS="goto fill type click wait_for select upload press"
 
 _adapter_validate() {
   local f="$1" action="$2"
@@ -4493,7 +4495,7 @@ cmd_snapshot() {
 # executes an adapter's recipe, and every shipped adapter has `actions: {}` — so
 # no agent on any box could click or type anything. `act` is the generic half:
 # the agent reads refs off `snapshot --interactive`, and hands back a short list
-# of steps in the SAME fixed vocabulary `run` uses (goto fill click wait_for
+# of steps in the SAME fixed vocabulary `run` uses (goto fill type click wait_for
 # select press), executed by the SAME executors, under the same lease.
 #
 # WHAT IS THE SAME AS `run`, on purpose: the lease, the login gate, the step
@@ -4513,7 +4515,7 @@ cmd_snapshot() {
 # a served (warm) browser the tab also survives between calls, so `act` with no
 # URL continues on the page the last call left; without one, the next call starts
 # from a fresh load.
-ACT_VOCAB='goto fill click wait_for select press'
+ACT_VOCAB='goto fill type click wait_for select press'
 ACT_MAX_STEPS=40
 # How long --expect is re-read after the last step before NOT VERIFIED
 # (DIVE-4983): a toast lands a second or two after the click that caused it.

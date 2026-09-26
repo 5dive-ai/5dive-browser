@@ -37,7 +37,7 @@ resolves the profile once, in `_route_site`: the host's one connected login; the
 connected site); a refusal naming the accounts when there are several (`github.com_work`,
 `github.com_personal` — a profile is `<site>_<label>`, and which account acts is the owner's call).
 
-`act` runs agent-written steps in the fixed vocabulary (`goto fill click wait_for select press`)
+`act` runs agent-written steps in the fixed vocabulary (`goto fill type click wait_for select press`)
 through the same executors, lease and login gate as `run`, and grades `--expect` against the page
 as the steps left it. **Paying, publishing, sending and deleting run and are logged by default
 (yolo, DIVE-5006); under the owner's `careful` they stop before the step** (exit 73): the executor
@@ -647,7 +647,7 @@ sudo 5dive browser adapters reject linkedin.com
   the signed-out shell for days before anyone looked.
 
 Its steps come from a closed vocabulary —
-`goto fill click wait_for select upload press` — and a step outside it is a **load-time refusal**.
+`goto fill type click wait_for select upload press` — and a step outside it is a **load-time refusal**.
 There is no `eval`, no `script` and no free-text instruction step, because any of those would make
 the adapter a program the executor merely hosts. The LLM decides *what* to distribute, where, and
 whether it is worth doing; the **adapter** decides where to click, what to fill, how to publish.
@@ -678,6 +678,21 @@ send read NOT VERIFIED. An action's verify can say so:
 adapter loads. Arguments go in as what they are: into any `url` (a step's or the verify's)
 URL-encoded, so a subject with `&`, `#` or a space stays one parameter, and into `verify.expect`
 regex-escaped, so "Q3 (draft)" matches itself. A `fill` value is typed exactly as given.
+
+**`fill` or `type`.** Use `type` for search boxes and autocompletes that react to keystrokes, and
+`fill` for plain inputs. `fill` is `page.fill`: the value lands in one input event, with no
+keydown, keypress or keyup, so a suggestion list that opens on keystrokes never opens — a hotel
+search filled with "Lisbon" searched an empty city. `type` clears the field as `fill` does, then
+types the value key by key (`locator.pressSequentially`), `delay_ms` apart: optional, whole
+milliseconds, default 50, at most 1000; anything else is refused before the browser opens. Its
+value takes the same `{key}` arguments as `fill`, and like `fill` it is not one of the owner's
+four. A value with a line break is refused, arguments included: typed, a line break is the Enter
+key, which sends the form without the owner's policy reading it — press Enter as its own step.
+The step's bound grows with the text, so a long value is never cut off half-typed.
+
+```json
+{"op":"type","selector":"ref=textbox/Where to?","value":"{city}","delay_ms":80}
+```
 
 ## The executor
 
