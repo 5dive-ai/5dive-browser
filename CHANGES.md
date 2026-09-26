@@ -10,6 +10,46 @@ that file stays where it is.
 
 ## Released
 
+### Added — a redirected landing is said, and a cold run is retried once in the served browser (DIVE-4991), browser 1.22.0
+
+**Before:** a cold `act` or `run` that the site redirected said nothing about it. Measured
+2026-09-26 on booking.com: three different search URLs, one copied from a real browser with
+`dest_id`, `label` and `ac_meta`, landed on `https://www.booking.com/city/pt/lisbon.html`; the
+next `wait_for [data-testid=property-card]` failed with "a step failed (the executor exited 1)",
+and nothing said a redirect had happened. A fourth landed on `searchresults.html?nflt=…` with the
+dates and `ss` dropped. The same URLs after `serve booking.com` landed on the results (477
+properties found).
+
+**Now:** after every `goto` (the `act` URL included) both executors compare the URL asked for with
+the one the page is on, and a redirect prints:
+
+```
+redirected: https://www.booking.com/searchresults.html?ss=Lisbon&… → https://www.booking.com/city/pt/lisbon.html (path /searchresults.html became /city/pt/lisbon.html); retrying once in the served browser
+```
+
+- A redirect is a changed path, or more than half of the requested query keys missing. A moved
+  fragment, a trailing slash, or the same path with params only added is not one.
+- On the cold executor, while nothing but a `goto` has run, the run stops there and `act` or `run`
+  takes the whole step list once through the served browser: served if nothing was, and stopped
+  afterwards only if this run started it. That run's result is the verdict. Never twice.
+- After a click, fill or any other step, the line alone, and nothing is replayed. The served
+  executor prints the line and has nothing to retry in. No session daemon or no Xvfb on the box
+  (or `FIVEDIVE_BROWSER_NO_DAEMON=1`): the line alone. A served browser that will not start: the
+  run stops at the redirect and says why.
+- Optional, where reflex is configured: `5dive reflex landing <site> --state=<file> --json` is
+  asked whether the landing answered the request (requested and landed URL, title, at most 300
+  characters of visible text — page text leaves the box only under that opt-in). `generic_page`
+  or `bot_block` is a redirect, `login_wall` fails with `log in first: 5dive browser auth <site>`,
+  `answered` at 0.9 or more overrides a base redirect, and an error leaves the base verdict.
+  `FIVEDIVE_BROWSER_REFLEX_TIMEOUT_MS` bounds it (default 60000). With no reflex nothing is asked.
+  The 5dive CLI has no `reflex landing` verb yet; until it ships, the call errors and the URLs
+  decide, so this tier changes nothing today.
+- Harness T41: a changed path retried once in a served browser the run starts and stops (`act`);
+  dropped keys retried (`run`); added params, a moved fragment, a trailing slash and exactly half
+  the keys not; no replay after a click; reflex's login_wall (cold and warm), answered over and under 0.9,
+  generic_page, and an error; no reflex, no served browser, a served browser that will not start; one retry when the served run
+  is redirected too; the landing check removed from both loops as the mutant.
+
 ### Added — a step whose ref matches nothing is retried once, on the element reflex or a name match picks, browser 1.21.0
 
 **Before:** a step whose `ref=` matched nothing failed with `ref=… matches nothing on this page`,

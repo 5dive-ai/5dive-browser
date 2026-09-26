@@ -500,7 +500,7 @@ async function main() {
   // where a second caller cannot get a laxer one.
   const ctx = await openProfile(profile);
 
-  let rc = 0, needsOwner = null, page = null, retry = null;
+  let rc = 0, needsOwner = null, page = null, retry = null, acted = false, redirected = false;
   try {
     page = ctx.pages()[0] || await ctx.newPage();
     page.setDefaultTimeout(STEP_TIMEOUT);
@@ -541,6 +541,7 @@ async function main() {
         }
       }
       stepsRun++;  // entered, not completed — see stepsRun above
+      if (s.op !== 'goto') acted = true;
       switch (s.op) {
         case 'goto':
           await page.goto(s.url, { waitUntil: 'domcontentloaded' });
@@ -557,7 +558,17 @@ async function main() {
       if (retry) process.stderr.write(`  ${retry}ok\n`);
       retry = null;
       process.stderr.write(`  ${where} ok\n`);
+      // WHERE THE GOTO LANDED (DIVE-4991), said every time. While nothing but a
+      // goto has run, a redirect stops this cold run here and bin/browser runs the
+      // whole plan once more in the served browser; after a click, never.
+      if (s.op === 'goto' && plan.landing) {
+        const land = await aria.checkLanding(page, s.url, plan.landing, { mayRetry: !acted });
+        if (land.line) process.stderr.write(land.line + '\n');
+        if (land.loginWall) throw new Error(`${where}: ${land.loginWall}`);
+        if (land.retry) { redirected = true; break; }
+      }
     }
+    if (redirected) rc = aria.E_REDIRECTED;
     if (needsOwner) {
       process.stderr.write(aria.NEEDS_OWNER_PREFIX + JSON.stringify(needsOwner) + '\n');
       rc = aria.E_NEEDS_OWNER;

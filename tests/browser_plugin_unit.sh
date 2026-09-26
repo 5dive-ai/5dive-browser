@@ -2307,9 +2307,15 @@ const late = () => !!process.env.PWLATE_MS && clock >= Number(process.env.PWLATE
 // the measured defect; pressSequentially sends one key per character. Unset,
 // waitForSelector answers as it always did.
 let keydowns = 0;
+// DIVE-4991: A PAGE LANDS WHERE IT WAS ASKED, unless PWLAND names where it
+// lands instead (a redirect) — every goto, or only the one to PWLAND_FROM. PWURL,
+// older, pins url() whatever the goto was.
+let lastGoto = '';
+const landed = () => (process.env.PWLAND && (!process.env.PWLAND_FROM || lastGoto === process.env.PWLAND_FROM)
+  ? process.env.PWLAND : lastGoto);
 const page = {
   setDefaultTimeout: (t) => rec({ call: 'setDefaultTimeout', t }),
-  goto: async (url, o) => { clock = 0; keydowns = 0; rec({ call: 'goto', url }); },
+  goto: async (url, o) => { clock = 0; keydowns = 0; lastGoto = url; rec({ call: 'goto', url }); },
   fill: async (sel, val) => {
     rec({ call: 'fill', sel, val });
     // PWPREEMPT_FILE: a PERSON arrives mid-run. Writing the lease file from
@@ -2403,7 +2409,7 @@ const page = {
   },
   selectOption: async (sel, val) => rec({ call: 'selectOption', sel, val }),
   // DIVE-4943: `act` re-reads the page as the steps left it.
-  url: () => process.env.PWURL || 'https://stub.test/after',
+  url: () => process.env.PWURL || (lastGoto && landed()) || 'https://stub.test/after',
   title: async () => process.env.PWTITLE || 'stub after',
   content: async () => (late() && process.env.PWHTML_LATE) || process.env.PWHTML || '<html><body>stub after</body></html>',
   setInputFiles: async (sel, p) => rec({ call: 'setInputFiles', sel, path: p }),
@@ -3487,13 +3493,15 @@ let markWalks = 0;   // DIVE-4674, see the driver stub
 // DIVE-4983: the driver stub's page clock, per tab, with the late state named by
 // FILES (DPWSNAP_LATE, DPWDOM_LATE) and DPWTEXT/DPWTEXT_LATE, fixed at `serve`.
 // DPWSUGGEST: the driver stub's keystroke-driven search box (PWSUGGEST), per tab.
-const mkpage = (kind) => { let clock = 0, keydowns = 0;
+// DIVE-4991: a tab lands where its goto asked, unless the FILE DPWLAND names
+// where it lands instead (a redirect in the served browser).
+const mkpage = (kind) => { let clock = 0, keydowns = 0, lastGoto = '';
   const late = () => !!process.env.DPWLATE_MS && clock >= Number(process.env.DPWLATE_MS);
   return {
   setDefaultTimeout: (t) => rec({ call: 'setDefaultTimeout', t, kind }),
   // DPWGOTO_MS: a page that takes real time to load, so two requests can
   // overlap in the daemon (DIVE-4927, T27m). Unset, a goto is instant as before.
-  goto: async (url) => { clock = 0; keydowns = 0; rec({ call: 'goto', url, kind });
+  goto: async (url) => { clock = 0; keydowns = 0; lastGoto = url; rec({ call: 'goto', url, kind });
     if (process.env.DPWGOTO_MS) await new Promise((r) => setTimeout(r, Number(process.env.DPWGOTO_MS))); },
   content: async () => { rec({ call: 'content', kind });
     return fs.readFileSync((late() && process.env.DPWDOM_LATE) || process.env.DPWDOM, 'utf8'); },
@@ -3523,7 +3531,8 @@ const mkpage = (kind) => { let clock = 0, keydowns = 0;
   // DIVE-4943: `act` re-reads the page the steps left, and the owner-approval
   // guard reads the live label. The daemon's env is fixed at `serve` time, so the
   // label an arm wants is read from a FILE per call (DPWLABEL), not from env.
-  url: () => 'https://warm.test/after',
+  url: () => { try { return fs.readFileSync(process.env.DPWLAND, 'utf8').trim(); }
+               catch (e) { return lastGoto || 'https://warm.test/after'; } },
   title: async () => 'warm after',
   evaluate: async (fn, arg) => {
     if (arg && arg.riskOf) {
@@ -5235,7 +5244,9 @@ run actenv "$MUT32G" act "https://noadapter.test/x" --steps="$STAR"
 t  'T32c MUTANT (no generic check): the LIVE no-adapter login is refused again' 75 "$RC"
 # the render itself is re-checked: the site's front page was fine, the page asked for is a sign-in
 : > "$PWREC"
-run actenv env PWURL="https://noadapter.test/login?next=/x" "$BROWSER" act "https://noadapter.test/x" --steps="$STAR"
+# Cold, and only cold: this grades the guard after the fact, not the served retry a
+# redirect gets where a served browser can be had (DIVE-4991, T41).
+run actenv env PWURL="https://noadapter.test/login?next=/x" FIVEDIVE_BROWSER_NO_DAEMON=1 "$BROWSER" act "https://noadapter.test/x" --steps="$STAR"
 t  'T32c a page that ENDS on a sign-in URL is refused after the fact' 75 "$RC"
 tc 'T32c ...naming the redirect' 'redirected to a sign-in' "$ERR"
 
@@ -6672,7 +6683,8 @@ tc 'T40a ...and it says so, plainly' \
 t  'T40a ...pick-ref was asked once' 1 "$(picks40)"
 tc 'T40a ...with the op, and (no intent field) the ref in words' '--op=click --intent=button named Decline --json' \
    "$(cat "$RFXREC40")"
-tc 'T40a ...about the page it was on' 'reflex pick-ref stub.test --tree=' "$(cat "$RFXREC40")"
+# The stub page is on the URL its goto asked for (DIVE-4991), so that is the site.
+tc 'T40a ...about the page it was on' 'reflex pick-ref shop40.test --tree=' "$(cat "$RFXREC40")"
 t  'T40a ...and the tree it read is the interactive nodes of that page' \
    'button/Decline all,button/Accept all,button/Send,textbox/Search in your own words' \
    "$(jq -r '[.nodes[].ref]|join(",")' "$T40/tree-seen.json" 2>/dev/null)"
@@ -6777,7 +6789,7 @@ w40 "$CLICK40"
 t  'T40a warm: reflex picks at 0.99, retried on the pick (0)' '0 [data-5dive-ref="r0"]' "$RC $(wtape40 click)"
 tc 'T40a warm: ...and says so' \
    'step 2: ref=button/Decline matched nothing; reflex picked ref=button/Decline all (conf 0.99); retried: ok' "$ERR"
-tc 'T40a warm: ...about the page it was on' 'reflex pick-ref warm.test --tree=' "$(cat "$RFXREC40")"
+tc 'T40a warm: ...about the page it was on' 'reflex pick-ref warm40.test --tree=' "$(cat "$RFXREC40")"
 pick40 'button/Send' 0.99
 w40 '[{"op":"click","selector":"ref=button/Send now"}]'
 t  'T40b warm: a Send is never retargeted (1)' '1 ' "$RC $(wtape40 click)"
@@ -6822,6 +6834,194 @@ for f in browser/README.md browser/AGENTS.md CHANGES.md; do
      'is retried once, on the element reflex picks at confidence 0.9 or more' "$(tr -s ' \n' '  ' < "$ROOT/$f")"
 done
 tc 'T40h CHANGES.md names the intent field' '"intent"' "$(cat "$ROOT/CHANGES.md")"
+
+# ============================================================== T41 DIVE-4991
+# A REDIRECTED LANDING IS SAID, AND A COLD RUN IS RETRIED ONCE IN THE SERVED
+# BROWSER. Measured 2026-09-26 on booking.com: a cold `act` of three different
+# search URLs landed on the undated city page, and the next step's failure was
+# all anyone saw; the same URLs through `serve` landed on the results. The stubs
+# land a goto where it asked unless PWLAND (cold) or the file DPWLAND (served)
+# says otherwise. Each arm is the mutant of one rule:
+#   T41a  a changed path: the cold run stops at the goto and the whole plan runs
+#         once in a served browser, which the run started and stops again
+#   T41b  more than half the query keys dropped, on `run` (an adapter search)
+#   T41c  params only ADDED, the fragment alone moved, a trailing slash: no redirect
+#   T41d  a click already ran: the line, and no replay
+#   T41e  reflex, through a stub CLI: login_wall fails with the auth line, cold and
+#         warm; answered >= 0.9 overrides the base; generic_page is a redirect; an
+#         error leaves the base verdict
+#   T41f  reflex not configured: never asked, and the base alone retries; no served
+#         browser to be had, or one that will not start: the line, and no retry
+#   T41g  the served run redirected too: one retry, never two
+#   T41h  MUTANT: the landing check removed from both loops
+#   T41i  the words
+unset FIVEDIVE_BROWSER_DRIVER
+T41="$TMP/t41"; mkdir -p "$T41/pw/node_modules/playwright-core"
+# ONE NODE_PATH FOR BOTH EXECUTORS. The retry starts the served browser from
+# inside the command, so the daemon inherits the arm's NODE_PATH; which stub a
+# process gets is decided by which program it is.
+printf '{ "name": "playwright-core", "version": "0.0.0-t41", "main": "index.js" }\n' \
+  > "$T41/pw/node_modules/playwright-core/package.json"
+cat > "$T41/pw/node_modules/playwright-core/index.js" <<'T41JS'
+const path = require('path');
+module.exports = require(path.basename(process.argv[1] || '') === 'session-daemon'
+  ? process.env.T41_DAEMON_STUB : process.env.T41_DRIVER_STUB);
+T41JS
+R41="$(mkprofile redir.test "$LIVE_DOM")"
+Q41='https://redir.test/searchresults.html?ss=Lisbon&checkin=2026-10-14&checkout=2026-10-15&group_adults=2'
+CITY41='https://redir.test/city/pt/lisbon.html'
+WAIT41='[{"op":"wait_for","selector":"[data-testid=property-card]"}]'
+printf '<html><body>477 properties found</body></html>' > "$T41/results.html"
+cat > "$FIVEDIVE_BROWSER_ADAPTER_DIR/redir.test.json" <<JSON
+{ "site": "redir.test",
+  "probe": { "url": "https://redir.test/feed", "logged_out_when_dom_matches": "action=\"/login\"" },
+  "actions": { "search": {
+      "steps": [ {"op":"goto","url":"https://redir.test/searchresults.html?ss={city}&checkin={checkin}&checkout={checkout}&nflt=ht_id%3D204"},
+                 {"op":"wait_for","selector":"[data-testid=property-card]"} ],
+      "verify": { "url": "file://$T41/results.html", "expect": "properties found" } } } }
+JSON
+# `5dive reflex …` as bin/browser reaches it (FIVEDIVE_BROWSER_CLI). T41_RFX is the
+# answer to `landing`, T41_RFX_RC its exit, T41_RFX_CONF what `status` says.
+RFX41="$T41/5dive"; RFXLOG41="$T41/rfx.log"
+cat > "$RFX41" <<'RFX'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$T41_RFXLOG"
+[[ "${1:-}" == reflex ]] || exit 64
+case "${2:-}" in
+  status)  printf '{"configured":%s}\n' "${T41_RFX_CONF:-true}" ;;
+  landing) for a in "$@"; do [[ "$a" == --state=* ]] && cp "${a#*=}" "$T41_RFXLOG.state"; done
+           printf '%s\n' "${T41_RFX:-}"; exit "${T41_RFX_RC:-0}" ;;
+  *) exit 64 ;;
+esac
+RFX
+chmod +x "$RFX41"
+# Xvfb is the fake from SBIN, so a served browser can be had (T41f takes it
+# away); google-chrome stays the DOM-serving fake, so the cold probe reads the
+# profile and the fallback serve stays up.
+t41env() { env PATH="$SBIN:$PATH" DISPLAY= NODE_PATH="$T41/pw/node_modules" \
+               T41_DRIVER_STUB="$PWROOT/node_modules/playwright-core" T41_DAEMON_STUB="$DSTUB/node_modules/playwright-core" \
+               PWREC="$PWREC" DPWDOM="$DPWDOM" DPWLAND="$T41/dland" T41_RFXLOG="$RFXLOG41" \
+               FIVEDIVE_BROWSER_RUN_SETTLE_MS=0 "$@"; }
+act41() {  # act41 <url> <steps> [env assignments...]
+  local u="$1" st="$2"; shift 2
+  : > "$PWREC"; : > "$RFXLOG41"; rm -f "$RFXLOG41.state"
+  run t41env "$@" "${T41BIN:-$BROWSER}" act redir.test "$u" --steps="$st" --out="$T41/out"
+}
+reflex41() { echo FIVEDIVE_BROWSER_CLI="$RFX41" T41_RFX="$1"; }
+# The cold executor's records carry no `kind`; the served one's are kind=first.
+cold41() { jq -rs '[.[]|select(.kind==null)|select(.call|IN("goto","click","waitForSelector"))|.call]|join(" ")' "$PWREC"; }
+warm41() { jq -rs '[.[]|select(.kind=="first")|select(.call|IN("goto","click","waitForSelector"))|if .call=="goto" then "goto:"+.url else .call end]|join(" ")' "$PWREC"; }
+lines41() { grep -cF -- "$1" <<<"$ERR"; }
+served41() { [[ -e "$R41/.5dive-serve" ]] && echo up || echo down; }
+rm -f "$T41/dland"
+
+# --- T41a a changed path: one retry, in a served browser the run starts and stops ---------
+act41 "$Q41" "$WAIT41" PWLAND="$CITY41"
+t  'T41a a cold act that landed on another path is retried, and exits 0' 0 "$RC"
+tc 'T41a ...the redirect is said: asked, landed, why, and the retry' \
+   "redirected: $Q41 → $CITY41 (path /searchresults.html became /city/pt/lisbon.html); retrying once in the served browser" "$ERR"
+t  'T41a ...the cold run stopped at the goto: the wait_for never ran cold' 'goto' "$(cold41)"
+tc 'T41a ...and the whole plan ran in the served browser' "goto:$Q41 waitForSelector" "$(warm41)"
+tc 'T41a ...which landed where it was asked, so that is the page the act reports' "$Q41" "$OUT"
+t  'T41a ...and the served browser this run started is stopped again' down "$(served41)"
+
+# --- T41b more than half the query keys dropped, on `run` --------------------------------
+REQ41B='https://redir.test/searchresults.html?ss=Lisbon&checkin=2026-10-14&checkout=2026-10-15&nflt=ht_id%3D204'
+: > "$PWREC"
+run t41env PWLAND='https://redir.test/searchresults.html?nflt=ht_id%3D204' \
+    "$BROWSER" run redir.test search --city=Lisbon --checkin=2026-10-14 --checkout=2026-10-15
+t  'T41b a `run` whose landing dropped 3 of 4 query keys is retried, and verifies' 0 "$RC"
+tc 'T41b ...naming the keys' '(3 of 4 query keys dropped: ss checkin checkout); retrying once in the served browser' "$ERR"
+t  'T41b ...cold, only the goto ran' 'goto' "$(cold41)"
+tc 'T41b ...the adapter steps ran in the served browser' "goto:$REQ41B waitForSelector" "$(warm41)"
+tc 'T41b ...the verdict is still the out-of-band re-read' 'verified: search is live' "$OUT"
+t  'T41b ...and the served browser is stopped again' down "$(served41)"
+
+# --- T41c added params, a moved fragment, a trailing slash: the page asked for -----------
+act41 "$Q41" "$WAIT41" PWLAND="$Q41&label=gen173nr&aid=304142"
+t  'T41c a landing that only ADDED params: no line, no retry, the act runs on cold' '0 0 goto waitForSelector' \
+   "$RC $(lines41 'redirected:') $(cold41)"
+t  'T41c ...and no served browser was started' '' "$(warm41)"
+act41 "$Q41" "$WAIT41" PWLAND="$Q41#map_opened"
+t  'T41c ...nor one where only the fragment moved' '0 0 goto waitForSelector' "$RC $(lines41 'redirected:') $(cold41)"
+act41 'https://redir.test/deals' "$WAIT41" PWLAND='https://redir.test/deals/'
+t  'T41c ...nor a trailing slash' '0 0 goto waitForSelector' "$RC $(lines41 'redirected:') $(cold41)"
+act41 "$Q41" "$WAIT41" PWLAND='https://redir.test/searchresults.html?ss=Lisbon&checkin=2026-10-14'
+t  'T41c-control half the keys dropped is not MORE than half' '0 0' "$RC $(lines41 'redirected:')"
+
+# --- T41d a click already ran: said, never replayed --------------------------------------
+D41='[{"op":"click","selector":"#accept"},{"op":"goto","url":"'"$Q41"'"},{"op":"wait_for","selector":"[data-testid=property-card]"}]'
+act41 'https://redir.test/' "$D41" PWLAND="$CITY41" PWLAND_FROM="$Q41"
+t  'T41d a redirect after a click is still said' 1 "$(lines41 "redirected: $Q41 → $CITY41 (path")"
+t  'T41d ...and never replayed' 0 "$(lines41 'retrying')"
+t  'T41d ...the plan ran once, cold, to the end, as it did before' '0 goto click goto waitForSelector' "$RC $(cold41)"
+t  'T41d ...with no served browser' '' "$(warm41)"
+
+# --- T41e the optional reflex tier --------------------------------------------------------
+LONG41="$(printf 'Lisbon hotels %.0s' {1..40})"
+act41 "$Q41" "$WAIT41" $(reflex41 '{"choice":"login_wall","confidence":1}') PWTEXT="$LONG41"
+t  'T41e reflex login_wall: the act fails' 1 "$RC"
+tc 'T41e ...with the line to log in' 'log in first: 5dive browser auth redir.test' "$ERR"
+t  'T41e ...before the next step, with no retry' 'goto|' "$(cold41)|$(warm41)"
+t  'T41e ...reflex saw the landing: asked, landed, title, and at most 300 chars of text' "$Q41 $Q41 stub after 300" \
+   "$(jq -r '"\(.requested_url) \(.landed_url) \(.landed_title) \(.page_excerpt|length)"' "$RFXLOG41.state" 2>/dev/null)"
+t  'T41e ...once, as `reflex landing <site> --state=<file> --json`' 1 "$(grep -cE '^reflex landing redir\.test --state=[^ ]+ --json$' "$RFXLOG41")"
+run t41env $(reflex41 '{"choice":"login_wall","confidence":1}') "$BROWSER" serve redir.test
+t  'T41e (precondition) a served browser is up, and it can reach reflex' '0 up' "$RC $(served41)"
+act41 "$Q41" "$WAIT41" $(reflex41 '{"choice":"login_wall","confidence":1}')
+t  'T41e warm: login_wall fails the act the same way' 1 "$RC"
+tc 'T41e warm: ...with the line to log in' 'log in first: 5dive browser auth redir.test' "$ERR"
+t  'T41e warm: ...and the wait_for never ran' "goto:$Q41|" "$(warm41)|$(cold41)"
+env PATH="$SBIN:$PATH" "$BROWSER" serve redir.test --stop >/dev/null 2>&1
+act41 "$Q41" "$WAIT41" PWLAND="$CITY41" $(reflex41 '{"choice":"answered","confidence":0.97}')
+t  'T41e reflex answered 0.97 overrides a base redirect: no retry, the act runs on cold' '0 0 goto waitForSelector' \
+   "$RC $(lines41 'retrying') $(cold41)"
+tc 'T41e ...and says why' "landed on $CITY41 (path /searchresults.html became /city/pt/lisbon.html), which reflex read as the page asked for (answered, 0.97); not a redirect" "$ERR"
+act41 "$Q41" "$WAIT41" PWLAND="$CITY41" $(reflex41 '{"choice":"answered","confidence":0.8}')
+t  'T41e-control answered under 0.9 does not: retried' '0 1' "$RC $(lines41 'retrying once in the served browser')"
+act41 "$Q41" "$WAIT41" $(reflex41 '{"choice":"generic_page","confidence":0.95}')
+t  'T41e reflex generic_page on a URL the base passed: a redirect, retried' '0 1' "$RC $(lines41 'retrying once in the served browser')"
+tc 'T41e ...with reflex named as the reason' "redirected: $Q41 → $Q41 (reflex: generic_page, 0.95); retrying once" "$ERR"
+act41 "$Q41" "$WAIT41" PWLAND="$CITY41" $(reflex41 '') T41_RFX_RC=3
+t  'T41e reflex erroring leaves the base verdict: retried' '0 1' "$RC $(lines41 'retrying once in the served browser')"
+t  'T41e ...and it WAS asked (the error is reflex'"'"'s, not a skip)' yes "$(grep -q '^reflex landing' "$RFXLOG41" && echo yes || echo no)"
+
+# --- T41f no reflex; no served browser; one that will not start ---------------------------
+act41 "$Q41" "$WAIT41" PWLAND="$CITY41" $(reflex41 '{"choice":"login_wall","confidence":1}') T41_RFX_CONF=false
+t  'T41f reflex not configured: the base alone retries' '0 1' "$RC $(lines41 'retrying once in the served browser')"
+t  'T41f ...and reflex is never asked about a landing (the stub was reached: status was read)' '0 yes' \
+   "$(grep -c '^reflex landing' "$RFXLOG41") $(grep -q '^reflex status' "$RFXLOG41" && echo yes || echo no)"
+act41 "$Q41" "$WAIT41" PWLAND="$CITY41" FIVEDIVE_BROWSER_NO_DAEMON=1
+t  'T41f no served browser to be had: the line alone, and the act runs on cold as before' \
+   "0 1 0 goto waitForSelector" "$RC $(lines41 "redirected: $Q41 → $CITY41") $(lines41 'retrying') $(cold41)"
+act41 "$Q41" "$WAIT41" PWLAND="$CITY41" DPWNOLAUNCH=1
+t  'T41f a served browser that will not start: the act fails, and says why' '1 1' "$RC $(lines41 'no served browser for the retry')"
+t  'T41f ...the browser it tried to start is not left running' down "$(served41)"
+tc 'T41f ...and the page it shows is where the cold run landed' "$CITY41" "$OUT"
+
+# --- T41g the served run redirected too: one retry, never two ----------------------------
+printf '%s' "$CITY41" > "$T41/dland"
+act41 "$Q41" "$WAIT41" PWLAND="$CITY41"
+rm -f "$T41/dland"
+t  'T41g the served run landed on the city page too: one retry, two lines' '1 2' \
+   "$(lines41 'retrying once') $(lines41 'redirected:')"
+t  'T41g ...the page was asked for once cold and once served' '1 1' \
+   "$(jq -rs --arg q "$Q41" '[.[]|select(.kind==null and .call=="goto" and .url==$q)]|length' "$PWREC") $(jq -rs --arg q "$Q41" '[.[]|select(.kind=="first" and .call=="goto" and .url==$q)]|length' "$PWREC")"
+t  'T41g ...and the served browser is stopped again' down "$(served41)"
+
+# --- T41h MUTANT: the landing check removed from both loops -------------------------------
+MUT41="$T41/mut"; rm -rf "${MUT41:?}"; cp -r "$ROOT/browser" "$MUT41"
+sed -i "s|^async function checkLanding(.*{\$|&\n  return { line: '', loginWall: '', retry: false };  // MUTANT (no landing check)|" "$MUT41/lib/aria.cjs"
+t  'T41h (anchor) the mutation landed' 1 "$(grep -c 'MUTANT (no landing check)' "$MUT41/lib/aria.cjs")"
+T41BIN="$MUT41/bin/browser" act41 "$Q41" "$WAIT41" PWLAND="$CITY41"
+t  'T41h MUTANT (no landing check): nothing said, nothing retried, the cold run goes on as before' \
+   '0 0 goto waitForSelector' "$(lines41 'redirected:') $(lines41 'retrying') $(cold41)"
+
+# --- T41i the words -----------------------------------------------------------------------
+for f41 in README.md AGENTS.md; do
+  tc "T41i browser/$f41 shows the redirect line" 'retrying once in the served browser' "$(cat "$ROOT/browser/$f41")"
+done
+tc 'T41i CHANGES.md carries the entry' 'DIVE-4991' "$(cat "$ROOT/CHANGES.md")"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

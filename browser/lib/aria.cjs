@@ -789,6 +789,100 @@ const E_NEEDS_OWNER = 73;
 // the step runs, and bin/browser writes it to the owner's log.
 const OWNER_ALLOWED_PREFIX = '5dive-owner-allowed: ';
 
+// ---- WHERE A GOTO LANDED (DIVE-4991) ----------------------------------------
+//
+// A cold `act` of a Booking search URL landed on the undated city page every
+// time, a URL copied from a real browser included, and the next step's failure
+// ("a step failed, the executor exited 1") was all anyone saw. The served
+// browser, same profile and same URL, landed on the results. So after every goto
+// both loops compare the URL asked for with the one the page is on, and say so.
+//
+// THE BASE TEST, no model: redirected when the PATH changed, or when more than
+// half of the requested query keys are gone. Only the fragment changing, or the
+// same path with params ADDED (a tracking id), is the page that was asked for.
+// A trailing slash is not a different page either.
+function redirectWhy(requested, landed) {
+  let a, b;
+  try { a = new URL(requested); b = new URL(landed); } catch (e) { return null; }
+  const trim = (p) => (p.length > 1 ? p.replace(/\/+$/, '') : p);
+  if (trim(a.pathname) !== trim(b.pathname)) return `path ${a.pathname} became ${b.pathname}`;
+  const asked = [...new Set(a.searchParams.keys())];
+  const gone = asked.filter((k) => !b.searchParams.has(k));
+  if (asked.length && gone.length * 2 > asked.length) {
+    return `${gone.length} of ${asked.length} query keys dropped: ${gone.slice(0, 5).join(' ')}`;
+  }
+  return null;
+}
+
+// THE OPTIONAL TIER: `5dive reflex landing`, only where bin/browser found reflex
+// configured, because this is where page text leaves the box. Reached through
+// bin/browser `_reflex-landing` (and so through _reflex_cli, like every reflex
+// call). Never throws: anything that is not its one line of JSON is an error,
+// and on an error the base verdict stands. Its own names, required in place, so
+// no other section's top-level `path` or `cp` can collide with them.
+const LANDING_BROWSER = require('path').join(__dirname, '..', 'bin', 'browser');
+const LANDING_SPAWN = require('child_process').spawn;
+const REFLEX_TIMEOUT_MS = Number(process.env.FIVEDIVE_BROWSER_REFLEX_TIMEOUT_MS || 60000);
+function reflexLanding(site, state) {
+  return new Promise((resolve) => {
+    let child, out = '', over = false;
+    const done = (r) => { if (!over) { over = true; clearTimeout(timer); resolve(r); } };
+    const timer = setTimeout(() => { try { child.kill(); } catch (e) { /* gone */ }
+      done({ reflex: 'error', why: 'reflex did not answer in time' }); }, REFLEX_TIMEOUT_MS);
+    try { child = LANDING_SPAWN(LANDING_BROWSER, ['_reflex-landing', site], { stdio: ['pipe', 'pipe', 'ignore'] }); }
+    catch (e) { return done({ reflex: 'error', why: e.message }); }
+    child.on('error', (e) => done({ reflex: 'error', why: e.message }));
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('close', (code) => {
+      let r = null; try { r = JSON.parse(out.trim().split('\n').pop()); } catch (e) { r = null; }
+      done(code === 0 && r && typeof r === 'object' ? r : { reflex: 'error', why: `_reflex-landing exited ${code}` });
+    });
+    child.stdin.on('error', () => { /* it answers or it does not; close decides */ });
+    child.stdin.end(JSON.stringify(state));
+  });
+}
+
+// One goto's landing, for either loop. `landing` is what bin/browser put in the
+// plan: {site, reflex, retry}. Returns the line to print (or ''), `loginWall`
+// (the message to fail with, or ''), and `retry` — true only when the caller
+// allowed it AND the page was redirected. Never throws: a page that cannot say
+// where it is has not been shown to be somewhere else.
+async function checkLanding(page, requested, landing, { mayRetry = false } = {}) {
+  const out = { line: '', loginWall: '', retry: false };
+  let landed = '';
+  try { landed = String(await page.url()); } catch (e) { return out; }
+  let why = redirectWhy(requested, landed);
+  let host = '';
+  try { host = new URL(landed).hostname; } catch (e) { host = ''; }
+  const site = (landing && landing.site) || host;
+  if (landing && landing.reflex && site) {
+    let title = '', text = '';
+    try { title = String(await page.title()); } catch (e) { title = ''; }
+    try { text = String(await page.evaluate(_textIn, { textOf: true }) || ''); } catch (e) { text = ''; }
+    const r = await reflexLanding(site, { requested_url: requested, landed_url: landed, landed_title: title,
+      page_excerpt: text.replace(/\s+/g, ' ').trim().slice(0, 300) });
+    const conf = Number(r.confidence) || 0;
+    if (r.reflex === 'ok' && r.choice === 'login_wall') {
+      out.loginWall = `the page is a login wall (reflex, ${conf}): log in first: 5dive browser auth ${site}`;
+      return out;
+    }
+    if (r.reflex === 'ok' && (r.choice === 'generic_page' || r.choice === 'bot_block')) {
+      why = `${why ? why + '; ' : ''}reflex: ${r.choice}, ${conf}`;
+    } else if (r.reflex === 'ok' && r.choice === 'answered' && conf >= 0.9 && why) {
+      out.line = `landed on ${landed} (${why}), which reflex read as the page asked for (answered, ${conf}); not a redirect`;
+      return out;
+    }
+  }
+  if (!why) return out;
+  out.retry = !!(mayRetry && landing && landing.retry);
+  out.line = `redirected: ${requested} → ${landed} (${why})` +
+    (out.retry ? '; retrying once in the served browser' : '');
+  return out;
+}
+// The cold driver's exit when it stopped for that retry: only gotos ran, and
+// bin/browser runs the whole plan again through the served browser.
+const E_REDIRECTED = 71;
+
 function render(nodes, { json = false } = {}) {
   if (json) return JSON.stringify({ nodes }, null, 2);
   const w = nodes.reduce((m, n) => Math.max(m, n.role.length), 0);
@@ -803,5 +897,6 @@ module.exports = { INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSel
   isRef, render, REF_PREFIX,
   typeDelay, typeRefusal, typeKeys, TYPE_DELAY_DEFAULT, TYPE_DELAY_MAX,
   classifyLabel, stepRisk, pageAfter, NEEDS_OWNER_PREFIX, E_NEEDS_OWNER, OWNER_ALLOWED_PREFIX,
+  redirectWhy, checkLanding, E_REDIRECTED,
   _payloadIn, cleanText, cleanPayload,
   waitForVisible, _visibleIn, _textIn, _scopeIn };

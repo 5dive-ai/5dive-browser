@@ -816,6 +816,13 @@ async function planRequest(ctx, req, send, end) {
       if (retry) send({ t: 'log', line: `  ${retry}ok` });
       retry = null;
       send({ t: 'log', line: `  ${where} ok` });
+      // WHERE THE GOTO LANDED (DIVE-4991), said every time, exactly as the cold
+      // driver says it. This IS the served browser, so there is nothing to retry in.
+      if (s.op === 'goto' && req.landing) {
+        const land = await aria.checkLanding(page, s.url, req.landing);
+        if (land.line) send({ t: 'log', line: land.line });
+        if (land.loginWall) throw new Error(`${where}: ${land.loginWall}`);
+      }
     }
   } catch (e) {
     if (retry) send({ t: 'log', line: `  ${retry}failed` });
