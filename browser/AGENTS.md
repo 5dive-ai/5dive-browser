@@ -217,6 +217,19 @@ at `--settle=6000`. Raise the settle to orient; for an element that is genuinely
 as it always did on a CSS one. The settle is paid on every run; a `wait_for` costs only what the
 page takes.
 
+**A ref that matches nothing is retried once, on the element reflex picks at confidence 0.9 or
+more.** With reflex configured on the box, `act` and `run` hand the page's interactive refs and
+what the step is for to `5dive reflex pick-ref`, and retry that one step on its pick. Without
+reflex, or when it errors, the retry goes to the ONE element of the same role whose name matches
+yours ignoring case, contains it, or is contained in it; two such elements, and there is no retry.
+Say what a step is for in an optional `"intent"` field
+(`{"op":"click","selector":"ref=button/Decline","intent":"reject the cookie banner"}`); without
+it the intent is the ref's role and name. The output says what happened:
+`step 2: ref=button/Decline matched nothing; reflex picked ref=button/Decline all (conf 0.99); retried: ok`.
+A step that pays, posts, sends or deletes is never retargeted: it fails as before and the failure
+names the suggestion — if it is right, send the step again with that ref, and the owner's policy
+reads it as usual. One retry per step, and only for a `ref=`: a CSS selector still times out.
+
 **A web app answers with a loading screen first. Wait for the real page.** `snapshot`, `read`
 and `act` take `--wait-for=<target>` — a CSS selector, `ref=<role>/<name>`, or `text=<words>` —
 and capture once the page shows it:

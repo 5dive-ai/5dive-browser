@@ -39,6 +39,9 @@
 // the marked element is then addressed with an ordinary CSS attribute selector,
 // which means the rest of the executor needs no ref-awareness at all.
 
+const cp = require('child_process');
+const path = require('path');
+
 // Roles that can be acted on. `--interactive` keeps these and drops the rest;
 // it is the list an agent actually needs, and the full tree is still one flag away.
 const INTERACTIVE = [
@@ -257,6 +260,7 @@ async function resolveRef(page, sel) {
     `from the page every time, so this means the page is not the one \`tree\` described — not that the ` +
     `ref was mistyped.${hint}`);
   err.refMiss = true;
+  err.nodes = nodes;   // the page as it was looked at, for resolveOrRepick
   throw err;
 }
 
@@ -500,6 +504,130 @@ async function stepRisk(page, step, sel) {
   try { payload = await page.evaluate(_payloadIn, { sel, op: step.op, cls, payloadOf: true }); } catch (e) { payload = {}; }
   return { cls, label: cleanText(label), payload: cleanPayload(payload) };
 }
+
+// ---- A TARGET THAT IS NOT THERE: ONE RETRY, ON ONE PICKED ELEMENT ------------
+//
+// Measured on a hotel site: `act` step 2, `click ref=button/Decline`, failed
+// "matches nothing on this page". The consent banner's button was there, under
+// another accessible name, and the agent had to snapshot, read and send the whole
+// act again. So a step whose ref matches nothing gets ONE retry, on one element
+// picked for it:
+//   reflex   when the box has it configured: `5dive reflex pick-ref` (DIVE-4929)
+//            on the page's interactive tree, taken at confidence >= 0.9 only,
+//            reached through bin/browser `_reflex-pick` and so through _reflex_cli.
+//   by name  otherwise, and when reflex errors: the ONE element of the ref's own
+//            role whose name equals the ref's (any case, whitespace trimmed),
+//            contains it, or is contained in it. Two, and there is no pick.
+// Reflex answering "none", or under 0.9, IS an answer: the step fails as it did,
+// and the failure says what reflex said.
+//
+// NEVER A STEP THAT PAYS, POSTS, SENDS OR DELETES. The owner's yes, and the
+// policy that let a kind through, cover the step as written; a retargeted Send is
+// another send. stepRisk reads it (the ref's own name, the picked element's live
+// label), and so does pick-ref's review_required; such a step fails as it did,
+// naming the suggestion.
+//
+// WHAT LEAVES THE BOX is what pick-ref sends: the intent, the op, the interactive
+// tree's roles and names. A value goes as `{value}`: pick-ref never shows the
+// model the value, and argv is readable by every seat on the box.
+//
+// A REF MISS ONLY. A CSS selector that matches nothing fails by timing out, and a
+// timeout is not a miss the executor can tell from a slow page.
+const REPICK_MIN_CONFIDENCE = 0.9;
+const REPICK_OP = { click: 'click', fill: 'fill', type: 'fill', select: 'select',
+  press: 'press', wait_for: 'wait_for', upload: 'upload' };
+const SELF_BROWSER = path.join(__dirname, '..', 'bin', 'browser');
+
+function refParts(ref) {  // 'button/Decline#2' -> { role: 'button', name: 'Decline' }
+  const role = ref.split('/')[0];
+  return { role, name: ref.slice(role.length + 1).replace(/#\d+$/, '') };
+}
+
+// The by-name tier: EVERY node that qualifies, so the caller can see there were two.
+function nameMatches(nodes, ref) {
+  const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const { role, name } = refParts(ref);
+  const want = norm(name);
+  if (!want) return [];
+  return (nodes || []).filter((n) => {
+    const have = norm(n.name);
+    return n.role === role && have !== '' && (have === want || have.includes(want) || want.includes(have));
+  });
+}
+
+// bin/browser `_reflex-pick`, the tree on stdin. Never throws: anything that is
+// not its one line of JSON is {reflex:"error"}, and the name match decides.
+function reflexPick(site, args, tree, { timeoutMs = 90000 } = {}) {
+  return new Promise((resolve) => {
+    let out = '', child = null, timer = null;
+    const done = (r) => { clearTimeout(timer); resolve(r); };
+    try { child = cp.spawn(SELF_BROWSER, ['_reflex-pick', site, ...args], { stdio: ['pipe', 'pipe', 'ignore'] }); }
+    catch (e) { return resolve({ reflex: 'error', why: e.message }); }
+    timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (e) { /* already gone */ } }, timeoutMs);
+    child.on('error', (e) => done({ reflex: 'error', why: e.message }));
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('close', (code) => {
+      let r = null;
+      try { r = JSON.parse(out.trim().split('\n').pop()); } catch (e) { r = null; }
+      done(code === 0 && r && typeof r === 'object' ? r : { reflex: 'error', why: `_reflex-pick exited ${code}` });
+    });
+    child.stdin.on('error', () => { /* it exited before reading the tree; its exit says why */ });
+    child.stdin.end(JSON.stringify(tree));
+  });
+}
+
+// What both step loops call instead of resolveStepSelector: { sel, retry }. `retry`
+// is null, or the start of the line the loop ends with "ok" or "failed". With no
+// retry the miss is thrown as it always was, its message extended by what reflex
+// said, so a miss on step one is still "nothing ran". `n` is the step's number.
+async function resolveOrRepick(page, step, n, opts = {}) {
+  let miss;
+  try { return { sel: await resolveStepSelector(page, step, opts), retry: null }; }
+  catch (e) { if (!e.refMiss || !REPICK_OP[step.op]) throw e; miss = e; }
+  const failAs = (why) => { miss.message += why; return miss; };
+  const from = step.selector;
+  const { role, name } = refParts(refBody(from));
+  const op = REPICK_OP[step.op];
+  const intent = (typeof step.intent === 'string' && step.intent.trim()
+    ? step.intent.trim() : (name ? `${role} named ${name}` : role)).slice(0, 200);
+  const args = [`--op=${op}`, `--intent=${intent}`];
+  if (op === 'fill' || op === 'select') args.push('--value={value}');
+  if (op === 'press') args.push(`--key=${step.key}`);
+  if (op === 'upload') args.push('--path={path}');
+  let url = '', site = '';
+  try { url = String(await page.url()); site = new URL(url).hostname; } catch (e) { site = ''; }
+  const tree = { url, nodes: (miss.nodes || []).filter((x) => INTERACTIVE.includes(x.role)) };
+  const r = site ? await reflexPick(site, args, tree) : { reflex: 'error', why: 'the page has no host name' };
+
+  let pick;
+  if (r.reflex === 'ok' && !(r.error && r.error !== 'no_candidates')) {
+    const conf = typeof r.confidence === 'number' ? r.confidence : null;
+    if (!r.ref) throw failAs(' Reflex proposed no element for it.');
+    if (conf === null || conf < REPICK_MIN_CONFIDENCE) {
+      throw failAs(` Reflex suggested ref=${r.ref} at confidence ${conf}, under ${REPICK_MIN_CONFIDENCE}, so it was not retried.`);
+    }
+    pick = { ref: r.ref, line: `reflex picked ref=${r.ref} (conf ${conf})`,
+             said: `Reflex picked ref=${r.ref} (conf ${conf})`, review: r.review_required === true };
+  } else {
+    // Off: the name match alone, and a miss it cannot settle reads exactly as before.
+    const why = r.reflex === 'off' ? ''
+      : ` Reflex could not pick one (${cleanText(r.why || r.error || 'no answer').slice(0, 160)}).`;
+    const hits = nameMatches(miss.nodes, refBody(from));
+    if (hits.length !== 1) throw failAs(why);
+    pick = { ref: hits[0].ref, line: `name match picked ref=${hits[0].ref}`,
+             said: `${why ? `${why.trim()} ` : ''}A name match picked ref=${hits[0].ref}`, review: false };
+  }
+  let sel;
+  try { sel = await resolveRef(page, REF_PREFIX + pick.ref); }
+  catch (e) { if (!e.refMiss) throw e; throw failAs(` ${pick.said}, and that matches nothing either.`); }
+  const risk = pick.review ? { cls: 'pay, post, send or delete' } : await stepRisk(page, step, sel);
+  if (risk) {
+    throw failAs(` ${pick.said}, and it was not retried: this step would ${risk.cls}, and a step that pays, ` +
+      'posts, sends or deletes is never retargeted — the owner\'s yes covers the step as written.');
+  }
+  return { sel, retry: `step ${n}: ${from} matched nothing; ${pick.line}; retried: ` };
+}
+
 // ---- READY, NOT SETTLED (DIVE-4983) -----------------------------------------
 //
 // A settle is a guess at how long a page takes, and on a web app it is the wrong
@@ -671,7 +799,8 @@ function render(nodes, { json = false } = {}) {
 }
 
 module.exports = { INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSelector,
-  resolveRefWithin, resolveStepSelector, isRef, render, REF_PREFIX,
+  resolveRefWithin, resolveStepSelector, resolveOrRepick, nameMatches, REPICK_MIN_CONFIDENCE,
+  isRef, render, REF_PREFIX,
   typeDelay, typeRefusal, typeKeys, TYPE_DELAY_DEFAULT, TYPE_DELAY_MAX,
   classifyLabel, stepRisk, pageAfter, NEEDS_OWNER_PREFIX, E_NEEDS_OWNER, OWNER_ALLOWED_PREFIX,
   _payloadIn, cleanText, cleanPayload,

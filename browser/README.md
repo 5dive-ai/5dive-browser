@@ -496,6 +496,22 @@ not make a slow element arrive. An element that is genuinely late is `wait_for`'
 `wait_for` on a CSS selector always did. Raising the settle to cover a late element buys the delay
 on **every** run of that adapter; a `wait_for` costs only as long as the page actually takes.
 
+**A ref that matches nothing is retried once, on the element reflex picks at confidence 0.9 or
+more.** Both executors do it, for a `click`, `fill`, `type`, `select`, `press`, `wait_for` or
+`upload` step: `5dive reflex pick-ref` gets the page's interactive refs, the op, and what the step
+is for — the step's optional `"intent"` field, or else the ref's role and name (`button named
+Decline`) — and the step is retried on the ref it picks, reported as `step 2: ref=button/Decline
+matched nothing; reflex picked ref=button/Decline all (conf 0.99); retried: ok`. A value goes to
+pick-ref as `{value}`, never the text itself. Reflex answering `none`, or under 0.9, is an answer:
+no retry, and the failure names it. On a box without reflex, or when reflex errors, the retry goes
+to the one element of the same role whose name equals the ref's ignoring case, contains it, or is
+contained in it; with two such elements, or none, the step fails exactly as before. A step that
+pays, posts, sends or deletes (the ref's own name, the picked element's label, or pick-ref's
+`review_required`) is never retargeted, because the owner's yes covers the step as written: it
+fails and names the suggestion. Reflex is reached as `propose` reaches it: `sudo -n 5dive reflex
+pick-ref` when the seat holds that grant, the plain CLI otherwise, where the root-only key is not
+readable and the name match decides.
+
 ### Ready, not settled: `--wait-for`, loading screens, `read`'s cap, `--expect`'s window (DIVE-4983)
 
 ```
