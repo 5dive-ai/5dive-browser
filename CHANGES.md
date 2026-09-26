@@ -10,15 +10,17 @@ that file stays where it is.
 
 ## Released
 
-### Added — a booking.com adapter: a login probe and two dated searches, browser 1.20.0
+### Added — a booking.com adapter (a login probe and two dated searches) and google.com's login probe, browser 1.20.0
 
-**Before:** no booking.com adapter shipped. `status booking.com` read
-`UNKNOWN (no adapter for booking.com …)` whether the profile was logged in or not, so `run`
-refused on it, and a dated hotel search meant writing an adapter by hand.
+**Before:** no booking.com adapter shipped, and the shipped google.com adapter had no `probe`.
+`status booking.com` and `status google.com` read `UNKNOWN` whether the profile was logged in or
+not, so `run` refused on both — `run google.com send` included, until someone wrote a probe into
+the seat's `.adapters/` — and a dated hotel search meant writing an adapter by hand.
 
-**Now:** `adapters/booking.com.json` ships with the plugin. `status booking.com` reads
-`session expired — human action required` on a logged-out profile and `authenticated` on a
-logged-in one, and two actions search by date:
+**Now:** `status booking.com` and `status google.com` read `session expired — human action
+required` (exit 75) on a logged-out profile and `authenticated` on a logged-in one, so `run
+google.com send` works on a logged-in box with nothing written by hand. booking.com also ships two
+actions that search by date:
 
 ```bash
 5dive browser serve booking.com
@@ -38,11 +40,19 @@ logged-in one, and two actions search by date:
   found; `hotels` for Lisbon 14–15 Oct, 2 adults, at most 120: 25 hotels, the cheapest EUR 95.
 - Expect NOT VERIFIED. The verify is a public fetch of the results URL, and Booking answers a
   public fetch with a different page, so it cannot re-read the results. Read the result page.
-- The probe is the header Sign in link, `account.booking.com/auth/oauth2?client_id=`, measured on
-  both halves: 4 matches in the logged-out render, 0 logged in. The marker escapes its dots and
-  the `?` (`account\.booking\.com/auth/oauth2\?client_id=`): the probe reads it as a regex, and
-  unescaped, `2?` is an optional 2, so it misses the link and every logged-out profile reads
-  `authenticated`. A seat file of the same name in `.adapters/` still wins over the shipped one.
+- Both probes were measured on both halves, and both markers are regexes (`grep -iE` cold,
+  `RegExp` in the served browser):
+  - booking.com probes `/` for `data-testid=["']?auth-link-in-view`: 1 match in each of two
+    logged-out renders, 0 logged in. Not the Sign in link's href,
+    `account.booking.com/auth/oauth2?client_id=`: as a regex `2?` is an optional 2, it matched 0
+    logged-out renders, and every logged-out profile would have read `authenticated`.
+  - google.com probes `https://accounts.google.com/signin/v2/identifier` for its title,
+    `<title>Sign in - Google Accounts</title>`: 1 match logged out, 0 logged in. Not
+    `myaccount.google.com`: logged out, that is a marketing page with 0 matches.
+- A seat file of the same name in `.adapters/` still wins over the shipped one.
+- Harness: T39 (both files, both markers as regexes against both halves, `status` through the real
+  probe, the tree before this change as the mutant); T35g now runs the shipped google.com file on a
+  logged-out profile.
 
 ### Added — a `type` step: key by key, for search boxes and autocompletes that open on keystrokes, browser 1.19.0
 

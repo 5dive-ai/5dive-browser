@@ -5754,9 +5754,9 @@ tc 'T34h CHANGES.md names the read cap' 'FIVEDIVE_BROWSER_READ_CAP_MS' "$(cat "$
 #   T35h  documented where agents and people read it
 unset FIVEDIVE_BROWSER_DRIVER
 GADAPT="$ROOT/browser/adapters/google.com.json"
-# THE SHIPPED FILE, plus a probe this suite can answer. It ships with none —
-# nothing measured google.com's signed-out page — so `run` on the file as shipped
-# refuses (T35g); every other arm needs a session that probes `authenticated`.
+# THE SHIPPED FILE, with its probe swapped for one this suite's DOMs answer, so
+# every arm below runs on a session that probes `authenticated`. The shipped probe
+# (the sign-in page's title, measured) is graded as shipped in T35g and T39e.
 jq '.probe = {url:"https://google.com/", logged_out_when_dom_matches:"action=\"/login\""}' "$GADAPT" \
   > "$FIVEDIVE_BROWSER_ADAPTER_DIR/google.com.json"
 mkprofile google.com "$LIVE_DOM" >/dev/null
@@ -5929,11 +5929,15 @@ SCOPE
 t  'T35g the scope is the FIRST match, null when nothing or a bad selector matches' \
    '[{"html":"<tr>newest</tr>","text":"me newest 9:47 AM"},null,null]' \
    "$(ARIA="$ROOT/browser/lib/aria.cjs" node "$TMP/t35-scope.js" 2>&1)"
+# The adapter AS SHIPPED probes the Google sign-in page for its title: on a
+# logged-out profile, run refuses before a step.
+mkprofile google.com '<html><head><title>Sign in - Google Accounts</title></head><body></body></html>' >/dev/null
 : > "$PWREC"
 run t35env FIVEDIVE_BROWSER_ADAPTER_DIR="$ROOT/browser/adapters" "$BROWSER" run google.com send --to=a@b.test --subject=s --body=b
-t  'T35g the adapter AS SHIPPED has no probe, so run refuses (75)' 75 "$RC"
-tc 'T35g ...because nobody confirmed the session' 'cannot confirm the google.com session is live' "$ERR"
+t  'T35g the adapter AS SHIPPED, on a logged-out profile: run refuses (75)' 75 "$RC"
+tc 'T35g ...because its own probe read the sign-in page' 'google.com is logged out' "$ERR"
 t  'T35g ...before a browser opened' 0 "$(jq -rs '[.[]|select(.call=="launch")]|length' "$PWREC")"
+mkprofile google.com "$LIVE_DOM" >/dev/null
 t  'T35g the shipped file: valid, guarded, verified in session, fixed vocabulary' 'true true true ' \
    "$(jq -r '"\(.actions.send.guard) \(.actions.send.verify.in_session) \(.actions.send.verify.url != null and .actions.send.verify.expect != null) " +
             (["goto","fill","click","wait_for","select","upload","press"] as $ok | [.actions[].steps[].op|select(. as $o|($ok|index($o))|not)]|join(","))' "$GADAPT")"
@@ -6437,37 +6441,52 @@ for f in browser/README.md browser/AGENTS.md browser/skills/use-browser/SKILL.md
      "$(tr -s ' \n' '  ' < "$ROOT/$f")"
 done
 
-# ============ T39 the shipped booking.com adapter: a login probe and two dated searches
+# ============ T39 the shipped booking.com adapter, and google.com's login probe
 #
-# Measured 2026-09-26 at browser 1.18.0 on a box with a booking.com login (the
-# file's `_comment` has the numbers): logged out, the home page's header Sign in
-# link goes to account.booking.com/auth/oauth2?client_id=, 4 matches in the
-# --dump-dom render; logged in, the header reads "Your account" with a Genius
-# level, 0 matches, and `status booking.com` read authenticated. The fixtures are
-# those two headers cut to the element: the href prefix and the words are what was
-# measured, the rest of each element is not. A plain fetch of the home page is a
-# 202 with an empty body, so there is no render to capture without a browser.
-# THE MARKER IS A REGEX, and the first draft of this file carried the counted
-# string as it was counted: account.booking.com/auth/oauth2?client_id= . As an
-# ERE `2?` is an optional 2 with no literal `?` after it, so it missed the link
-# it was counted in and `status` read authenticated on the logged-out render.
-# T39b and T39c went red on exactly that; the shipped marker escapes it.
-#   T39a  the file parses and names its site and the page it probes, and the
-#         version moved, or no box that already has the plugin fetches it
-#   T39b  the marker, read as the probe reads it (grep -iE), matches the logged-out
-#         header link and not the logged-in header
+# Measured on BOTH halves (each file's `_comment` has the numbers). booking.com,
+# 2026-09-26, browser 1.18.0, on a box with a booking.com login: `5dive browser
+# capture booking.com` matched data-testid="auth-link-in-view" once in each of two
+# logged-out renders and 0 times in the logged-in one, whose header reads "Your
+# account" with a Genius level, and `status booking.com` read authenticated with
+# the file installed; the logged-out render also carries the header Sign in link
+# to account.booking.com/auth/oauth2?client_id= . google.com: logged out, the
+# sign-in page's title is exactly "Sign in - Google Accounts" (1 match); logged
+# in, `status google.com` read authenticated with that probe (0 matches).
+# The fixtures are those strings cut to the element: the attribute, the href
+# prefix, the title and the header's words were measured, the rest of each element
+# was not, and GLIN39 is the suite's own logged-in page. A plain fetch of the
+# booking.com home page is a 202 with an empty body, so there is no render to
+# capture without a browser.
+# THE MARKER IS A REGEX: `grep -iE` cold, `new RegExp(m, 'i')` in the served
+# browser, so T39b and T39e apply it both ways. The first booking.com draft carried
+# the href as it was counted; as a regex `2?` is an optional 2 with no literal `?`
+# after it, so it missed the link it was counted in and `status` read authenticated
+# on a logged-out render (T39b-control).
+#   T39a  booking.com: the file parses and names its site and the page it probes,
+#         and the version moved, or no box that already has the plugin fetches it
+#   T39b  its marker matches the logged-out header and not the logged-in one
 #   T39c  `status booking.com` through the real probe and the real adapter search
 #         path — no override, so the package's adapters/ is the fallback it resolves
 #   T39d  both actions use only the fixed step vocabulary, read out of bin/browser,
 #         and each declares the out-of-band verify the executor demands
-#   T39e  MUTANT: the package without this file, which is the tree before this
-#         change — status cannot tell the two renders apart
-#   T39f  documented where people read it
+#   T39e  google.com: the probe is the sign-in page, its title matches the
+#         logged-out page and not a logged-in one, and `status google.com` says so
+#   T39f  MUTANT: the package before this change (no booking.com file, google.com
+#         with no probe) — status cannot tell the two renders apart
+#   T39g  documented where people read it
 BKA="$ROOT/browser/adapters/booking.com.json"
-BKOUT39='<header><a href="https://account.booking.com/auth/oauth2?client_id=ID"><span>Sign in</span></a></header>'
+GA39="$ROOT/browser/adapters/google.com.json"
+BKOUT39='<header><a data-testid="auth-link-in-view" href="https://account.booking.com/auth/oauth2?client_id=ID"><span>Sign in</span></a></header>'
 BKIN39='<header><button><span>Your account</span><span>Genius level</span></button></header>'
+GLOUT39='<html><head><title>Sign in - Google Accounts</title></head><body></body></html>'
+GLIN39="$LIVE_DOM"
+# Both ways the probe reads a marker: bin/browser's grep, the daemon's RegExp.
+mark39() {  # mark39 <marker> <dom> -> "<grep> <RegExp>", each match|miss
+  printf '%s %s' "$(grep -qiE "$1" <<<"$2" && echo match || echo miss)" \
+    "$(node -e 'process.stdout.write(new RegExp(process.argv[1], "i").test(process.argv[2]) ? "match" : "miss")' "$1" "$2" 2>/dev/null || echo error)"
+}
 mkdir -p "$TMP/t39"
-rm -f "$FIVEDIVE_BROWSER_PROFILE_ROOT/$SEAT/.adapters/booking.com.json"
+rm -f "${FIVEDIVE_BROWSER_PROFILE_ROOT:?}/${SEAT:?}/.adapters/booking.com.json" "${FIVEDIVE_BROWSER_PROFILE_ROOT:?}/${SEAT:?}/.adapters/google.com.json"
 
 # --- T39a the file ------------------------------------------------------------------------
 run jq -e . "$BKA";                                  t 'T39a the shipped booking.com adapter is valid JSON' 0 "$RC"
@@ -6480,14 +6499,12 @@ t  'T39a the manifest is past 1.19.0, the release that shipped without it' 'yes'
    "$([[ "$BKV" != 1.19.0 && "$(printf '%s\n' 1.19.0 "$BKV" | sort -V | tail -1)" == "$BKV" ]] && echo yes || echo no)"
 
 # --- T39b the marker against both headers -------------------------------------------------
-BKMARK="$(jq -r '.probe.logged_out_when_dom_matches' "$BKA")"
-t  'T39b (anchor) it declares a logged-out marker' 'yes' "$([[ -n "$BKMARK" && "$BKMARK" != null ]] && echo yes || echo no)"
-t  'T39b the marker MATCHES the logged-out header Sign in link' 'match' \
-   "$(grep -qiE "$BKMARK" <<<"$BKOUT39" && echo match || echo miss)"
-t  'T39b it does NOT match the logged-in "Your account" header' 'miss' \
-   "$(grep -qiE "$BKMARK" <<<"$BKIN39" && echo match || echo miss)"
-t  'T39b-control the counted string, unescaped, MISSES the same link: as a regex `2?` is an optional 2' 'miss' \
-   "$(grep -qiE 'account.booking.com/auth/oauth2?client_id=' <<<"$BKOUT39" && echo match || echo miss)"
+BKMARK="$(jq -r '.probe.logged_out_when_dom_matches // empty' "$BKA")"
+t  'T39b (anchor) it declares a logged-out marker' 'yes' "$([[ -n "$BKMARK" ]] && echo yes || echo no)"
+t  'T39b the marker MATCHES the logged-out header (grep -iE, RegExp)' 'match match' "$(mark39 "$BKMARK" "$BKOUT39")"
+t  'T39b it does NOT match the logged-in "Your account" header' 'miss miss' "$(mark39 "$BKMARK" "$BKIN39")"
+t  'T39b-control the first draft, the href as counted, MISSES the same header: `2?` is an optional 2' 'miss miss' \
+   "$(mark39 'account.booking.com/auth/oauth2?client_id=' "$BKOUT39")"
 
 # --- T39c status, through the probe, with the adapter found where every box finds it -----
 mkprofile booking.com "$BKOUT39" >/dev/null
@@ -6512,19 +6529,45 @@ t  'T39d-control an op outside the vocabulary is named, so the arm can say no' '
 t  'T39d each declares the out-of-band verify (url and expect) the executor demands' 'yes' \
    "$(jq -e '[.actions[].verify | (.url and .expect)] | all' "$BKA" >/dev/null 2>&1 && echo yes || echo no)"
 
-# --- T39e MUTANT: no shipped adapter, which is the tree before this change ----------------
-MUT39="$TMP/t39/mut"; rm -rf "$MUT39"; cp -r "$ROOT/browser" "$MUT39"; rm -f "$MUT39/adapters/booking.com.json"
-t  'T39e (anchor) the mutant package has no booking.com adapter' 'no' \
-   "$([[ -e "$MUT39/adapters/booking.com.json" ]] && echo yes || echo no)"
+# --- T39e google.com's login probe --------------------------------------------------------
+t  'T39e google.com probes the sign-in page' 'https://accounts.google.com/signin/v2/identifier' "$(jq -r '.probe.url' "$GA39")"
+GMARK39="$(jq -r '.probe.logged_out_when_dom_matches // empty' "$GA39")"
+t  'T39e (anchor) it declares a logged-out marker' 'yes' "$([[ -n "$GMARK39" ]] && echo yes || echo no)"
+t  'T39e the marker MATCHES the sign-in page title (grep -iE, RegExp)' 'match match' "$(mark39 "$GMARK39" "$GLOUT39")"
+t  'T39e it does NOT match a logged-in page' 'miss miss' "$(mark39 "$GMARK39" "$GLIN39")"
+t  'T39e-control the words outside the title do not match: the marker is the title' 'miss miss' \
+   "$(mark39 "$GMARK39" '<html><body><a href="#">Sign in</a> - Google Accounts</body></html>')"
+mkprofile google.com "$GLOUT39" >/dev/null
+run env -u FIVEDIVE_BROWSER_ADAPTER_DIR "$BROWSER" status google.com
+t  'T39e logged out, `status google.com` reports the session cold' 75 "$RC"
+tc 'T39e ...as expired, which names a person' 'session expired — human action required' "$OUT"
+mkprofile google.com "$GLIN39" >/dev/null
+run env -u FIVEDIVE_BROWSER_ADAPTER_DIR "$BROWSER" status google.com
+t  'T39e logged in, it exits 0' 0 "$RC"
+tc 'T39e ...and reads authenticated' 'authenticated (checked' "$OUT"
+
+# --- T39f MUTANT: the package before this change ------------------------------------------
+MUT39="$TMP/t39/mut"; rm -rf "${MUT39:?}"; cp -r "$ROOT/browser" "$MUT39"; rm -f "${MUT39:?}/adapters/booking.com.json"
+jq 'del(.probe)' "$GA39" > "$MUT39/adapters/google.com.json"
+t  'T39f (anchor) the mutant package has no booking.com adapter, and google.com has no probe' 'no null' \
+   "$([[ -e "$MUT39/adapters/booking.com.json" ]] && echo yes || echo no) $(jq -c .probe "$MUT39/adapters/google.com.json")"
 mkprofile booking.com "$BKOUT39" >/dev/null
 run env -u FIVEDIVE_BROWSER_ADAPTER_DIR "$MUT39/bin/browser" status booking.com
-tc 'T39e MUTANT (no shipped adapter), logged out: status can only say UNKNOWN' 'UNKNOWN (no adapter for booking.com' "$OUT"
-tn 'T39e ...so the expired session is never reported' 'session expired' "$OUT"
+tc 'T39f MUTANT (no shipped adapter), booking.com logged out: status can only say UNKNOWN' 'UNKNOWN (no adapter for booking.com' "$OUT"
+tn 'T39f ...so the expired session is never reported' 'session expired' "$OUT"
+mkprofile google.com "$GLOUT39" >/dev/null
+run env -u FIVEDIVE_BROWSER_ADAPTER_DIR "$MUT39/bin/browser" status google.com
+tc 'T39f MUTANT (no probe), google.com logged out: status can only say UNKNOWN' 'UNKNOWN (' "$OUT"
+tn 'T39f ...so the expired session is never reported' 'session expired' "$OUT"
+mkprofile google.com "$LIVE_DOM" >/dev/null
 
-# --- T39f the words -----------------------------------------------------------------------
-tc 'T39f the README lists it with the shipped adapters' '| `booking.com` | `/` | `account\.booking\.com/auth/oauth2\?client_id=` |' \
+# --- T39g the words -----------------------------------------------------------------------
+tc 'T39g the README lists booking.com with its marker' '| `booking.com` | `/` | `data-testid="auth-link-in-view"` |' \
    "$(cat "$ROOT/browser/README.md")"
-tc 'T39f CHANGES.md says search needs the served browser' '5dive browser serve booking.com' "$(cat "$ROOT/CHANGES.md")"
+tc "T39g the README lists google.com's probe" '| `google.com` | `accounts.google.com/signin/v2/identifier` | `<title>Sign in - Google Accounts</title>` |' \
+   "$(cat "$ROOT/browser/README.md")"
+tc 'T39g CHANGES.md says search needs the served browser' '5dive browser serve booking.com' "$(cat "$ROOT/CHANGES.md")"
+tc 'T39g CHANGES.md names the google.com probe' 'google.com probes `https://accounts.google.com/signin/v2/identifier`' "$(cat "$ROOT/CHANGES.md")"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
