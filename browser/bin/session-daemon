@@ -765,7 +765,7 @@ async function planRequest(ctx, req, send, end) {
   // that throws may already have navigated, a click may already have posted. The
   // expensive direction is claiming nothing ran when something did — that is the
   // blind retry that double-posts.
-  let stepsRun = 0, needsOwner = null, retry = null;
+  let stepsRun = 0, needsOwner = null, retry = null, at = -1;
   let page;
   try { page = await pageOf(ctx); }
   catch (e) {
@@ -777,6 +777,7 @@ async function planRequest(ctx, req, send, end) {
     for (let i = 0; i < resolved.length; i++) {
       const s = resolved[i];
       const where = `step ${i + 1} (${s.op})`;
+      at = i;
       // BEFORE THE RESOLVE AND BEFORE THE COUNTER. Both touch the page, and the
       // point is to touch nothing once the browser is someone else's.
       assertLease(req, where);
@@ -824,9 +825,12 @@ async function planRequest(ctx, req, send, end) {
         if (land.loginWall) throw new Error(`${where}: ${land.loginWall}`);
       }
     }
+    at = -1;
   } catch (e) {
     if (retry) send({ t: 'log', line: `  ${retry}failed` });
     send({ t: 'err', msg: e.message });
+    // Which step (DIVE-4990), exactly as the one-shot driver says it.
+    if (at >= 0) send({ t: 'err', msg: aria.STEP_FAILED_PREFIX.trim() + ' ' + JSON.stringify(aria.failedStep(at + 1, resolved[at], e)) });
     if (!stepsRun) {
       send({ t: 'err', msg: 'the session was open but not one step ran, so nothing was published and ' +
         'there is nothing to re-read.' });

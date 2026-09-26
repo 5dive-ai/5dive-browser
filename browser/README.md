@@ -39,7 +39,8 @@ connected site); a refusal naming the accounts when there are several (`github.c
 
 `act` runs agent-written steps in the fixed vocabulary (`goto fill type click wait_for select press`)
 through the same executors, lease and login gate as `run`, and grades `--expect` against the page
-as the steps left it. **Paying, publishing, sending and deleting run and are logged by default
+as the steps left it; a step that fails fails the run, whatever --expect matched, and the failure
+names the step (`--json`: `failed_step`). **Paying, publishing, sending and deleting run and are logged by default
 (yolo, DIVE-5006); under the owner's `careful` they stop before the step** (exit 73): the executor
 reads the live element's label (`lib/aria.cjs` `stepRisk`, shared by both step loops), and a kind
 the owner's policy sets to `ask` records the ask with a screenshot and waits for

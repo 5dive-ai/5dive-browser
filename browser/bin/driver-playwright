@@ -500,13 +500,14 @@ async function main() {
   // where a second caller cannot get a laxer one.
   const ctx = await openProfile(profile);
 
-  let rc = 0, needsOwner = null, page = null, retry = null, acted = false, redirected = false;
+  let rc = 0, needsOwner = null, page = null, retry = null, acted = false, redirected = false, at = -1;
   try {
     page = ctx.pages()[0] || await ctx.newPage();
     page.setDefaultTimeout(STEP_TIMEOUT);
     for (let i = 0; i < resolved.length; i++) {
       const s = resolved[i];
       const where = `step ${i + 1} (${s.op})`;
+      at = i;
       // RESOLVE BEFORE THE COUNTER, deliberately. Turning `ref=button/Send` into
       // a selector is a page.evaluate that reads the document and changes
       // nothing, so a ref that matches nothing performed no part of the action —
@@ -568,6 +569,7 @@ async function main() {
         if (land.retry) { redirected = true; break; }
       }
     }
+    at = -1;   // every step returned: whatever throws now is not a step's failure
     if (redirected) rc = aria.E_REDIRECTED;
     if (needsOwner) {
       process.stderr.write(aria.NEEDS_OWNER_PREFIX + JSON.stringify(needsOwner) + '\n');
@@ -581,6 +583,9 @@ async function main() {
     // case that double-posts on a blind retry.
     if (retry) process.stderr.write(`  ${retry}failed\n`);
     process.stderr.write(`${PROG}: ${e.message}\n`);
+    // WHICH STEP (DIVE-4990), as a line bin/browser reads: a failed step fails
+    // `act` whatever its --expect matched, and the failure names the step.
+    if (at >= 0) process.stderr.write(aria.STEP_FAILED_PREFIX + JSON.stringify(aria.failedStep(at + 1, resolved[at], e)) + '\n');
     rc = stepFailure();
     if (rc === E_NOTHING_RAN) {
       process.stderr.write(`${PROG}: the browser opened but not one step ran, so nothing was ` +

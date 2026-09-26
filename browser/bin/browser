@@ -5014,15 +5014,22 @@ cmd_act() {
   # --expect is graded against the document AND the text a person could read,
   # toasts and live regions included — the executor polled for it for
   # --expect-wait ms, and the capture it shipped is the read that matched.
-  local verdict rc
-  if [[ -n "$expect" ]]; then
+  # A FAILED STEP FAILS THE RUN, WHATEVER --expect MATCHED (DIVE-4990). The page
+  # the goto left can already carry the text: a step 2 that matched nothing read
+  # "verified" on booking.com. So the order is step_failed > not_ready >
+  # not_verified > verified, and verified needs the executor's 0 AND the match.
+  local verdict rc fstep
+  fstep=$(grep -o '5dive-step-failed: {.*}' "$errf" 2>/dev/null | tail -1 | sed 's/^5dive-step-failed: //' | jq -c . 2>/dev/null)
+  if (( drc != 0 )); then
+    verdict=step_failed; rc=1
+  elif [[ -n "$expect" ]]; then
     # No pipe into `grep -q`: under pipefail its early exit SIGPIPEs the writer on
     # a large page, and a page that matched would read as NOT VERIFIED.
     if [[ -s "$out/page.html" ]] && { grep -qiE -- "$expect" "$out/page.html" \
          || grep -qiE -- "$expect" <<<"$(jq -r '.text // ""' "$stage/after.json" 2>/dev/null)"; }; then verdict=verified; rc=0
     else verdict=not_verified; rc=1; fi
   else
-    verdict=$([[ "$drc" == 0 ]] && echo executed || echo step_failed); rc=$(( drc == 0 ? 0 : 1 ))
+    verdict=executed; rc=0
   fi
   # NOT READY outranks "executed" and "not verified": the steps may be fine and
   # the page simply never loaded, and re-running the steps is not the fix.
@@ -5031,7 +5038,8 @@ cmd_act() {
   fi
   if (( json )); then
     jq -nc --arg v "$verdict" --arg u "$final" --arg t "$title" --arg o "$out" --argjson d "$drc" --argjson x "$extra" \
-      '{verdict:$v, url:$u, title:$t, executor_rc:$d, artifacts:$o} + $x'
+      --argjson fs "$([[ "$verdict" == step_failed && -n "$fstep" ]] && echo "$fstep" || echo null)" \
+      '{verdict:$v, url:$u, title:$t, executor_rc:$d, failed_step:$fs, artifacts:$o} + $x'
     return "$rc"
   fi
   printf '%s\n  %s\n  %s\n' "$title" "$final" "$out"
@@ -5039,7 +5047,12 @@ cmd_act() {
     verified)     printf 'verified: the page after the steps matches --expect\n' ;;
     not_verified) printf '%s: NOT VERIFIED — the executor exited %s, but the page after the steps does not match --expect. Look at %s/page.png before retrying: if it went through and we misread, a retry does it twice.\n' "$PROG" "$drc" "$out" >&2 ;;
     executed)     printf 'done: every step ran. Nothing re-graded it (no --expect) — read %s/page.png or snapshot the page before you report success.\n' "$out" ;;
-    step_failed)  printf '%s: a step failed (the executor exited %s). Some steps may have run; look at %s/page.png before retrying.\n' "$PROG" "$drc" "$out" >&2 ;;
+    step_failed)
+      local why="a step failed (the executor exited $drc)"
+      # The error's first sentence: the executor printed all of it just above.
+      [[ -n "$fstep" ]] && why=$(jq -r '"step \(.index) (\(.op)\(if .selector then " " + .selector else "" end)) failed: \(.error | split(". ")[0])"' <<<"$fstep")
+      [[ -n "$expect" ]] && why+=" — the run is NOT verified, whatever --expect matched"
+      printf '%s: %s. Some steps may have run; look at %s/page.png before retrying.\n' "$PROG" "$why" "$out" >&2 ;;
     not_ready)    printf '%s: NOT READY — every step ran, but the page they left is not ready (the reason is above). Look at %s/page.png; wait for the page, do not re-run the steps.\n' "$PROG" "$out" >&2 ;;
   esac
   return "$rc"

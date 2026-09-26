@@ -10,6 +10,31 @@ that file stays where it is.
 
 ## Released
 
+### Fixed — a step that fails fails `act`, whatever `--expect` matched, and the failure names the step (DIVE-4990), browser 1.22.1
+
+**Before:** `act --expect` was graded on the page alone. Measured at 1.13.0 on booking.com: step 2,
+`click ref=button/Decline`, failed with "matches nothing on this page", and the run printed
+`verified: the page after the steps matches --expect` and exited 0, because the expected text was
+on the page before any step ran. `--json` said `"verdict":"verified"` next to a non-zero
+`executor_rc`. Without `--expect`, the failure read "a step failed (the executor exited 1)" and did
+not say which step.
+
+**Now:** a step that fails fails the run, whatever --expect matched. The order is `step_failed` >
+`not_ready` > `not_verified` > `verified`; `verified` needs the executor's exit 0 and the match.
+The failure names the step:
+
+```
+act: step 2 (click ref=button/Decline) failed: ref=button/Decline matches nothing on this page — the run is NOT verified, whatever --expect matched. Some steps may have run; look at …/page.png before retrying.
+```
+
+- `--json` adds `failed_step: {index, op, selector, error}` (null unless the verdict is
+  `step_failed`); `selector` is null for a `goto`.
+- Both step loops (the cold `driver-playwright` and the warm `session-daemon`) print the failed
+  step as one `5dive-step-failed: {…}` line on stderr, from `lib/aria.cjs`.
+- `run` is unchanged: its verify is an out-of-band re-read of a different URL, and a red executor
+  with a live artifact reads verified there by design — a failure there is what double-posts on a
+  retry.
+
 ### Added — a redirected landing is said, and a cold run is retried once in the served browser (DIVE-4991), browser 1.22.0
 
 **Before:** a cold `act` or `run` that the site redirected said nothing about it. Measured
