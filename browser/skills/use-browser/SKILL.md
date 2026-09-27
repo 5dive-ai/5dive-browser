@@ -66,8 +66,8 @@ or `custom`). Changing it is the owner's, not yours:
 
 Where a kind is `ask` (the owner chose `careful`, or that kind), `act` stops in front of any such
 button (read off the live page, whatever selector you used; Ctrl/Cmd+Enter counts as send, and so
-does a plain Enter in a composer with no form around it, which is how a chat box sends) and exits
-**73** with the ask, a screenshot and an approval id.
+does a plain Enter in a composer with no form around it, which is how a chat box sends) and
+exits **73** with the ask, a screenshot and an approval id.
 
 - Relay the ask to the owner **with the screenshot**, in plain words: what will be bought,
   posted, sent or deleted, and where.
