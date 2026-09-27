@@ -172,7 +172,8 @@ or a fill it is never replayed: read `page.png` and decide. `log in first: 5dive
 and a screenshot, for the owner. Under the owner's `careful`
 (`sudo 5dive browser approvals policy set careful`, theirs to set, never yours), `act` stops in
 front of any such button (read off the live page, whatever selector you used; Ctrl/Cmd+Enter
-counts as send) and exits **73** with the ask and a screenshot. Relay the ask to the owner with the screenshot. Only on their explicit yes is it approved (`sudo 5dive browser approve <id>`, which
+counts as send, and so does a plain Enter in a composer with no form around it, which is how a chat
+box sends) and exits **73** with the ask and a screenshot. Relay the ask to the owner with the screenshot. Only on their explicit yes is it approved (`sudo 5dive browser approve <id>`, which
 the owner or their dashboard runs); then re-run the SAME act with `--approved=<id>`. A yes
 covers exactly those steps, once, for 30 minutes. Do not rephrase the steps to get around the
 stop — a button renamed is still an order placed.

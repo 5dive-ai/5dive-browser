@@ -373,11 +373,22 @@ async function typeKeys(page, sel, value, delayMs, { timeoutMs = 30000 } = {}) {
 //
 // WHAT IS READ. For `click`: the element's accessible label (aria-label, the
 // visible text, a button's value, its title), plus the ref's own name when the
-// step used a ref. For `press`: Enter submits the element's form, so it is the
-// label of that form's submit button; a modifier+Enter is the send/post shortcut
-// on every composer that has one (X, Slack, GitHub comments), so it is refused
-// as `send` without reading anything — a composer rarely carries a label that
-// says so, and guessing "harmless" there is the expensive direction.
+// step used a ref. For `press`: inside a form, Enter submits that form, so it is
+// the label of the form's submit button; a modifier+Enter is the send/post
+// shortcut on every composer that has one (X, Slack, GitHub comments), so it is
+// refused as `send` without reading anything — a composer rarely carries a label
+// that says so, and guessing "harmless" there is the expensive direction.
+//
+// A PLAIN ENTER WITH NO FORM IS NOT "NO FORM, NOTHING SUBMITTED" (DIVE-620). A chat
+// composer is a contenteditable with no <form> around it, and a plain Enter is its
+// send key: on Telegram Web `fill` then `press Enter` delivered a message past
+// send=ask, because there was no form to read a submit button from, the label was
+// '', and '' classifies as nothing. So a plain Enter on a formless composer — the
+// target, or the focused element when the target is not one: `contenteditable`,
+// `textarea` or `[role=textbox]` — is `send`, without reading a label, by the same
+// rule as modifier+Enter. A formless search box (`input[type=search]`, a plain
+// text input) is not a composer and keeps running without an ask. Shift+Enter is
+// a composer's NEW LINE, not its send key, so it is not caught here.
 //
 // IT IS A GUARD, NOT A CLASSIFIER OF INTENT. It catches the literal buttons. An
 // agent that submits an order through a button labelled "Continue" is not caught
@@ -405,6 +416,22 @@ function _labelIn(arg) {
   if (!form) return '';
   const sub = form.querySelector('button[type=submit],input[type=submit],button:not([type])');
   return txt(sub) || String(form.getAttribute('action') || '');
+}
+// Is a plain Enter here a formless composer's send key? In the page, like _labelIn.
+function _composerIn(arg) {
+  var el = null;
+  try { el = arg.sel ? document.querySelector(arg.sel) : null; } catch (e) { el = null; }
+  function formless(n) { return !(n.form || (n.closest && n.closest('form'))); }
+  function composer(n) {
+    if (!n) return false;
+    if (n.isContentEditable === true) return true;
+    try { return !!(n.matches && n.matches('[contenteditable=""],[contenteditable=true],[contenteditable=plaintext-only],textarea,[role=textbox]')); }
+    catch (e) { return false; }
+  }
+  if (el && !formless(el)) return false;
+  if (el && composer(el)) return true;
+  var a = document.activeElement;
+  return !!(a && a !== el && composer(a) && formless(a));
 }
 // WHAT THE OWNER IS SAYING YES TO (DIVE-4982). A button label is not an answer to
 // "OK?": measured on a Gmail send, the ask read `"Send (Ctrl-Enter) Send". OK?`,
@@ -497,6 +524,11 @@ async function stepRisk(page, step, sel) {
     const key = String(step.key || '');
     if (!/(^|\+)Enter$/i.test(key)) return null;
     if (/(Control|Meta|Ctrl|Cmd)\+/i.test(key)) { cls = 'send'; label = key; }
+    else if (/^Enter$/i.test(key)) {
+      let composer = false;
+      try { composer = (await page.evaluate(_composerIn, { sel, op: step.op, composerOf: true })) === true; } catch (e) { composer = false; }
+      if (composer) { cls = 'send'; label = `${key} in a composer with no form`; }
+    }
   }
   if (!cls) {
     const refName = isRef(step.selector) ? refBody(step.selector).replace(/^[^/]*\//, '').replace(/#\d+$/, '') : '';
