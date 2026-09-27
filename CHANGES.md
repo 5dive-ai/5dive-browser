@@ -10,6 +10,19 @@ that file stays where it is.
 
 ## Released
 
+### Fixed — a send's ask lists each recipient once, as the chip's address, browser 1.22.2
+
+**Before:** the ask for a one-recipient Gmail send read `to user@example.comLoading...,
+user@example.com`. Recipients were read from every chip and every To/Cc/Bcc field, and a field
+with no `email` attribute was read by its text. Gmail's To field is such a field, and its text is
+the chip's glued to the hover card's. No address pattern can split `com` from `comLoading`, and the
+chip's clean copy was kept beside it, so the owner was asked to approve a send to an address that
+does not exist.
+
+**Now:** when the form holds any `[email]` node (a recipient chip), the recipients are those
+attributes and the fields' input values only; a field's text is read only on a page with no
+`[email]` node at all. The same send asks for `to user@example.com`.
+
 ### Fixed — a step that fails fails `act`, whatever `--expect` matched, and the failure names the step (DIVE-4990), browser 1.22.1
 
 **Before:** `act --expect` was graded on the page alone. Measured at 1.13.0 on booking.com: step 2,

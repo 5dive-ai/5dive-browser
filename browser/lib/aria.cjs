@@ -411,7 +411,8 @@ function _labelIn(arg) {
 // with no recipient, no subject and no text. So before the step, the page is read
 // for what the step will act on — in the form or dialog around the button, the
 // document if there is none:
-//   send     to (every address in a To/Cc/Bcc field or recipient chip), subject,
+//   send     to (every address in a To/Cc/Bcc field or recipient chip; with a
+//            chip on the page, chips and input values only), subject,
 //            first_line of the body
 //   pay      payee (a field that names one, else the site), amount (a price on
 //            the button, else on a "total" line, else the first on the page)
@@ -432,9 +433,14 @@ function _payloadIn(arg) {
   var first = function (q) { var n = all(root, q); for (var i = 0; i < n.length; i++) { var v = text(n[i]); if (v) return v; } return ''; };
   var out = {};
   if (arg.cls === 'send') {
-    var to = [], seen = {};
+    // A chip's `email` attribute is the address. The field around it is not: in
+    // Gmail its text is the chip's glued to the hover card's, `user@x.comLoading...`,
+    // and no pattern can split `com` from `comLoading`. So with any [email] node in
+    // the form, the addresses are those attributes and input values only; a field's
+    // text is read only on a page with no [email] node at all.
+    var to = [], seen = {}, chips = all(root, '[email]').length > 0;
     all(root, '[email],input[name=to],input[name=cc],input[name=bcc],textarea[name=to],[aria-label^="To"],[aria-label^="Cc"],[aria-label^="Bcc"]').forEach(function (n) {
-      var v = (n.getAttribute && n.getAttribute('email')) || n.value || text(n);
+      var v = (n.getAttribute && n.getAttribute('email')) || n.value || (chips ? '' : text(n));
       (String(v || '').match(/[^\s<>,;"'()]+@[^\s<>,;"'()]+/g) || []).forEach(function (a) { if (!seen[a]) { seen[a] = 1; to.push(a); } });
     });
     if (to.length) out.to = to;
