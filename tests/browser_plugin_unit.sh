@@ -7169,5 +7169,62 @@ tc 'T43e CHANGES.md names the glued address' 'user@example.comLoading...' "$(cat
 tc 'T43e README.md says a chip'"'"'s address wins over the field'"'"'s text' 'never the text of the field around it' \
    "$(tr -s ' \n' '  ' < "$ROOT/browser/README.md")"
 
+# ============ T44 the shipped Telegram marker: a signed-out profile is not a login
+#
+# Measured on the K app's 2026-09-25 renders: the signed-out page carries
+# `class="tabs-tab chatlist-container sidebar …"`, and the shipped logged-in marker
+# `class="[^"]*chatlist` matched the `chatlist` inside `chatlist-container`. So a
+# SIGNED-OUT profile probed `authenticated` on the first poll, and every acting verb
+# ran on a dead session. T29g grades the marker with grep against hand-built
+# documents; these arms run it through the real probe, on the class lists the
+# renders actually had. Each arm is the mutant:
+#   T44a  a signed-out render carrying `chatlist-container` probes NOT authenticated
+#   T44b  the live render's `chatlist virtual-chatlist` still probes authenticated
+#   T44c  MUTANT: the old marker, same probe, same signed-out render — authenticated
+#   T44d  the marker keys on the class NAME, wherever it sits in the list
+#   T44e  the words
+TGOUT_DOM='<html><body class="animation-level-2 has-auth-pages"><div id="auth-pages"></div><div class="tabs-tab chatlist-container sidebar sidebar-left-section"><div class="sidebar-content"></div></div></body></html>'
+TGIN_DOM='<html><body class="animation-level-2"><div class="tabs-tab chatlist-container sidebar"><ul class="chatlist virtual-chatlist"><li class="chatlist-chat">a chat</li></ul></div></body></html>'
+TGA="$ROOT/browser/adapters/web.telegram.org.json"
+TGAD="$FIVEDIVE_BROWSER_ADAPTER_DIR/web.telegram.org.json"
+cp "$TGA" "$TGAD"
+TGOUTD="$(mkprofile web.telegram.org_signedout "$TGOUT_DOM")"
+mkprofile web.telegram.org_signedin "$TGIN_DOM" >/dev/null
+
+# --- T44a a signed-out render carrying chatlist-container is NOT a login ---------------------
+t  'T44a (anchor) the signed-out fixture carries the class that lied' 'yes' \
+   "$(grep -q 'chatlist-container' <<<"$TGOUT_DOM" && echo yes || echo no)"
+spaprobe web.telegram.org_signedout
+tn 'T44a the signed-out render does NOT probe authenticated' 'authenticated' "$OUT"
+tc 'T44a ...it reads UNKNOWN: neither marker is on the page' 'UNKNOWN' "$OUT"
+tn 'T44a ...and the tile does not remember a login either' 'authenticated' \
+   "$(awk '{print $2}' "$TGOUTD/.5dive-liveness" 2>/dev/null | tail -1)"
+
+# --- T44b the live render still probes authenticated -----------------------------------------
+spaprobe web.telegram.org_signedin
+tc 'T44b the signed-in render (chatlist virtual-chatlist) probes authenticated' 'authenticated' "$OUT"
+t  'T44b ...quietly' 0 "$RC"
+
+# --- T44c MUTANT: the old marker reads the same signed-out render as a login ------------------
+jq '.probe.logged_in_when_dom_matches = "class=\"[^\"]*chatlist"' "$TGA" > "$TGAD"
+spaprobe web.telegram.org_signedout
+tc 'T44c MUTANT (old marker): the signed-out render probes authenticated — T44a is red' 'authenticated' "$OUT"
+cp "$TGA" "$TGAD"
+
+# --- T44d the class name, wherever it sits in the list ---------------------------------------
+TGIN="$(jq -r '.probe.logged_in_when_dom_matches' "$TGA")"
+t  'T44d the marker counts 0 on the signed-out render and 1 on the signed-in one' '0 1' \
+   "$(grep -oiE -- "$TGIN" <<<"$TGOUT_DOM" | wc -l | tr -d ' ') $(grep -oiE -- "$TGIN" <<<"$TGIN_DOM" | wc -l | tr -d ' ')"
+t  'T44d ...matches chatlist first, middle or last in a class list' 'match match match' \
+   "$(for c in 'chatlist a' 'a chatlist b' 'a chatlist'; do grep -qiE -- "$TGIN" <<<"<ul class=\"$c\">" && printf 'match ' || printf 'miss '; done | sed 's/ $//')"
+t  'T44d ...and not a class that only contains the word' 'miss miss' \
+   "$(for c in 'virtual-chatlist' 'chatlist-container'; do grep -qiE -- "$TGIN" <<<"<ul class=\"$c\">" && printf 'match ' || printf 'miss '; done | sed 's/ $//')"
+
+# --- T44e the words ----------------------------------------------------------------------------
+tc 'T44e CHANGES.md carries the entry' 'DIVE-4998' "$(cat "$ROOT/CHANGES.md")"
+tc 'T44e the README row names the marker that ships' "$TGIN" "$(cat "$ROOT/browser/README.md")"
+tn 'T44e ...and the adapter no longer claims 0 on a logged-out render' "on a logged-out cold profile's own render, it matched 0" \
+   "$(jq -r '._comment' "$TGA")"
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

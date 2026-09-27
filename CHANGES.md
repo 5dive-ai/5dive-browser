@@ -10,6 +10,23 @@ that file stays where it is.
 
 ## Released
 
+### Fixed — a signed-out Telegram Web profile no longer probes `authenticated` (DIVE-4998), browser 1.22.3
+
+**Before:** the `web.telegram.org` adapter's logged-in marker was `class="[^"]*chatlist`. The K
+app's signed-out render now carries `class="tabs-tab chatlist-container sidebar …"`, and
+`[^"]*chatlist` matches the `chatlist` inside `chatlist-container`. So `status web.telegram.org`
+read a signed-out profile as `authenticated` on the first poll, and every acting verb then ran on a
+dead session.
+
+**Now:** the marker is `class="([^"]* )?chatlist[ "]`: `chatlist` as a whole class name, at the
+start of the attribute or after a space, and followed by a space or the closing quote. On the
+2026-09-25 renders it matched 0 on both signed-out renders, the cold render and the curl'd shell, and
+1 on the live signed-in render (`class="chatlist virtual-chatlist"`). A signed-out profile whose
+page shows neither marker now reads `UNKNOWN`, and the acting verbs refuse it. The README's
+shipped-adapter row carries the new marker. The adapter's `_comment` drops its 2026-09-21 "0 on a
+logged-out render" note, which no longer holds, and names three fallback markers that measured the
+same way: `id=folders-sidebar`, `id=new-menu` and `id=folders-tabs`.
+
 ### Fixed — a send's ask lists each recipient once, as the chip's address, browser 1.22.2
 
 **Before:** the ask for a one-recipient Gmail send read `to user@example.comLoading...,
