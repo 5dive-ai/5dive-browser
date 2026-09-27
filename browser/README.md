@@ -56,8 +56,8 @@ them; the yes is bound to that action with those arguments, and is spent with
 action without `guard` keeps the contract it had.
 
 **What the owner says yes to (DIVE-4982).** The ask carries a `payload`, read off the page just
-before the step, in the form or dialog around the button: for a send the recipients, the subject
-and the body's first line; for a pay the payee (or the site) and the amount; for a publish the
+before the step, in the form or dialog around the button: for a send the recipients (a chip's
+address, never the text of the field around it), the subject and the body's first line; for a pay the payee (or the site) and the amount; for a publish the
 first 280 characters of the text; for a delete the row or item it belongs to. Bidi and control
 characters are stripped from it and from the button label. `approvals` and `approve` print it.
 A page that shows none of it gets an ask that says so; the button label is never passed off as

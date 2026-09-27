@@ -7123,5 +7123,51 @@ for f in browser/README.md browser/AGENTS.md CHANGES.md; do
 done
 tc 'T42f CHANGES.md names the --json field' 'failed_step' "$(cat "$ROOT/CHANGES.md")"
 
+# ============ T43 a send's recipients: a chip's address, never the text of the field around it
+#
+# Measured on Gmail at 1.18.0: a one-recipient send asked the owner to approve
+# `to user@example.comLoading..., user@example.com`. The To field has no `email`
+# attribute, so its text was read, and that text is the chip's glued to the hover
+# card's; the chip's clean copy came through as well. Each arm is the mutant:
+#   T43a  a chip and the field around it: one address, the chip's
+#   T43b  ...and an address still being typed in the field's input is kept
+#   T43c  no [email] node on the page: a textarea's value, and a field's text, still read
+#   T43d  MUTANT: the field's text read beside the chip — the glued address is back
+#   T43e  the words
+T43="$TMP/t43"; mkdir -p "$T43"
+cat > "$T43/to.js" <<'TOJS'
+const { _payloadIn } = require(process.env.ARIA);
+// A node lists the simple selectors it matches; querySelectorAll keeps document
+// order, as the DOM does: the To field, an ancestor, before the chip inside it.
+const node = (m, p) => Object.assign({ m, getAttribute: (a) => ((p.attrs || {})[a] ?? null) }, p);
+const to = (nodes) => {
+  const form = { querySelectorAll: (q) => { const qs = q.split(',').map((x) => x.trim());
+    return nodes.filter((n) => n.m.some((x) => qs.includes(x))); } };
+  global.document = { querySelector: (s) => (s === '#send' ? { closest: () => form } : null), querySelectorAll: () => [] };
+  return _payloadIn({ sel: '#send', cls: 'send', op: 'click' }).to || [];
+};
+const field = node(['[aria-label^="To"]'], { attrs: { 'aria-label': 'To recipients' }, innerText: 'user@example.comLoading...' });
+const chip = node(['[email]'], { attrs: { email: 'user@example.com' }, innerText: 'user' });
+const typing = node(['[aria-label^="To"]'], { attrs: { 'aria-label': 'To recipients' }, value: 'late@example.test' });
+const textarea = node(['textarea[name=to]'], { value: 'ann@example.test' });
+const plain = node(['[aria-label^="To"]'], { attrs: { 'aria-label': 'To' }, innerText: 'bob@example.test' });
+console.log(JSON.stringify([to([field, chip]), to([field, chip, typing]), to([textarea, plain])]));
+TOJS
+OUT43="$(ARIA="$ROOT/browser/lib/aria.cjs" node "$T43/to.js" 2>&1)"
+t  'T43a a chip and the To field around it: to is the chip'"'"'s address, once' '["user@example.com"]' "$(jq -c '.[0]' <<<"$OUT43" 2>&1)"
+t  'T43b ...an address still in the field'"'"'s input is kept' '["user@example.com","late@example.test"]' "$(jq -c '.[1]' <<<"$OUT43" 2>&1)"
+t  'T43c no [email] node: the textarea'"'"'s value and the field'"'"'s text are read' '["ann@example.test","bob@example.test"]' "$(jq -c '.[2]' <<<"$OUT43" 2>&1)"
+
+# --- T43d MUTANT: the field's text read beside the chip ---------------------------------------
+sed "s/ || (chips ? '' : text(n));\$/ || text(n);  \/\/ MUTANT (field text)/" "$ROOT/browser/lib/aria.cjs" > "$T43/aria-mut.cjs"
+t  'T43d (anchor) the mutation landed in _payloadIn' 1 "$(grep -c 'MUTANT (field text)' "$T43/aria-mut.cjs")"
+t  'T43d MUTANT (field text): the glued address is back, and the chip'"'"'s copy beside it — T43a is red' \
+   '["user@example.comLoading...","user@example.com"]' "$(ARIA="$T43/aria-mut.cjs" node "$T43/to.js" 2>&1 | jq -c '.[0]' 2>&1)"
+
+# --- T43e the words ---------------------------------------------------------------------------
+tc 'T43e CHANGES.md names the glued address' 'user@example.comLoading...' "$(cat "$ROOT/CHANGES.md")"
+tc 'T43e README.md says a chip'"'"'s address wins over the field'"'"'s text' 'never the text of the field around it' \
+   "$(tr -s ' \n' '  ' < "$ROOT/browser/README.md")"
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
