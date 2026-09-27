@@ -7226,5 +7226,132 @@ tc 'T44e the README row names the marker that ships' "$TGIN" "$(cat "$ROOT/brows
 tn 'T44e ...and the adapter no longer claims 0 on a logged-out render' "on a logged-out cold profile's own render, it matched 0" \
    "$(jq -r '._comment' "$TGA")"
 
+# ============ T45 a --wait-for timeout is a timeout, and `served` names the public browser
+#
+# Two leftovers of a live Booking test at 1.22.2 (DIVE-4991 items 3 and 4):
+#   item 3: `read --wait-for` on an element that never appeared said "--wait-for was not
+#           honoured … a session daemon from before --wait-for existed … Restart it" with
+#           no daemon in the path. The cold executor printed its payload and called
+#           process.exit, and bin/browser reads it through a PIPE: the first 64 KB arrived
+#           and the rest did not. A real page's node list is past that, so jq found no
+#           wait_for in the cut JSON, and the only branch for "no wait_for" was the
+#           old-daemon one. Restarting changed nothing, because nothing was served.
+#   item 4: `served` printed nothing while a `_public` browser ran; `serve _public --stop`
+#           found it and stopped it.
+# Each arm is the mutant:
+#   T45a  cold read, a page past 64 KB, the element never comes: the TIMEOUT message
+#   T45b  ...and the same page when the element does come: met, rc 0
+#   T45c  MUTANT: the executor exits without flushing — T45a's page loses its verdict,
+#         and the message names the executor, never a daemon
+#   T45d  warm read on the current daemon: the timeout message; on a daemon with no
+#         wait_for field (the old one): the old-daemon message, still 76
+#   T45e  `served` lists `_public` while it runs, and not once it stops
+#   T45f  MUTANT: the old skip restored in a copy — `_public` is missing again
+#   T45g  the words
+T45="$TMP/t45"; mkdir -p "$T45"
+mkprofile big45.test "$LIVE_DOM" >/dev/null
+# A PAGE PAST THE PIPE. 1500 refs is ~110 KB of payload, and Booking's results page
+# walks to more than that.
+jq -n '{nodes: ([range(0;1500)] | map({ref:("link/Hotel number \(.) in Lisbon"), role:"link",
+         name:("Hotel number \(.) in Lisbon"), tag:"a"})),
+        marker: null, title: "Hotels in Lisbon", url: "https://big45.test/searchresults",
+        html: "<html><body><main><h1>Hotels in Lisbon</h1><p>Every property the search found, with its price and its rating, one card after another down the page.</p></main></body></html>"}' \
+  > "$T45/big.json"
+jq '.nodes += [{ref:"main/", role:"main", name:"", tag:"div"}]' "$T45/big.json" > "$T45/big-late.json"
+t  'T45a (anchor) the fixture is past a pipe'"'"'s 64 KB' 'yes' \
+   "$([[ $(jq -c '{url, nodes}' "$T45/big.json" | wc -c) -gt 65536 ]] && echo yes || echo no)"
+
+# --- T45a the element never comes: the timeout message, not the old-daemon one ---------------
+rm -rf "$T45/a"
+run t34env PWWALK="$T45/big.json" PWLATE_MS=99999999 FIVEDIVE_BROWSER_STEP_TIMEOUT=1000 \
+    "$BROWSER" read big45.test "https://big45.test/searchresults" --wait-for='[data-testid=property-card]' --out="$T45/a"
+t  'T45a a --wait-for that never appears on a page past 64 KB is NOT READY (76)' 76 "$RC"
+tc 'T45a ...and says it timed out, with the bound' 'did not appear within 1000 ms' "$ERR"
+tn 'T45a ...not that it was not honoured' 'not honoured' "$ERR"
+tn 'T45a ...and blames no daemon: none was in the path' 'session daemon' "$ERR"
+t  'T45a page.meta.json: rendered by the executor, the wait answered and unmet' 'playwright false 1000' \
+   "$(jq -r '"\(.capture) \(.wait_for.met) \(.wait_for.waited_ms)"' "$T45/a/page.meta.json" 2>/dev/null)"
+
+# --- T45b ...and when it comes, on the same page, it is met ----------------------------------
+rm -rf "$T45/b"
+run t34env PWWALK="$T45/big.json" PWWALK_LATE="$T45/big-late.json" PWLATE_MS=1500 \
+    "$BROWSER" read big45.test "https://big45.test/searchresults" --wait-for='[role=main]' --out="$T45/b"
+t  'T45b the element that arrives on a page past 64 KB is met, and read exits 0' '0 true 1500' \
+   "$RC $(jq -r '"\(.wait_for.met) \(.wait_for.waited_ms)"' "$T45/b/page.meta.json" 2>/dev/null)"
+
+# --- T45c MUTANT: the executor exits the moment it has written ----------------------------------
+MUT45="$T45/mutant"; rm -rf "$MUT45"; cp -r "$ROOT/browser" "$MUT45"
+perl -0pi -e 's/(async function printAndExit\(obj, code = 0\) \{\n)/$1  process.stdout.write(JSON.stringify(obj) + "\\n"); process.exit(code); \/\* MUTANT (DIVE-4991): exit before the pipe drains \*\/\n/' \
+  "$MUT45/bin/driver-playwright"
+t  'T45c (anchor) the mutation landed in the copy' 'yes' \
+   "$(grep -q 'MUTANT (DIVE-4991)' "$MUT45/bin/driver-playwright" && echo yes || echo no)"
+rm -rf "$T45/c"
+run t34env PWWALK="$T45/big.json" PWLATE_MS=99999999 FIVEDIVE_BROWSER_STEP_TIMEOUT=1000 \
+    "$MUT45/bin/browser" read big45.test "https://big45.test/searchresults" --wait-for='[data-testid=property-card]' --out="$T45/c"
+tn 'T45c MUTANT (no flush): the timeout is lost — T45a is red' 'did not appear within' "$ERR"
+tc 'T45c MUTANT ...and the reply is said to carry no verdict' 'was not answered' "$ERR"
+tn 'T45c MUTANT ...still without blaming a daemon that was not there' 'session daemon from before' "$ERR"
+t  'T45c MUTANT ...and it is still NOT READY, never met' 76 "$RC"
+rm -rf "$T45/c2"
+run t34env PWWALK="$T45/big.json" PWWALK_LATE="$T45/big-late.json" PWLATE_MS=1500 \
+    "$MUT45/bin/browser" read big45.test "https://big45.test/searchresults" --wait-for='[role=main]' --out="$T45/c2"
+t  'T45c MUTANT ...even an element that DID arrive reads as unanswered — T45b is red' 76 "$RC"
+
+# --- T45d the warm read: a timeout, and a daemon that does not answer ------------------------
+mkprofile warm45.test "$LIVE_DOM" >/dev/null
+jq '.url = "https://warm45.test/inbox"' "$T34INBOX" > "$T45/w.json"
+dserve warm45.test DPWLATE_MS=99999999 DPWSNAP="$T45/w.json" FIVEDIVE_BROWSER_STEP_TIMEOUT=1000
+t  'T45d (precondition) the warm session is up' 0 "$RC"
+rm -rf "$T45/d"
+dwarm "$BROWSER" read warm45.test "https://warm45.test/inbox" --wait-for='text=Compose' --out="$T45/d"
+t  'T45d a warm read whose element never comes is NOT READY (76)' 76 "$RC"
+tc 'T45d ...with the timeout message' 'did not appear within 1000 ms' "$ERR"
+tn 'T45d ...and not the old-daemon one: this daemon answered' 'not honoured' "$ERR"
+t  'T45d ...rendered in the session' 'session-daemon false' \
+   "$(jq -r '"\(.capture) \(.wait_for.met)"' "$T45/d/page.meta.json" 2>/dev/null)"
+env PATH="$SPATH" "$BROWSER" serve warm45.test --stop >/dev/null 2>&1
+# AN OLD DAEMON: this release's daemon with the wait_for field cut out of its replies,
+# which is what one from before --wait-for sends back.
+OLD45="$T45/old"; rm -rf "$OLD45"; cp -r "$ROOT/browser" "$OLD45"
+perl -ni -e 'print unless /^\s*\.\.\.\(waited \? \{ wait_for: waited \} : \{\}\),\s*$/' "$OLD45/bin/session-daemon"
+t  'T45d (anchor) the old daemon sends no wait_for' 0 "$(grep -c 'wait_for: waited' "$OLD45/bin/session-daemon")"
+dserve warm45.test FIVEDIVE_BROWSER_SESSION_DAEMON="$OLD45/bin/session-daemon" DPWLATE_MS=99999999 DPWSNAP="$T45/w.json" FIVEDIVE_BROWSER_STEP_TIMEOUT=1000
+t  'T45d (precondition) the old daemon is up' 0 "$RC"
+rm -rf "$T45/d2"
+dwarm env FIVEDIVE_BROWSER_SESSION_DAEMON="$OLD45/bin/session-daemon" \
+    "$BROWSER" read warm45.test "https://warm45.test/inbox" --wait-for='text=Compose' --out="$T45/d2"
+t  'T45d a daemon that sends no wait_for is NOT READY (76)' 76 "$RC"
+tc 'T45d ...and is named as the old daemon, with the restart' 'session daemon from before --wait-for existed' "$ERR"
+tn 'T45d ...not as a timeout it never reported' 'did not appear within' "$ERR"
+env PATH="$SPATH" FIVEDIVE_BROWSER_SESSION_DAEMON="$OLD45/bin/session-daemon" "$BROWSER" serve warm45.test --stop >/dev/null 2>&1
+
+# --- T45e `served` names the public browser while it runs ------------------------------------
+PUBD="$(mkprofile _public "$LIVE_DOM")"
+run "$BROWSER" served
+tn 'T45e (control) a public profile that is not running is not in `served`' '_public' "$OUT"
+PUBPIDS="$(mkserve "$PUBD" "$(date -u +%s)")"
+run "$BROWSER" served
+t  'T45e a running public browser is in `served`, as its bare name' 'yes' \
+   "$(printf '%s\n' "$OUT" | grep -qx '_public' && echo yes || echo no)"
+t  'T45e ...and asking is not an error' 0 "$RC"
+
+# --- T45f MUTANT: the old skip, restored in a copy ---------------------------------------------
+MUTS45="$T45/served-mutant"; rm -rf "$MUTS45"; cp -r "$ROOT/browser" "$MUTS45"
+perl -0pi -e 's/(    site=\$\(basename "\$d"\)\n)(    _serve_running "\$d" >\/dev\/null \|\| continue\n    printf)/$1    _is_public "\$site" && continue   # MUTANT (DIVE-4991)\n$2/' "$MUTS45/bin/browser"
+t  'T45f (anchor) the mutation landed in the copy' 1 "$(grep -c 'MUTANT (DIVE-4991)' "$MUTS45/bin/browser")"
+run "$MUTS45/bin/browser" served
+t  'T45f MUTANT (skip _public): the running public browser is missing — T45e is red' 'no' \
+   "$(printf '%s\n' "$OUT" | grep -qx '_public' && echo yes || echo no)"
+kill $PUBPIDS 2>/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 $PUBPIDS 2>/dev/null || break; sleep 0.1; done
+run "$BROWSER" served
+tn 'T45e once it stops, it is gone from `served`' '_public' "$OUT"
+
+# --- T45g the words ----------------------------------------------------------------------------
+tc 'T45g CHANGES.md names the pipe' '64 KB' "$(cat "$ROOT/CHANGES.md")"
+tc 'T45g CHANGES.md says served lists _public' '`served`' "$(cat "$ROOT/CHANGES.md")"
+tc 'T45g the README tells a timeout from an old daemon' 'was not answered' \
+   "$(tr -s ' \n' '  ' < "$ROOT/browser/README.md")"
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -10,6 +10,25 @@ that file stays where it is.
 
 ## Released
 
+### Fixed — a `--wait-for` timeout reads as a timeout, and `served` lists the public browser (DIVE-4991), browser 1.22.4
+
+**Before:** a cold `read --wait-for` (nothing served) on a real page said `--wait-for was not
+honoured: the served browser for this profile runs a session daemon from before --wait-for
+existed … Restart it`, whether the element timed out or arrived. No daemon was in the path. The
+executor printed its reply and called `process.exit`, and `read` takes that reply through a pipe,
+which carries the first 64 KB and drops the rest. A real page's node list is past 64 KB, so the
+JSON arrived cut, no `wait_for` could be read from it, and the only branch for a missing
+`wait_for` was the old-daemon one. Restarting changed nothing. Separately, `5dive browser served`
+printed nothing while a `_public` browser ran, although `serve _public --stop` found it and
+stopped it.
+
+**Now:** the executor waits until its reply has been flushed before it exits, for `tree` and
+`snapshot` alike, so the reply arrives whole at any size. A timeout says
+`--wait-for=<target> did not appear within <ms> ms` (76). A daemon with no `wait_for` in its reply
+is still named as the old daemon, with the restart (76). A cold capture with no verdict says the
+`--wait-for` *was not answered*, names the capture, and blames no daemon (76). `served` lists
+`_public` while it runs; `ls`, `status` and `probe-all` still skip it, because it is not a login.
+
 ### Fixed — a signed-out Telegram Web profile no longer probes `authenticated` (DIVE-4998), browser 1.22.3
 
 **Before:** the `web.telegram.org` adapter's logged-in marker was `class="[^"]*chatlist`. The K

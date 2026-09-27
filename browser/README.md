@@ -557,9 +557,12 @@ because its one re-read came before the toast.
 
 **76 is not 75.** 75 means the session is cold and a person has to log in again. 76 means the
 session is fine and the page was not ready: wait for it. Do not re-authenticate, and do not re-run
-an `act`'s steps. A browser served before this release runs the old daemon, which ignores
-`--wait-for`; that is reported as *not honoured* (76), never as met. `serve <site> --stop` and
-`serve <site>` again picks up the new one.
+an `act`'s steps. A `--wait-for` that times out says `did not appear within <ms>` (76). A browser
+served before this release runs the old daemon, which ignores `--wait-for`; that is reported as
+*not honoured* (76), never as met, and `serve <site> --stop` and `serve <site>` again picks up the
+new one. A cold `read` (nothing served) whose capture comes back with no verdict on `--wait-for`
+says it *was not answered* (76) and names the capture; it blames no daemon, because there is none
+to restart.
 
 ## Adapters are data, and the vocabulary is fixed
 

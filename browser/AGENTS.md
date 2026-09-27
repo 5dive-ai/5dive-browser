@@ -257,6 +257,9 @@ the output says `LOADING SCREEN`), or a `--wait-for` that never appeared. `page.
 `page.md` say `partial: true`. Do not read refs or text out of it and do not report it as the
 page; run it again with a `--wait-for` the loaded page has. 76 is not 75: the login is fine,
 so do not ask anyone to log in, and do not re-run an `act`'s steps — they already ran.
+Only *not honoured* (a served browser running an old daemon) asks for a restart
+(`serve <site> --stop`, then `serve <site>`). `did not appear within <ms>` is a timeout, and *was
+not answered* is a capture with no verdict on `--wait-for`; restarting changes neither.
 `read` stops at 30 s of real time on a page that never goes quiet and marks what it got
 `partial: true`.
 

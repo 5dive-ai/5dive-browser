@@ -185,6 +185,19 @@ function assertLease(where) {
 
 function die(code, msg) { process.stderr.write(`${PROG}: ${msg}\n`); process.exit(code); }
 
+// A PIPE IS NOT A FILE (DIVE-4991). bin/browser reads what `tree` and `snapshot`
+// print through `$( … )`, and `process.exit` drops whatever that pipe has not taken
+// yet: the first 64 KB arrive and the rest never does (measured: 2 MB written,
+// 65536 bytes read). A real page's node list is past that, so a cold `read
+// --wait-for` got a cut payload, found no `wait_for` in it, and blamed "a session
+// daemon from before --wait-for existed" that was not in the path at all. The exit
+// waits for the write to be flushed — the rule the session daemon's client half
+// has followed since DIVE-4794.
+async function printAndExit(obj, code = 0) {
+  await new Promise((resolve) => process.stdout.write(JSON.stringify(obj) + '\n', resolve));
+  process.exit(code);
+}
+
 // {key} -> args.key, as a VALUE. A placeholder with no argument is a REFUSAL and
 // not a passthrough: the dual of this bug is already known on the verify side —
 // an uninterpolated {slug} in verify.expect can never match, so every publish
@@ -301,6 +314,7 @@ async function treeMode(plan) {
     die(E_NOTHING_RAN, 'tree needs an http(s) url to enumerate');
   }
   const ctx = await openProfile(profile);
+  let payload;
   try {
     const page = ctx.pages()[0] || await ctx.newPage();
     page.setDefaultTimeout(STEP_TIMEOUT);
@@ -312,13 +326,13 @@ async function treeMode(plan) {
     // domcontentloaded is what a tree needs and is bounded by construction.
     await page.waitForTimeout(Number(process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS || 1200));
     const { nodes } = await aria.walk(page, { interactiveOnly: !!plan.interactive });
-    process.stdout.write(JSON.stringify({ url: plan.url, nodes }) + '\n');
+    payload = { url: plan.url, nodes };
   } catch (e) {
     die(E_NOTHING_RAN, `could not enumerate ${plan.url}: ${e.message}`);
   } finally {
-    try { await ctx.close(); } catch (e) { /* the tree is already printed */ }
+    try { await ctx.close(); } catch (e) { /* the tree is already walked */ }
   }
-  process.exit(0);
+  await printAndExit(payload);
 }
 
 // `snapshot` — ONE browser, ONE navigation, ONE page-side read (DIVE-4653).
@@ -382,8 +396,7 @@ async function snapshotMode(plan) {
   } finally {
     try { await ctx.close(); } catch (e) { /* the capture is already on disk */ }
   }
-  process.stdout.write(JSON.stringify(payload) + '\n');
-  process.exit(0);
+  await printAndExit(payload);
 }
 
 // `act`'s re-read (DIVE-4943): the page as the steps left it, to the files
