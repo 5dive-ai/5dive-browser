@@ -2356,6 +2356,9 @@ const page = {
     // DIVE-4943: the owner-approval guard reads the live element's label through
     // evaluate. PWLABEL parks what the page would have said.
     if (arg && arg.riskOf) { rec({ call: 'label', sel: arg.sel, op: arg.op }); return process.env.PWLABEL || ''; }
+    // DIVE-620: is a plain Enter's target a composer with no form (a chat box)?
+    // PWCOMPOSER=1 says it is. The page-side test itself is graded in T46a.
+    if (arg && arg.composerOf) { rec({ call: 'composer', sel: arg.sel }); return process.env.PWCOMPOSER === '1'; }
     // DIVE-4982: what the risky step will act on. PWPAYLOAD parks what the page
     // shows (recipients, subject...); unset, the page shows nothing readable.
     if (arg && arg.payloadOf) { rec({ call: 'payload', sel: arg.sel, cls: arg.cls });
@@ -7352,6 +7355,123 @@ tc 'T45g CHANGES.md names the pipe' '64 KB' "$(cat "$ROOT/CHANGES.md")"
 tc 'T45g CHANGES.md says served lists _public' '`served`' "$(cat "$ROOT/CHANGES.md")"
 tc 'T45g the README tells a timeout from an old daemon' 'was not answered' \
    "$(tr -s ' \n' '  ' < "$ROOT/browser/README.md")"
+
+# ============ T46 a plain Enter in a composer with no form is a send
+#
+# Measured on Telegram Web, under send=ask: `fill` on the message composer, then
+# `press Enter`, delivered the message with no ask and exit 0. The composer is a
+# contenteditable with no <form> around it; a plain Enter asked _labelIn for the
+# form's submit button, got '' because there is no form, and '' classifies as
+# nothing. Ctrl/Cmd+Enter was already a send without a label; a formless plain
+# Enter on a composer now is too. Each arm is the mutant:
+#   T46a  the real stepRisk, on a DOM shim: a formless contenteditable, textarea,
+#         [role=textbox], a node inside a contenteditable, and a focused composer
+#         are all `send`, and the ask carries the message's first line
+#   T46b  ...a formless search box is not; Shift+Enter (a new line) is not; a
+#         composer INSIDE a form still follows that form's submit button
+#   T46c  MUTANT: the formless-composer branch removed — the composer runs, T46a red
+#   T46d  act, under careful: fill + press Enter on a formless composer exits 73 with
+#         a send ask, before the Enter reaches the page; the search box still runs
+#   T46e  the words
+T46="$TMP/t46"; mkdir -p "$T46"
+cat > "$T46/risk.js" <<'RISKJS'
+const aria = require(process.env.ARIA);
+// A node lists the simple selectors it matches, as in T43. `form` is the form it
+// sits in, or null; `ce` is isContentEditable (true inside a contenteditable).
+const sub = (label) => ({ getAttribute: (a) => (a === 'aria-label' ? label : null), innerText: label });
+const mkform = (label) => ({ querySelector: () => sub(label), querySelectorAll: () => [], getAttribute: () => null });
+const node = (m, p = {}) => ({ m, form: p.form || null, isContentEditable: !!p.ce, innerText: p.text || '', value: p.value,
+  getAttribute: () => null, closest: (q) => (p.form && /form/.test(q) ? p.form : null),
+  matches: (q) => q.split(',').map((x) => x.trim()).some((x) => m.includes(x)) });
+const composer = node(['div.input-message-input[contenteditable=true]', '[contenteditable=true]'], { ce: true, text: 'test' });
+const nodes = {
+  '#composer': composer,
+  '#search': node(['input[type=search]']),
+  '#textarea': node(['textarea'], { value: 'a note' }),
+  '#textbox': node(['[role=textbox]'], { text: 'hello' }),
+  '#inner': node(['p'], { ce: true, text: 'inside' }),
+  '#app': node(['div']),
+  '#formsearch': node(['[contenteditable=true]'], { ce: true, form: mkform('Search') }),
+  '#formsend': node(['textarea'], { form: mkform('Send') }),
+};
+const page = (active) => ({ evaluate: async (fn, arg) => {
+  global.document = { activeElement: active || null,
+    querySelector: (s) => nodes[s] || null,
+    querySelectorAll: (q) => { const qs = q.split(',').map((x) => x.trim());
+      return Object.values(nodes).filter((n) => !n.form && n.m.some((x) => qs.includes(x))); } };
+  return fn(arg);
+} });
+const cases = [
+  ['composer', 'Enter', '#composer', null], ['textarea', 'Enter', '#textarea', null],
+  ['textbox', 'Enter', '#textbox', null], ['inner', 'Enter', '#inner', null],
+  ['focused', 'Enter', null, composer], ['focused-app', 'Enter', '#app', composer],
+  ['search', 'Enter', '#search', null], ['shift', 'Shift+Enter', '#composer', null],
+  ['form-search', 'Enter', '#formsearch', null], ['form-send', 'Enter', '#formsend', null],
+  ['ctrl-search', 'Control+Enter', '#search', null],
+];
+(async () => {
+  const out = {};
+  for (const [name, key, sel, active] of cases) {
+    const r = await aria.stepRisk(page(active), { op: 'press', selector: sel || undefined, key }, sel);
+    out[name] = r ? { cls: r.cls, first_line: r.payload.first_line || null } : null;
+  }
+  console.log(JSON.stringify(out));
+})().catch((e) => { console.log(JSON.stringify({ error: String(e && e.message) })); });
+RISKJS
+OUT46="$(ARIA="$ROOT/browser/lib/aria.cjs" node "$T46/risk.js" 2>&1)"
+c46() { jq -r --arg k "$1" '.[$k] | if . == null then "runs" else .cls end' <<<"$OUT46" 2>&1; }
+
+# --- T46a a formless composer's Enter is a send ------------------------------------------------
+t  'T46a a plain Enter on a formless contenteditable composer is a send' 'send' "$(c46 composer)"
+t  'T46a ...and the ask carries the message the owner is asked about' 'test' \
+   "$(jq -r '.composer.first_line' <<<"$OUT46" 2>&1)"
+t  'T46a ...on a formless textarea too' 'send' "$(c46 textarea)"
+t  'T46a ...on a formless [role=textbox]' 'send' "$(c46 textbox)"
+t  'T46a ...on a node inside a contenteditable' 'send' "$(c46 inner)"
+t  'T46a ...with no selector, on the focused composer' 'send' "$(c46 focused)"
+t  'T46a ...and on a formless non-composer while a composer has focus' 'send' "$(c46 focused-app)"
+
+# --- T46b what keeps running ---------------------------------------------------------------------
+t  'T46b a plain Enter in a formless search box still runs without an ask' 'runs' "$(c46 search)"
+t  'T46b Shift+Enter in the composer is a new line, not a send' 'runs' "$(c46 shift)"
+t  'T46b a composer inside a form follows that form: Search runs' 'runs' "$(c46 form-search)"
+t  'T46b ...and Send is a send, as before' 'send' "$(c46 form-send)"
+t  'T46b (control) Ctrl+Enter is still a send anywhere' 'send' "$(c46 ctrl-search)"
+
+# --- T46c MUTANT: the formless-composer branch removed ----------------------------------------
+sed 's|    else if (/^Enter$/i.test(key)) {|    else if (false) {  // MUTANT (formless Enter)|' "$ROOT/browser/lib/aria.cjs" > "$T46/aria-mut.cjs"
+t  'T46c (anchor) the mutation landed in stepRisk' 1 "$(grep -c 'MUTANT (formless Enter)' "$T46/aria-mut.cjs")"
+OUT46M="$(ARIA="$T46/aria-mut.cjs" node "$T46/risk.js" 2>&1)"
+t  'T46c MUTANT (no formless branch): the composer'"'"'s Enter runs with no ask — T46a is red' 'null' \
+   "$(jq -c '.composer' <<<"$OUT46M" 2>&1)"
+
+# --- T46d act, end to end, under careful ------------------------------------------------------
+cp "$POL31" "$T46/policy.before" 2>/dev/null
+run actenv env -u SUDO_USER "$BROWSER" approvals policy set careful
+t  'T46d (setup) the owner sets careful' 0 "$RC"
+TGSTEPS='[{"op":"fill","selector":"div.input-message-input[contenteditable=true]","value":"test"},
+          {"op":"press","selector":"div.input-message-input[contenteditable=true]","key":"Enter"}]'
+: > "$PWREC"
+run actenv env PWCOMPOSER=1 "$BROWSER" act "https://chat-web.test/k/" --steps="$TGSTEPS" --out="$T46/d"
+t  'T46d fill + Enter in a formless composer stops with 73' 73 "$RC"
+tc 'T46d ...as a send' 'send a message' "$ERR"
+tc 'T46d ...with the ask to approve' 'sudo 5dive browser approve' "$ERR"
+t  'T46d ...BEFORE the Enter reached the page' 0 "$(jq -rs '[.[]|select(.call=="press")]|length' "$PWREC")"
+t  'T46d ...having asked the page whether it is a composer' 'yes' \
+   "$([[ "$(jq -rs '[.[]|select(.call=="composer")]|length' "$PWREC")" -ge 1 ]] && echo yes || echo no)"
+: > "$PWREC"
+run actenv "$BROWSER" act "https://chat-web.test/search" \
+    --steps='[{"op":"fill","selector":"input[type=search]","value":"hotels"},{"op":"press","selector":"input[type=search]","key":"Enter"}]'
+t  'T46d (control) Enter in a formless search box runs, with no ask' '0 1' \
+   "$RC $(jq -rs '[.[]|select(.call=="press")]|length' "$PWREC")"
+if [[ -s "$T46/policy.before" ]]; then cp "$T46/policy.before" "$POL31"; fi
+
+# --- T46e the words ----------------------------------------------------------------------------
+for f in browser/README.md browser/AGENTS.md browser/skills/use-browser/SKILL.md; do
+  tc "T46e $f says a plain Enter in a formless composer is a send" 'a plain Enter in a composer with no form around it' \
+     "$(tr -s ' \n' '  ' < "$ROOT/$f")"
+done
+tc 'T46e CHANGES.md carries the entry' 'DIVE-620' "$(cat "$ROOT/CHANGES.md")"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

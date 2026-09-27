@@ -10,6 +10,22 @@ that file stays where it is.
 
 ## Released
 
+### Fixed — a plain Enter in a chat composer with no form is a send, and asks under `careful` (DIVE-620), browser 1.22.5
+
+**Before:** under `send=ask`, on Telegram Web, `act` with `fill` on the message composer
+(`div.input-message-input[contenteditable=true]`) and then `press Enter` delivered the message:
+`step 2 (press) ok`, `verified`, exit 0, and no ask. `stepRisk` read a plain Enter as "submit the
+element's form" and looked for that form's submit button. A chat composer is a `contenteditable`
+with no `<form>` around it, so the label was `''`, `''` classifies as nothing, and the step ran.
+Ctrl/Cmd+Enter was already a send without a label; a plain Enter was not.
+
+**Now:** a plain Enter whose target has no form is `send`, without reading a label, when the
+target is a composer: `contenteditable`, `textarea` or `[role=textbox]`. When the target is not a
+composer, the focused element is checked the same way. Under `careful` the step stops with exit 73
+and a send ask that carries the message's first line. What keeps running with no ask: a plain Enter
+in a formless search box (`input[type=search]`, a plain text input), Shift+Enter (a composer's new
+line), and a composer inside a form, which still follows that form's submit button.
+
 ### Fixed — a `--wait-for` timeout reads as a timeout, and `served` lists the public browser (DIVE-4991), browser 1.22.4
 
 **Before:** a cold `read --wait-for` (nothing served) on a real page said `--wait-for was not

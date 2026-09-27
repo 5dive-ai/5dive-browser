@@ -46,7 +46,9 @@ reads the live element's label (`lib/aria.cjs` `stepRisk`, shared by both step l
 the owner's policy sets to `ask` records the ask with a screenshot and waits for
 `sudo 5dive browser approve <id>`, a root-owned grant bound to the exact steps, good once for 30
 minutes. It catches the literal buttons, not intent: an order behind a button labelled "Continue"
-is not caught.
+is not caught. A key counts too: Ctrl/Cmd+Enter is a send anywhere, and so is a plain Enter in a
+composer with no form around it (a `contenteditable`, a `textarea` or a `[role=textbox]`, the way a
+chat box sends); a plain Enter in a formless search box is not.
 
 `run` reads the same policy where the adapter's action says **`"guard": true`** (DIVE-4984): a
 recipe is a reviewed file, but when its arguments choose the recipient and the words — a mail —
