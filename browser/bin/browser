@@ -132,8 +132,9 @@ E_REDIRECTED=71
 # has NO connected account runs here: a per-seat profile with nothing logged in and no
 # login probe, because there is nothing to be logged into. A leading underscore can
 # never be a host, so it cannot collide with a real site's profile, and every verb
-# that LISTS sites (ls, served, status, probe-all) skips it — the dashboard's
-# Connected-sites list is logins, and this is not one.
+# that lists LOGINS (ls, status, probe-all) skips it — the dashboard's
+# Connected-sites list is logins, and this is not one. `served` is the exception: it
+# lists running BROWSERS, and a public one is still a Chrome on this box (DIVE-4991).
 PUBLIC_SITE="_public"
 # How long an owner's yes stays good for, and it is short on purpose: the owner
 # approved THIS click on THIS page, and a yes that outlived the page it was about
@@ -235,8 +236,9 @@ usage() {
                                       # caller mid-action. The profile is untouched:
                                       # the next command starts it again, logged in.
   5dive browser served                # which of this seat's browsers are running right now,
-                                      # one site per line. The dashboard reads it to
-                                      # decide whether to offer "Stop browser".
+                                      # one site per line, the public one (_public)
+                                      # included. The dashboard reads it to decide
+                                      # whether to offer "Stop browser".
   sudo 5dive browser forget <site>    # LOG THE BOX OUT: stop the browser, then DELETE the
                                       # profile — the cookies, the session, the stamps.
                                       # Irreversible, and the only way back is to log in
@@ -2344,13 +2346,16 @@ cmd_evict() {
 # yet" on a site that is fine. A separate verb also fails the right way on a box
 # whose plugin predates it: unknown verb, non-zero, and the dashboard offers no
 # Stop button rather than offering one that cannot work.
+#
+# THE PUBLIC PROFILE IS LISTED (DIVE-4991). It is not a login, but `served` is not
+# a list of logins: it is what is running. Skipping `_public` here hid a Chrome
+# that `serve _public --stop` could find and stop, so nothing offered to stop it.
 cmd_served() {
   _require_store
   local d site
   for d in "$(_seat_dir)"/*/; do
     [[ -d "$d" ]] || continue
     site=$(basename "$d")
-    _is_public "$site" && continue   # the public profile is not a login (DIVE-4943)
     _serve_running "$d" >/dev/null || continue
     printf '%s\n' "$site"
   done
@@ -4266,17 +4271,29 @@ _loading_screen() {  # _loading_screen <url> <page.html> [<tree.json>] -> "<name
 
 _wait_for_ok() { [[ -n "$1" && ${#1} -le 500 && "$1" != *$'\n'* ]]; }
 
-# _ready_verdict <url> <wait-for> <wait-json|null> <page.html> [<tree.json>] [<partial>]
+# _ready_verdict <url> <wait-for> <wait-json|null> <page.html> [<tree.json>] [<partial>] [<capture>]
 # Prints the metadata fragment (partial / wait_for / loading_screen) on stdout and
 # says why on stderr. Returns E_NOT_READY when what was captured is not the page.
 #
 # A --wait-for the capture did not ANSWER is not a met one: a served browser whose
 # daemon started before this release ignores the field and captures at the
 # settle, which is the very defect this exists to end. It is named, not trusted.
+#
+# ...AND ONLY A DAEMON IS BLAMED FOR IT (DIVE-4991). <capture> is where the page
+# came from (`read`'s page.meta.json field): `session-daemon` by default, which is
+# what every other caller renders through. A cold `read --wait-for` renders
+# through the executor, which no restart changes, and whose payload used to arrive
+# cut at 64 KB — so "restart the served browser" was advice about a browser that
+# was not there, and following it changed nothing. A timeout is a separate branch
+# below: an answer with met:false, never a missing one.
 _ready_verdict() {
-  local url="$1" want="$2" got="${3:-null}" html="$4" tree="${5:-}" partial="${6:-false}" screen="" rc=0
+  local url="$1" want="$2" got="${3:-null}" html="$4" tree="${5:-}" partial="${6:-false}" source="${7:-session-daemon}" screen="" rc=0
   [[ -n "$got" ]] || got=null
-  if [[ -n "$want" && "$got" == null ]]; then
+  if [[ -n "$want" && "$got" == null && "$source" != session-daemon ]]; then
+    printf '%s: NOT READY — --wait-for=%s was not answered: the %s capture came back without a verdict on it (the field was missing, or its reply could not be read), so nothing says this is the page you waited for. No daemon was involved; restarting one will not change it.\n' "$PROG" "$want" "$source" >&2
+    got=$(jq -nc --arg t "$want" '{target:$t, met:false, honoured:false}')
+    partial=true; rc=$E_NOT_READY
+  elif [[ -n "$want" && "$got" == null ]]; then
     printf '%s: NOT READY — --wait-for was not honoured: the served browser for this profile runs a session daemon from before --wait-for existed, and it captured at the settle instead. Restart it (serve <site> --stop, then serve <site>) and run this again.\n' "$PROG" >&2
     got=$(jq -nc --arg t "$want" '{target:$t, met:false, honoured:false}')
     partial=true; rc=$E_NOT_READY
@@ -4394,7 +4411,7 @@ _cmd_read_like() { # _cmd_read_like read|links <site> <url> [flags]
 
   _signin_guard "$stage/page.html"
   local extra rrc=0
-  extra=$(_ready_verdict "$url" "$wait_for" "$waitj" "$stage/page.html" "$stage/tree.json" "$partial") || rrc=$?
+  extra=$(_ready_verdict "$url" "$wait_for" "$waitj" "$stage/page.html" "$stage/tree.json" "$partial" "$capture") || rrc=$?
   _derive_capture "$stage" "$url" "$chrome" "$capture" "$extra"
 
   install -m 00600 "$stage/page.html" "$out/page.html" || die "$E_UNAVAILABLE" "cannot install page.html in $out"
