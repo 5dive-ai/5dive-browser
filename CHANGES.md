@@ -8,6 +8,25 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a person signs in through plain Chrome, so Google stops refusing the login (DIVE-5203), 1.23.2
+
+Connect google.com, and every site's "Sign in with Google", was refused whatever the person did:
+the view showed the warm serve, which is the session daemon's Playwright launch
+(`--remote-debugging-pipe`), and Google refuses a sign-in typed into a browser under automation
+control. It was not the box IP: the same refusal on two boxes, and plain Chrome on the same profile
+signed in first try.
+
+- `viewer` re-serves a warm browser as plain Chrome (no `--remote-debugging-*`) before it mints.
+  Every person's view goes through it: the dashboard's Connect, the Telegram Connect tap and a
+  hand-minted link, so no caller has to know the rule.
+- New `serve <site> --login` does the same on purpose. `auth` on a display-less box and the Connect
+  tap use it, so they do not start a daemon only to stop it again.
+- Once nobody is in the view, the next plain `serve` swaps the login browser back for the warm
+  session, so a brokered seat is not left behind a browser nobody is using. A box that cannot start
+  a daemon keeps the plain one rather than restarting it for nothing.
+- A seat with a proxy set keeps the daemon for the login, because plain Chrome cannot carry the
+  proxy's login and would sign in from the box's own IP (DIVE-4951). It says so on stderr.
+
 ### Fixed — Chrome's temp files no longer pile up in /tmp (DIVE-5190), 1.23.1
 
 A customer box had 3.0G in /tmp that was nothing but Chrome: 256 `.com.google.Chrome.*` files
