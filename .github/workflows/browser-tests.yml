@@ -27,6 +27,10 @@ jobs:
       # A fake reflex CLI whose candidates really match the fixtures.
       - name: reflex propose harness
         run: bash tests/browser_reflex_propose_unit.sh
+      # DIVE-5190: each launch's own TMPDIR, removed on exit and reaped after a
+      # kill — graded through the real bin/browser with a fake Chrome.
+      - name: browser tmpdir harness
+        run: bash tests/browser_tmpdir_unit.sh
       # A manifest or marketplace file that does not parse breaks `5dive plugin
       # add` at install time, where nobody is watching. Cheap, so it is its own
       # named check rather than an assertion buried in the suite.
