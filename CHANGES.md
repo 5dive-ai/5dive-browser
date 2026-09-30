@@ -8,6 +8,63 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — input mode: agents act in plain Chrome through the screen, keyboard and mouse (DIVE-5287), 1.25.0
+
+tiktok.com would not render for the automated browser: blank `/foryou`, no challenge, no
+sign-in form, while plain Chrome on the same profile, box and IP rendered it (chill-gorge,
+2026-09-30). The owner approved a mode that uses no automation channel at all, and asked that
+**a person can be called in at any time, on the same window**. That is what this is: "a real
+browser for agents".
+
+- **`"drive": "input"` in an adapter** makes that site input mode. Any site can opt in, and
+  `adapters/tiktok.com.json` ships with it. Sites that work under the daemon keep the fast CDP
+  path, unchanged.
+- **`session-daemon --input`** launches plain Chrome (the DIVE-5203 login-view flags; it refuses
+  `--remote-debugging-*`, `--enable-automation` and `--headless` even from the operator's extra
+  args) and drives it through the X display with **`lib/x11.cjs`**. That is a small pure-Node
+  X11 client: XTEST pointer, wheel and keys (`isTrusted` in the page; non-ASCII typed through a
+  spare keycode, as xdotool does), `GetImage` to PNG, and the window title. No new packages.
+- **Same door**: the broker socket, lease, `SO_PEERCRED` attribution and audit log are
+  unchanged. Every input step re-checks the lease, a live viewer, and an open handoff.
+- **Verbs**: `shot`/`snapshot` return the screen plus the page title. `act` takes pixel steps
+  (`click move type press scroll goto wait`). `tree`/`read`/`links`/`run` and selector steps are
+  refused by name, with the verb to use instead.
+- **The owner's policy** applies to a step's declared `"kind"` (pay/publish/send/delete). A kind
+  set to `ask` stops with 73 before anything runs. There is no DOM to read a button's label from,
+  so this is declared, not detected, and the docs say so.
+- **`handoff <site>`**: agent input is suspended at the daemon, and the owner gets the Connect
+  button ("needs you to take over") onto the same window. `viewer` and `serve --login` leave an
+  input browser alone, and Connect-Done closes the handoff instead of stopping the browser.
+  `handoff --wait` returns when they are done, including when their view ended after they were
+  in it.
+- **The hard stop stays.** A challenge whose title says so stops an act between steps (75, with
+  the handoff command). TikTok's in-page slider does not change the title, so the skill tells the
+  agent to hand over the moment it sees one. `status` reads the title and never navigates the
+  window.
+- A proxied seat is refused input mode (plain Chrome cannot carry a proxy login, DIVE-4951).
+
+**Choices, and the alternatives not taken** (main's 15:15Z design note asked for this record):
+
+- *Read through a 5dive Chrome extension* (main's preferred hybrid). Blocked: branded Google
+  Chrome ignores `--load-extension` since 137. On Chrome 153 here, both the flag and
+  `--disable-features=DisableLoadExtensionCommandLineSwitch` load nothing (measured: no entry in
+  the profile's extension settings). The installs left are (a) box-wide enterprise policy
+  (`ExtensionInstallForcelist` with a self-hosted CRX). It is root-only, applies to every Chrome
+  on the box, shows "managed by your organization", and needs an update server. (b) The owner
+  clicks "Load unpacked" once in the viewer, which is a manual step on every box. (c) Editing
+  Secure Preferences, which is tamper-protected and is malware's technique. None fits a release
+  that must work on every box. The input layer is built so a reader can be added later without
+  changing the act side.
+- *`chrome.debugger` in an extension*: that is CDP and shows the "being debugged" bar. Not taken,
+  per the design note.
+- *Chrome's accessibility tree over AT-SPI* (text and element boxes with no CDP and no
+  extension): a real candidate for the next step. It needs an accessibility D-Bus and
+  `--force-renderer-accessibility` per serve, so it is its own row.
+- *xdotool / ImageMagick*: two more packages on every box for about 400 lines of protocol.
+  Not taken.
+- *Chrome for Testing or Chromium* (they still honour `--load-extension`): a different binary
+  than the one the owner signed in with, on the same profile. Not taken.
+
 ### Fixed — a signed-in Reddit no longer reads as a security challenge (DIVE-5285), 1.24.1
 
 1.24.0 is DIVE-5200 (an agent stuck on a captcha asks the owner), which shipped in the registry only
