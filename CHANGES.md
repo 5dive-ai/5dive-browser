@@ -8,6 +8,28 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a signed-in Reddit no longer reads as a security challenge (DIVE-5285), 1.24.1
+
+1.24.0 is DIVE-5200 (an agent stuck on a captcha asks the owner), which shipped in the registry only
+(5dive-plugins#140) and is not in this repo yet. This entry is numbered after it so both repos
+name the same fix with the same version.
+
+Every agent reading a connected, signed-in Reddit was told "reddit.com is presenting a security
+challenge" and stopped. The reddit adapter probes `/login/`, and that page carries Google's
+invisible reCAPTCHA (`<textarea name="g-recaptcha-response">`) whether or not the session is
+signed in. The probe checks for a challenge first, and the generic challenge list matches bare
+`g-recaptcha`, so a healthy session was read as a challenge. The browser launch and the IP were
+not involved.
+
+- `adapters/reddit.com.json` now has its own `challenge_when_dom_matches`: the generic list without
+  `g-recaptcha`, plus the words of Reddit's own block pages ("Prove your humanity", "blocked by
+  network security"). A signed-in `/login/` reads `authenticated`, a signed-out one `expired`, and
+  Reddit's real interstitial is still a challenge.
+- The generic default is unchanged. A site with no marker of its own still names a reCAPTCHA page
+  a challenge.
+- A box that worked around this with a seat copy at `<profile-root>/<seat>/.adapters/reddit.com.json`
+  can delete it once 1.24.1 is installed. The seat copy wins over the shipped one until then.
+
 ### Fixed — a person signs in through plain Chrome, so Google stops refusing the login (DIVE-5203), 1.23.2
 
 Connect google.com, and every site's "Sign in with Google", was refused whatever the person did:
