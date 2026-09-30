@@ -42,6 +42,20 @@ browser for agents".
   agent to hand over the moment it sees one. `status` reads the title and never navigates the
   window.
 - A proxied seat is refused input mode (plain Chrome cannot carry a proxy login, DIVE-4951).
+- **Input is held until the page takes it, and a lost click fails the step** (quinn, iteration
+  1: a CI run sent the harness's click and text, got rc=0, and nothing reached the page).
+  Measured on Chrome 153 / Xvfb: input sent within ~100ms of a page's title appearing is
+  dropped by Chrome (no mousedown, no keydown), with X focus on Chrome's window all along. It
+  is the page coming up, not focus. Forcing focus to PointerRoot or to no window did NOT
+  reproduce it. So (1) every input step waits until the title has been quiet 500ms
+  (`FIVEDIVE_BROWSER_INPUT_QUIET_MS`, capped at 8s for pages that retitle forever). (2) The
+  daemon says `ready` only once Chrome's window is viewable and holds an explicit, confirmed
+  keyboard focus. (3) A click checks that the window under the pointer is the browser's before
+  the button goes down, and that the browser holds the focus after. Either failure stops the
+  plan non-zero instead of returning 0. (4) Keys re-take the focus for the browser, confirmed,
+  or fail. `title` now reports `focused` and `quiet_ms`. A step that navigates, then another
+  sent before the new page even retitles, can still race. Split such plans, or put a `wait`
+  between them.
 
 **Choices, and the alternatives not taken** (main's 15:15Z design note asked for this record):
 

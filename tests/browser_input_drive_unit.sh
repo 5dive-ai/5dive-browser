@@ -375,10 +375,28 @@ HTML
       FIVEDIVE_BROWSER_INPUT_FAST=1 "$REAL_DAEMON" serve "$LP2" "$LP2/s.sock" --input > "$TMP/l2.ready" 2> "$TMP/l2.err" &
     LD2=$!; _KILL+=("$LD2")
     for i in $(seq 1 600); do grep -q '^ready' "$TMP/l2.ready" 2>/dev/null && break; kill -0 "$LD2" 2>/dev/null || break; sleep 0.05; done
-    for i in $(seq 1 400); do
-      [[ "$("$REAL_DAEMON" call "$LP2/s.sock" <<<'{"op":"title"}' 2>/dev/null | jq -r .title)" == ready:* ]] && break; sleep 0.02
-    done
-    "$REAL_DAEMON" call "$LP2/s.sock" <<<'{"op":"input","steps":[{"op":"click","x":640,"y":500},{"op":"type","value":"go"}],"settle":300}' > "$TMP/l2.in" 2>/dev/null; rc=$?
+    # Polled IN-PROCESS every 10ms and sent on the same tick: a `call` per poll
+    # costs a node start (~50ms+), which is longer than the window Chrome drops
+    # input in, and would hide the race this arm exists to hold shut.
+    node -e '
+      const net = require("net"), sock = process.argv[1];
+      const ask = (req) => new Promise((resolve) => {
+        const c = net.createConnection(sock); let buf = "", outs = [], rc = null;
+        c.on("data", (d) => { buf += d; let nl; while ((nl = buf.indexOf("\n")) >= 0) {
+          const m = JSON.parse(buf.slice(0, nl)); buf = buf.slice(nl + 1);
+          if (m.t === "out") outs.push(m.data); if (m.t === "end") rc = m.rc; } });
+        c.on("close", () => resolve({ rc, out: outs.join("") })); c.on("error", () => resolve({ rc: -1, out: "" }));
+        c.write(JSON.stringify(req) + "\n");
+      });
+      (async () => {
+        for (let i = 0; i < 1500; i++) {
+          const r = await ask({ op: "title" });
+          try { if (JSON.parse(r.out).title.startsWith("ready:")) break; } catch (e) {}
+          await new Promise(r => setTimeout(r, 10));
+        }
+        const r = await ask({ op: "input", steps: [{ op: "click", x: 640, y: 500 }, { op: "type", value: "go" }], settle: 300 });
+        process.stdout.write(r.out); process.exit(r.rc === null ? 1 : r.rc);
+      })();' "$LP2/s.sock" > "$TMP/l2.in" 2>/dev/null; rc=$?
     arm 'L10 a fresh page driven the instant its title appears still gets the click and the text' '0 typed:go:click=true:key=true' \
       "$rc $(jq -r .title "$TMP/l2.in" 2>/dev/null)"
     "$REAL_DAEMON" call "$LP2/s.sock" <<<'{"op":"shutdown"}' >/dev/null 2>&1
