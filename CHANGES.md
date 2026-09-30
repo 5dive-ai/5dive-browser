@@ -8,6 +8,76 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — input mode: agents act in plain Chrome through the screen, keyboard and mouse (DIVE-5287), 1.25.0
+
+tiktok.com would not render for the automated browser: blank `/foryou`, no challenge, no
+sign-in form, while plain Chrome on the same profile, box and IP rendered it (chill-gorge,
+2026-09-30). The owner approved a mode that uses no automation channel at all, and asked that
+**a person can be called in at any time, on the same window**. That is what this is: "a real
+browser for agents".
+
+- **`"drive": "input"` in an adapter** makes that site input mode. Any site can opt in, and
+  `adapters/tiktok.com.json` ships with it. Sites that work under the daemon keep the fast CDP
+  path, unchanged.
+- **`session-daemon --input`** launches plain Chrome (the DIVE-5203 login-view flags; it refuses
+  `--remote-debugging-*`, `--enable-automation` and `--headless` even from the operator's extra
+  args) and drives it through the X display with **`lib/x11.cjs`**. That is a small pure-Node
+  X11 client: XTEST pointer, wheel and keys (`isTrusted` in the page; non-ASCII typed through a
+  spare keycode, as xdotool does), `GetImage` to PNG, and the window title. No new packages.
+- **Same door**: the broker socket, lease, `SO_PEERCRED` attribution and audit log are
+  unchanged. Every input step re-checks the lease, a live viewer, and an open handoff.
+- **Verbs**: `shot`/`snapshot` return the screen plus the page title. `act` takes pixel steps
+  (`click move type press scroll goto wait`). `tree`/`read`/`links`/`run` and selector steps are
+  refused by name, with the verb to use instead.
+- **The owner's policy** applies to a step's declared `"kind"` (pay/publish/send/delete). A kind
+  set to `ask` stops with 73 before anything runs. There is no DOM to read a button's label from,
+  so this is declared, not detected, and the docs say so.
+- **`handoff <site>`**: agent input is suspended at the daemon, and the owner gets the Connect
+  button ("needs you to take over") onto the same window. `viewer` and `serve --login` leave an
+  input browser alone, and Connect-Done closes the handoff instead of stopping the browser.
+  `handoff --wait` returns when they are done, including when their view ended after they were
+  in it.
+- **The hard stop stays.** A challenge whose title says so stops an act between steps (75, with
+  the handoff command). TikTok's in-page slider does not change the title, so the skill tells the
+  agent to hand over the moment it sees one. `status` reads the title and never navigates the
+  window.
+- A proxied seat is refused input mode (plain Chrome cannot carry a proxy login, DIVE-4951).
+- **Input is held until the page takes it, and a lost click fails the step** (quinn, iteration
+  1: a CI run sent the harness's click and text, got rc=0, and nothing reached the page).
+  Measured on Chrome 153 / Xvfb: input sent within ~100ms of a page's title appearing is
+  dropped by Chrome (no mousedown, no keydown), with X focus on Chrome's window all along. It
+  is the page coming up, not focus. Forcing focus to PointerRoot or to no window did NOT
+  reproduce it. So (1) every input step waits until the title has been quiet 500ms
+  (`FIVEDIVE_BROWSER_INPUT_QUIET_MS`, capped at 8s for pages that retitle forever). (2) The
+  daemon says `ready` only once Chrome's window is viewable and holds an explicit, confirmed
+  keyboard focus. (3) A click checks that the window under the pointer is the browser's before
+  the button goes down, and that the browser holds the focus after. Either failure stops the
+  plan non-zero instead of returning 0. (4) Keys re-take the focus for the browser, confirmed,
+  or fail. `title` now reports `focused` and `quiet_ms`. A step that navigates, then another
+  sent before the new page even retitles, can still race. Split such plans, or put a `wait`
+  between them.
+
+**Choices, and the alternatives not taken** (main's 15:15Z design note asked for this record):
+
+- *Read through a 5dive Chrome extension* (main's preferred hybrid). Blocked: branded Google
+  Chrome ignores `--load-extension` since 137. On Chrome 153 here, both the flag and
+  `--disable-features=DisableLoadExtensionCommandLineSwitch` load nothing (measured: no entry in
+  the profile's extension settings). The installs left are (a) box-wide enterprise policy
+  (`ExtensionInstallForcelist` with a self-hosted CRX). It is root-only, applies to every Chrome
+  on the box, shows "managed by your organization", and needs an update server. (b) The owner
+  clicks "Load unpacked" once in the viewer, which is a manual step on every box. (c) Editing
+  Secure Preferences, which is tamper-protected and is malware's technique. None fits a release
+  that must work on every box. The input layer is built so a reader can be added later without
+  changing the act side.
+- *`chrome.debugger` in an extension*: that is CDP and shows the "being debugged" bar. Not taken,
+  per the design note.
+- *Chrome's accessibility tree over AT-SPI* (text and element boxes with no CDP and no
+  extension): a real candidate for the next step. It needs an accessibility D-Bus and
+  `--force-renderer-accessibility` per serve, so it is its own row.
+- *xdotool / ImageMagick*: two more packages on every box for about 400 lines of protocol.
+  Not taken.
+- *Chrome for Testing or Chromium* (they still honour `--load-extension`): a different binary
+  than the one the owner signed in with, on the same profile. Not taken.
 ### Fixed — a login made just before Done is no longer lost (DIVE-5286), 1.24.2
 
 A person signed in to GitHub through the dashboard's Connect, pressed Done 13 seconds later, and was

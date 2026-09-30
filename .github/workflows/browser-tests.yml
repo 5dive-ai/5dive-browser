@@ -31,6 +31,11 @@ jobs:
       # kill — graded through the real bin/browser with a fake Chrome.
       - name: browser tmpdir harness
         run: bash tests/browser_tmpdir_unit.sh
+      # DIVE-5287: input mode. Routing through the real bin/browser with a fake
+      # daemon, lib/x11.cjs unit arms, and LIVE arms against the runner's own
+      # Xvfb + Chrome (real XTEST input, isTrusted, navigator.webdriver false).
+      - name: input drive mode harness
+        run: bash tests/browser_input_drive_unit.sh
       # A manifest or marketplace file that does not parse breaks `5dive plugin
       # add` at install time, where nobody is watching. Cheap, so it is its own
       # named check rather than an assertion buried in the suite.
