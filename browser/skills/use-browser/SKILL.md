@@ -69,7 +69,10 @@ Some sites will not render for a browser under automation control. For those, th
 adapter says `"drive": "input"`, and the browser is **plain Chrome, driven the way a person
 drives it**: you read the screen and act through a real keyboard and mouse. There is no
 automation channel, so to the page it is indistinguishable from the owner's own window.
-tiktok.com is the first such site. The verbs tell you when a site is in input mode.
+tiktok.com is the first such site. A box can also make input mode the **default** for every
+logged-in site (`5dive browser config` shows it; root sets `drive=input`), and then this is how
+you work on all of them, unless a site's adapter says `"drive": "cdp"`. The verbs tell you when a
+site is in input mode: `read`, `tree` or `run` refused "INPUT mode" means use the screen.
 
 ```bash
 5dive browser shot tiktok.com https://www.tiktok.com/@someone   # a PNG of the live window (1280x800) + its title

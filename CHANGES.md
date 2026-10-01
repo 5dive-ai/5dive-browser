@@ -8,7 +8,9 @@ that file stays where it is.
 
 ## Unreleased
 
-### Added — routines (`act --record`, `replay`) and `snapshot --delta`: the second run costs less (DIVE-5335), 1.27.0
+### Added — routines (`act --record`, `replay`) and `snapshot --delta`: the second run costs less (DIVE-5335), 1.29.0
+
+(1.27.0 was held for this entry while it was in review; DIVE-5338 shipped 1.28.0 first, so it lands as 1.29.0.)
 
 The owner asked what the trending browser-agent projects could give our browser (2026-10-01).
 Two ideas, copied as ideas and not code: Stagehand's **action caching** and agent-browser's
@@ -50,6 +52,29 @@ open Chrome debugging port, which the session daemon deliberately does not have;
 "skills" are this same idea and its stealth is cloud-only; Playwright MCP's snapshots and
 persistent profiles we already have; Skyvern is AGPL; steel-browser's anti-bot layer waits for a
 count of how often box runs actually hit bot walls.
+
+### Added — a box-level default drive mode: `config drive=input|cdp|auto` (DIVE-5338), 1.28.0
+
+lodar, 2026-10-01: agents should browse in the owner's own plain Chrome by default, with no
+automation channel, and hand that same window to the owner when a person is needed. Input mode
+(DIVE-5287) did that for one site at a time; this makes it a box setting, so one box can trial it
+while every other box is unchanged. (1.27.0 is DIVE-5335's, still in review.)
+
+- **`5dive browser config`** shows the box default; **`sudo 5dive browser config
+  drive=input|cdp|auto`** sets it. One root-owned file, `/var/lib/5dive/browser/drive-default`, so
+  a seat cannot opt itself back into automation. `auto` removes it: the shipped default.
+- **Precedence:** a site adapter's explicit `"drive"` wins (`input` or, new, `cdp`), then the box
+  default, then the automated browser. The public profile is never input.
+- **A proxied seat falls back, it is not refused.** Under the box default it keeps its proxy and
+  the automated browser, and `serve` prints one NOTE line. An adapter's own `input` is still
+  refused under a proxy (DIVE-4951), because that site works no other way.
+- A site already served the other way switches on the owner's next page verb (as an adapter's
+  input already did). A brokered seat follows what the owner serves (the `.offered` marker), so
+  after flipping a box, re-serve its sites: `serve <site> --stop && sudo 5dive browser serve <site>`.
+- **`tests/browser_input_drive_unit.sh` R10** (15 arms): the default serves an adapter-less site as
+  input, routes `shot` to the screen and refuses `read` by name; an adapter's `cdp` wins; the proxy
+  fallback and its note; root-only; `cdp` restores the automated browser. `INPUT_DRIVE_SKIP_LIVE=1`
+  runs the routing arms without real Chrome.
 
 ### Added — the owner's authenticator seed: `run` passes an authenticator-app 2FA prompt itself (DIVE-5336), 1.26.0
 

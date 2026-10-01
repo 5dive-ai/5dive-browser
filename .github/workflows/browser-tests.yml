@@ -34,8 +34,19 @@ jobs:
       # DIVE-5287: input mode. Routing through the real bin/browser with a fake
       # daemon, lib/x11.cjs unit arms, and LIVE arms against the runner's own
       # Xvfb + Chrome (real XTEST input, isTrusted, navigator.webdriver false).
+      # DIVE-5342: a red live arm prints the window stack at its click point and
+      # saves the screen here; the upload below keeps it with the failed run.
       - name: input drive mode harness
         run: bash tests/browser_input_drive_unit.sh
+        env:
+          INPUT_HARNESS_ARTIFACTS: ${{ runner.temp }}/input-harness
+      - name: keep the input harness screens of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: input-harness-screens
+          path: ${{ runner.temp }}/input-harness
+          if-no-files-found: ignore
       # DIVE-5335: routines (act --record, replay) and delta snapshots, through
       # the real bin/browser and driver with the recording playwright stub.
       - name: routine and delta harness

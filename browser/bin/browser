@@ -296,8 +296,9 @@ usage() {
                                       # the one-time link, their "Done" tap checks the login.
                                       # Nothing is bound until they tap.
 
-  INPUT MODE (an adapter with "drive": "input", e.g. tiktok.com): the site refuses an automated
-  browser, so it is plain Chrome driven through the screen, keyboard and mouse. No DOM:
+  INPUT MODE (an adapter with "drive": "input", e.g. tiktok.com, or every logged-in site when the
+  box default is `config drive=input`): plain Chrome driven through the screen, keyboard and
+  mouse. No DOM:
   5dive browser shot <site> [<url>]   # a PNG of the live window + the page title
   5dive browser act <site> [<url>] --steps='[{"op":"click","x":640,"y":400},{"op":"type","value":"hi"}]'
                                       # click{x,y} move{x,y} type{value} press{key} scroll{dy}
@@ -308,6 +309,12 @@ usage() {
                                       # agent input is suspended until they tap Done
   5dive browser handoff <site> --wait[=<s>] | --status | --close
 
+  5dive browser config                      # the box's default drive mode for logged-in sites
+  sudo 5dive browser config drive=input|cdp|auto
+                                      # input: every logged-in site is plain Chrome driven
+                                      # through the screen unless its adapter says otherwise;
+                                      # cdp: the automated browser; auto: back to the shipped
+                                      # default (the adapter decides, else the automated one)
   5dive browser adblock status              # is ad filtering on, and which sites is it off for
   sudo 5dive browser adblock off <site>     # this site breaks under filtering — stop filtering it
   sudo 5dive browser adblock on  <site>     # filter it again
@@ -3568,8 +3575,18 @@ cmd_serve() {
   # `--login` has nothing to swap. A proxied seat cannot have it: plain Chrome
   # cannot carry the proxy's login (DIVE-4951), and the site is served as input
   # BECAUSE the automated browser does not work there.
-  local input=0
-  [[ "$(_site_drive_adapter "$site")" == input ]] && input=1
+  # DIVE-5338: the box default applies only where no adapter said a word, and a
+  # proxied seat falls back to the automated browser instead of being refused.
+  local input=0 _dw; _dw="$(_site_drive_adapter "$site")"
+  if [[ "$_dw" == input ]]; then
+    input=1
+  elif [[ -z "$_dw" ]] && ! _is_public "$site" && [[ "$(_box_drive)" == input ]]; then
+    if [[ -f "$(_proxy_file)" ]]; then
+      printf '%s: NOTE — this box defaults to input mode, but this seat has a proxy, which plain Chrome cannot carry; %s keeps the automated browser.\n' "$PROG" "$site" >&2
+    else
+      input=1
+    fi
+  fi
   if (( input )) && [[ -f "$(_proxy_file)" ]]; then
     die "$E_UNAVAILABLE" "$site is set to input mode (plain Chrome, driven through the screen — the site refuses an automated browser), and this seat has a proxy set, which plain Chrome cannot carry: serving it would put this login on the box's own IP. Nothing was started. \`5dive browser proxy clear\` to use input mode here."
   fi
@@ -6778,7 +6795,8 @@ if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
   case "$_v1" in
     # `adblock` joins `setup` here: it writes the MACHINE-WIDE chrome policy
     # file, which is root's. Dropping to the seat would turn it into a refusal.
-    setup|adblock|approve|approvals|adapters|_connect|totp|-h|--help|help|"") ;;
+    # `config` too: the drive default is one box-wide file (DIVE-5338).
+    setup|adblock|config|approve|approvals|adapters|_connect|totp|-h|--help|help|"") ;;
     *)
       # DIVE-4813: usually the caller, and for a brokered `serve` the owner.
       _drop="$(_root_drop_target "${SUDO_USER}" "$@")"
@@ -6916,9 +6934,75 @@ builtin trap '_tmp_release' EXIT
 # `snapshot` return a screenshot and the page title; `act` takes coordinates.
 # A security challenge still STOPS the agent. In this mode the stop is a
 # handoff: `5dive browser handoff <site>` calls the owner onto the same window.
-_site_drive_adapter() {  # the adapter's word for it: input, or empty
+_site_drive_adapter() {  # the adapter's word for it: input, cdp, or empty
   local a; a="$(_adapter_path "$1")"
-  [[ -f "$a" ]] && jq -r 'if .drive == "input" then "input" else empty end' "$a" 2>/dev/null
+  [[ -f "$a" ]] && jq -r 'if .drive == "input" or .drive == "cdp" then .drive else empty end' "$a" 2>/dev/null
+}
+
+# THE BOX DEFAULT (DIVE-5338). lodar, 2026-10-01: agents should browse in the
+# owner's own plain Chrome by default, and hand the same window over when a
+# person is needed. The default is ONE file for the whole box, root's, beside
+# the adblock off list: a seat cannot turn automation back on for itself, and
+# the trial on one box is a single write that every other box never sees.
+#
+# PRECEDENCE: a site adapter's explicit "drive" wins (tiktok.com stays input on
+# a cdp box; a site that only works through `run` can say "cdp" on an input
+# box), then this file, then the shipped default — the automated browser. The
+# public profile is never input: it has no owner window to share.
+#
+# A PROXIED SEAT FALLS BACK, IT IS NOT REFUSED. The adapter's input is refused
+# under a proxy (DIVE-4951) because that site does not work any other way. The
+# box default is a preference: the seat keeps its proxy and the automated
+# browser, and `serve` says so in one line.
+_DRIVE_DEFAULT_FILE="${FIVEDIVE_BROWSER_DRIVE_DEFAULT_FILE:-$STATE_DIR/browser/drive-default}"
+_box_drive() {  # input, cdp, or empty (nothing set: the shipped default)
+  [[ -f "$_DRIVE_DEFAULT_FILE" ]] || return 0
+  local w; w="$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$_DRIVE_DEFAULT_FILE" 2>/dev/null | grep -v '^$' | head -1)"
+  case "$w" in input|cdp) printf '%s\n' "$w" ;; esac
+}
+# How THIS seat would serve <site>: input or cdp. The owner's decision; a
+# brokered seat routes by what the owner actually served (the .offered marker).
+_site_drive() {  # _site_drive <site>
+  local w; w="$(_site_drive_adapter "$1")"
+  [[ -n "$w" ]] && { printf '%s\n' "$w"; return 0; }
+  if ! _is_public "$1" && [[ "$(_box_drive)" == input && ! -f "$(_proxy_file)" ]]; then
+    printf 'input\n'; return 0
+  fi
+  printf 'cdp\n'
+}
+
+cmd_config() {
+  local a k v
+  if (( $# == 0 )); then
+    local d; d="$(_box_drive)"
+    printf 'drive=%s\n' "${d:-auto}"
+    case "$d" in
+      input) printf '  every logged-in site is served as plain Chrome, driven through the screen, keyboard and mouse,\n  unless its adapter says "drive": "cdp"; a seat with a proxy keeps the automated browser\n' ;;
+      cdp)   printf '  every logged-in site gets the automated browser unless its adapter says "drive": "input"\n' ;;
+      *)     printf '  the shipped default: a site adapter'"'"'s "drive" decides, otherwise the automated browser\n' ;;
+    esac
+    printf '  set by: %s\n' "$_DRIVE_DEFAULT_FILE"
+    return 0
+  fi
+  for a in "$@"; do
+    [[ "$a" == *=* ]] || die "$E_USAGE" "expected key=value, e.g. \`sudo 5dive browser config drive=input\`"
+    k="${a%%=*}"; v="${a#*=}"
+    [[ "$k" == drive ]] || die "$E_USAGE" "unknown setting '$k' — the one setting is drive=input|cdp|auto"
+    case "$v" in input|cdp|auto) ;; *) die "$E_USAGE" "drive=$v: expected input, cdp or auto" ;; esac
+  done
+  [[ "$(id -u)" == 0 ]] || die "$E_PERM" "the drive default is the whole box's, and root's to set. Run: sudo 5dive browser config drive=$v"
+  if [[ "$v" == auto ]]; then
+    rm -f "$_DRIVE_DEFAULT_FILE" || die "$E_UNAVAILABLE" "cannot remove $_DRIVE_DEFAULT_FILE"
+  else
+    mkdir -p "$(dirname "$_DRIVE_DEFAULT_FILE")" || die "$E_UNAVAILABLE" "cannot create $(dirname "$_DRIVE_DEFAULT_FILE")"
+    local tmp="$_DRIVE_DEFAULT_FILE.tmp"
+    { printf '# 5dive browser — the box default drive mode (DIVE-5338). A site adapter'"'"'s "drive" wins.\n'
+      printf '%s\n' "$v"; } > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$_DRIVE_DEFAULT_FILE" \
+      || { rm -f "$tmp"; die "$E_UNAVAILABLE" "cannot write $_DRIVE_DEFAULT_FILE"; }
+  fi
+  printf '%s: drive=%s for this box.' "$PROG" "$v"
+  [[ "$v" == input ]] && printf ' A site already served the other way switches on its next command, or now with: 5dive browser serve <site> --stop && sudo 5dive browser serve <site>'
+  printf '\n'
 }
 
 # Is <site> served (or to be served) in input mode? The adapter says so for the
@@ -6936,6 +7020,9 @@ _site_is_input() {  # _site_is_input <site>
     [[ "$(_kv "$(_rv_offer "$_SITE_OWNER" "$site")" drive)" == input ]]
     return $?
   fi
+  # The box default (DIVE-5338), for a site this seat owns: `_input_open` serves
+  # it as input, or switches a warm session over, on the first verb.
+  [[ "$(_site_drive "$site")" == input ]] && return 0
   [[ "$(_kv "$(_serve_pidfile "$_SITE_DIR")" drive)" == input ]] && _serve_running "$_SITE_DIR" >/dev/null
 }
 
@@ -7259,6 +7346,7 @@ case "${1:-}" in
   ls)    shift; cmd_ls    "$@" ;;
   doc)   shift; cmd_doc  "$@" ;;
   adblock) shift; cmd_adblock "$@" ;;
+  config) shift; cmd_config "$@" ;;
   proxy) shift; cmd_proxy "$@" ;;
   totp)  shift; cmd_totp  "$@" ;;
   run)   shift; cmd_run   "$@" ;;
