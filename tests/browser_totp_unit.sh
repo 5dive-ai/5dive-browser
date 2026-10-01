@@ -248,6 +248,28 @@ arm 'R5a no seed of its own: run imports the pasted one and publishes (rc 0)' '0
 arm 'R5b the import was asked for this site, quietly' 'r.test --quiet' "$(cat "$TMP/import-args" 2>/dev/null)"
 arm 'R5c the seed is nowhere in the output' 'no' "$(has "$SEED" "$out")"
 
+# The real rail, against a fake sudo: a seat WITHOUT the grant must never run the
+# import through sudo — a refused `sudo -n` mails root (DIVE-4397). Only the
+# password-free `-l` probe of the exact command may be asked.
+mkdir -p "$TMP/sudobin"
+cat > "$TMP/sudobin/sudo" <<FAKESUDO
+#!/usr/bin/env bash
+echo "\$*" >> "$TMP/sudo-log"
+if [[ "\$2" == -l ]]; then exit "\${FAKE_GRANT_RC:-1}"; fi
+[[ "\${FAKE_GRANT_RC:-1}" == 0 ]] || exit 1
+shift; printf '%s\n' "$SEED" | "$BROWSER" totp set "\$5" >/dev/null
+FAKESUDO
+chmod +x "$TMP/sudobin/sudo"
+D="$(rprof "$TWOFA_DOM")"; rm -f "$TMP/sudo-log"
+out="$(env -u FIVEDIVE_BROWSER_TOTP_IMPORT PATH="$TMP/sudobin:$PATH" "$BROWSER" run r.test publish 2>&1)"; rc=$?
+arm 'R6a no grant: sudo was asked only the -l probe, never the import' '1 0' \
+  "$(grep -c -- '^-n -l /usr/local/bin/5dive browser totp import r.test --quiet$' "$TMP/sudo-log" 2>/dev/null) $(grep -vc -- '^-n -l ' "$TMP/sudo-log" 2>/dev/null)"
+arm 'R6b no grant, no seed: the old stop (75), nothing published' '75 no' "$rc $(ex "$TMP/artifact.html")"
+D="$(rprof "$TWOFA_DOM")"; rm -f "$TMP/sudo-log"
+out="$(FAKE_GRANT_RC=0 env -u FIVEDIVE_BROWSER_TOTP_IMPORT PATH="$TMP/sudobin:$PATH" "$BROWSER" run r.test publish 2>&1)"; rc=$?
+arm 'R6c with the grant: probe, then the import through sudo, then publish (rc 0)' '0 -n /usr/local/bin/5dive browser totp import r.test --quiet' \
+  "$rc $(grep -v -- '^-n -l ' "$TMP/sudo-log" 2>/dev/null | head -1)"
+
 # ================================================================ I  root import
 if [[ $EUID -ne 0 ]] && sudo -n true 2>/dev/null; then
   D="$(mkprof i.test)"

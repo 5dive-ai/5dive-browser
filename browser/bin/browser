@@ -5798,6 +5798,17 @@ CONNECTORS_DIR="${FIVEDIVE_BROWSER_CONNECTORS_DIR:-/etc/5dive/connectors}"
 TOTP_IMPORT=(sudo -n /usr/local/bin/5dive browser totp import)
 [[ -n "${FIVEDIVE_BROWSER_TOTP_IMPORT:-}" ]] && TOTP_IMPORT=("$FIVEDIVE_BROWSER_TOTP_IMPORT")
 
+# Ask root's import only when this seat holds the grant for it. A refused
+# `sudo -n` mails root (DIVE-4397) and a standard seat has no such grant, so the
+# grant is read first, the way _reflex_cli and _connect do; the `-l` probe of the
+# exact command is answered without a password and without a mail.
+_totp_ask_import() {  # <site>
+  if [[ "${TOTP_IMPORT[0]}" == sudo && $EUID -ne 0 ]]; then
+    sudo -n -l "${TOTP_IMPORT[@]:2}" "$1" --quiet >/dev/null 2>&1 || return 1
+  fi
+  "${TOTP_IMPORT[@]}" "$1" --quiet </dev/null >/dev/null 2>&1
+}
+
 # The connector KEY for a profile: TOTP_ + the name upper-cased, every non
 # alphanumeric an underscore. github.com -> TOTP_GITHUB_COM, github.com_work ->
 # TOTP_GITHUB_COM_WORK. The shape `5dive secret write` accepts.
@@ -5938,11 +5949,11 @@ _totp_fill() {  # <site> <dir> [<url>]
   local site="$1" dir="$2" url="${3:-}" host; host="$(_site_base "$site")"
   [[ -n "$url" ]] || url="$(_site_url "$site")"
   # NO SEED YET: take one from the secrets store if the owner put it there.
-  # Best-effort and silent — a seat without the grant simply has none. A brokered
+  # Best-effort and silent — a seat without the grant never asks sudo. A brokered
   # seat cannot see whether the owner's profile holds one, so it always asks;
   # with nothing in the store, the import is a quiet no-op.
   if (( _SITE_BROKERED )) || [[ ! -f "$dir/$TOTP_FILE_NAME" ]]; then
-    "${TOTP_IMPORT[@]}" "$site" --quiet </dev/null >/dev/null 2>&1 || true
+    _totp_ask_import "$site" || true
   fi
   if (( _SITE_BROKERED )) || _daemon_live "$dir"; then
     _daemon_call "$dir" "$(jq -nc --arg u "$url" --arg h "$host" --argjson l "$(_daemon_lease_json)" \
