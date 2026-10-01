@@ -40,6 +40,13 @@ jobs:
       # the real bin/browser and driver with the recording playwright stub.
       - name: routine and delta harness
         run: bash tests/browser_routine_delta_unit.sh
+      # DIVE-5336: the owner's authenticator seed. LAST among the harnesses, because
+      # its live arm needs the pinned playwright-core installed next to the plugin,
+      # and the suites above grade the executor's "playwright is absent" refusals.
+      - name: install the pinned playwright-core
+        run: npm install --prefix browser --no-audit --no-fund
+      - name: totp harness
+        run: bash tests/browser_totp_unit.sh
       # A manifest or marketplace file that does not parse breaks `5dive plugin
       # add` at install time, where nobody is watching. Cheap, so it is its own
       # named check rather than an assertion buried in the suite.

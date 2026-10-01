@@ -166,7 +166,10 @@ This is **persistent human-authenticated sessions** — a person logs in, once, 
 the agent is granted permission to operate the session, never the credentials. It is not
 anti-bot bypassing. A CAPTCHA, a 2FA prompt or an "unusual activity" interstitial is a
 **hard stop that asks for a person**: surface it, do not attempt it, do not look for a way
-around it. Never ask the human for a password, never accept one, never write one down, and
+around it. The one exception is the owner's own authenticator: if the owner saved the site's
+authenticator seed on the box (`5dive browser totp status <site>`), `run` types the 2FA code
+itself. To offer that, file the secret gate `totp status` prints, so the owner pastes the seed
+on the box's one-time link. Never ask for it in chat, and never echo it back. Never ask the human for a password, never accept one, never write one down, and
 never export cookies out of a profile.
 
 ## When a page looks broken or half-loaded

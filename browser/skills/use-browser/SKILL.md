@@ -117,6 +117,9 @@ back as evidence. On a site with no adapter it proceeds otherwise, and says that
 confirmed the login. If you hit the sign-in refusal on a page that must be the owner's account,
 switch to the `connect-site` skill. Never type the owner's password yourself, and never try to
 get past a CAPTCHA or other challenge.
+An authenticator-app 2FA prompt is the one exception, and only on a site whose owner saved its
+seed on the box: `run` types the code itself, and `5dive browser totp fill <site> [<url>]` does
+it on demand. Neither shows you the code. With no seed saved, it stops like any challenge.
 
 **Blocked from a server IP** ("Request blocked by network security", "suspicious network"):
 some sites block server IPs; `5dive browser proxy set <url>` sends this box's browser through
