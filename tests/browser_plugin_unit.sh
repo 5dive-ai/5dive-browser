@@ -300,13 +300,15 @@ t  'T2c6 a root caller with SUDO_USER re-executes as the seat before touching a 
 # relay seat itself, only for serve/viewer/status. Dropped to the CALLER, it
 # would be the agent registering its own bind — the one thing the owner's tap
 # exists to prevent.
-t  'T2c7 ...but setup, adblock, the owner'"'"'s approve and the Connect relay stay root'"'"'s' 'yes' "$(grep -A6 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -q 'setup|adblock|approve|approvals|adapters|_connect|totp|-h|--help|help|"") ;;' && echo yes || echo no)"
+t  'T2c7 ...but setup, adblock, config, the owner'"'"'s approve and the Connect relay stay root'"'"'s' 'yes' "$(grep -A8 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -q 'setup|adblock|config|approve|approvals|adapters|_connect|totp|-h|--help|help|"") ;;' && echo yes || echo no)"
 # DIVE-4997 added `adapters` (the owner's approve/reject/pending of a reflex
 # login check: root reads every seat's proposals and writes AS the seat), so six.
 # DIVE-5336 added `totp`, and only its `import` reaches the list (every other
 # totp verb is renamed totp-seat first and drops): import reads the root-only
 # secrets store and drops to the profile's owner itself to write the seed. Seven.
-t  'T2c8 ...and no OTHER verb joined them' '7' "$(grep -A6 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -oP '^\s+\K[a-z_|]+(?=\|-h\|--help)' | tr '|' '\n' | grep -c .)"
+# DIVE-5338 added `config`: it writes the box-wide default drive mode, a root-owned
+# file no seat may write. Eight.
+t  'T2c8 ...and no OTHER verb joined them' '8' "$(grep -A8 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -oP '^\s+\K[a-z_|]+(?=\|-h\|--help)' | tr '|' '\n' | grep -c .)"
 
 # DIVE-4813 — WHICH SEAT ROOT BECOMES. An admin agent asked to open a site the
 # box had connected under `claude` and was told to run `sudo -u claude 5dive

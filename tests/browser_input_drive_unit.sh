@@ -18,6 +18,10 @@
 #        R6 handoff opens / reports / closes through `hand`
 #        R7 a proxied seat is refused input mode rather than served off-proxy
 #        R8 regression: a CDP site is never routed to the input verbs
+#        R10 the BOX default (DIVE-5338): `config drive=input` serves an adapter-less
+#           site as input; an adapter's "drive": "cdp" still wins; a proxied seat
+#           falls back to the automated browser with a note, not a refusal; the
+#           setting is root's; `auto` is the shipped default again
 #   L  LIVE, when this machine has Xvfb and Chrome (GitHub's ubuntu runner does):
 #      the real daemon, real plain Chrome, real XTEST input.
 #        L1 the page sees navigator.webdriver === false, and the daemon reports
@@ -52,6 +56,9 @@ REAL_DAEMON="$ROOT/browser/bin/session-daemon"
 X11LIB="$ROOT/browser/lib/x11.cjs"
 REAL_XVFB="$(command -v Xvfb || true)"
 REAL_CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+# INPUT_DRIVE_SKIP_LIVE=1: the R arms only, on a host where real Chrome must not run
+# (the production API host). CI leaves it unset and runs the L arms.
+[[ -n "${INPUT_DRIVE_SKIP_LIVE:-}" ]] && REAL_XVFB=""
 
 # SHORT PATHS. A unix socket path is capped at 108 bytes; a long mktemp root
 # makes the daemon bind a truncated name and every arm below read "not live".
@@ -291,6 +298,59 @@ arm 'R8 regression: shot on reddit.com (CDP) never reaches the input verbs' "$n0
   "$(reqs screen) $(yn grep -qi 'input mode' <<<"$o")"
 o=$("$BROWSER" tree reddit.com https://www.reddit.com/ 2>&1)
 arm 'R8 ...nor does tree' no "$(yn grep -q 'INPUT mode' <<<"$o")"
+
+# R10 — THE BOX DEFAULT (DIVE-5338). news.example.com has no adapter at all;
+# cdp.example.com has one that says "drive": "cdp".
+export FIVEDIVE_BROWSER_DRIVE_DEFAULT_FILE="$TMP/drive-default"
+for s in news.example.com cdp.example.com; do mkdir -p "$TMP/pr/$SEAT/$s"; chmod 700 "$TMP/pr/$SEAT/$s"; done
+printf '{"site":"cdp.example.com","drive":"cdp"}\n' > "$TMP/ad/cdp.example.com.json"
+arm 'R10 nothing set: config reads auto (the shipped default)' 'drive=auto' "$("$BROWSER" config 2>&1 | head -1)"
+n0=$(reqs screen)
+o=$("$BROWSER" shot news.example.com https://news.example.com/ --out="$TMP/n0.png" 2>&1)
+arm 'R10 ...and an adapter-less site is not input mode' "$n0 no" "$(reqs screen) $(yn grep -qi 'input mode' <<<"$o")"
+if [[ "$(id -u)" != 0 ]]; then
+  o=$("$BROWSER" config drive=input 2>&1); rc=$?
+  arm 'R10 a seat cannot set the box default (77), and nothing is written' '77 no' "$rc $(yn test -e "$TMP/drive-default")"
+fi
+o=$("$BROWSER" config drive=sideways 2>&1); rc=$?
+arm 'R10 an unknown drive value is refused (64)' 64 "$rc"
+printf '# set by root\ninput\n' > "$TMP/drive-default"   # what `sudo … config drive=input` writes
+arm 'R10 config reads it back' 'drive=input' "$("$BROWSER" config 2>&1 | head -1)"
+o=$("$BROWSER" serve news.example.com 2>&1); rc=$?
+arm 'R10 drive=input serves an adapter-less site as input mode' '0 yes' "$rc $(yn grep -q 'input mode' <<<"$o")"
+arm 'R10 ...the daemon was started with --input' yes "$(tail -1 "$TMP/daemon.argv" | grep -q -- '--input' && echo yes || echo no)"
+arm 'R10 ...the serve record and the .offered marker say input' 'input input' \
+  "$(sed -n 's/^drive=//p' "$TMP/pr/$SEAT/news.example.com/.5dive-serve") $(sed -n 's/^drive=//p' "$TMP/rv/$SEAT/news.example.com.offered")"
+_KILL+=("$(sed -n 's/^daemon_pid=//p' "$TMP/pr/$SEAT/news.example.com/.5dive-serve")" "$(sed -n 's/^xvfb_pid=//p' "$TMP/pr/$SEAT/news.example.com/.5dive-serve")")
+n0=$(reqs screen)
+o=$("$BROWSER" shot news.example.com https://news.example.com/ --out="$TMP/n1.png" 2>&1); rc=$?
+arm 'R10 shot on it takes the input verb' "0 $((n0 + 1))" "$rc $(reqs screen)"
+n0=$(wc -l < "$DREC")
+o=$("$BROWSER" read news.example.com https://news.example.com/ 2>&1); rc=$?
+arm 'R10 read on it is refused by name (69), nothing sent' "69 yes $n0" "$rc $(yn grep -q 'INPUT mode' <<<"$o") $(wc -l < "$DREC")"
+"$BROWSER" serve news.example.com --stop >/dev/null 2>&1
+n0=$(wc -l < "$TMP/daemon.argv")
+o=$("$BROWSER" serve cdp.example.com 2>&1); rc=$?
+arm 'R10 an adapter saying "drive": "cdp" wins over the box default' "0 no" "$rc $(tail -n +$((n0 + 1)) "$TMP/daemon.argv" | grep -q -- '--input' && echo yes || echo no)"
+_KILL+=("$(sed -n 's/^daemon_pid=//p' "$TMP/pr/$SEAT/cdp.example.com/.5dive-serve")" "$(sed -n 's/^xvfb_pid=//p' "$TMP/pr/$SEAT/cdp.example.com/.5dive-serve")")
+"$BROWSER" serve cdp.example.com --stop >/dev/null 2>&1
+printf 'http://u:p@example.com:8080\n' > "$TMP/pr/$SEAT/.5dive-proxy"; chmod 600 "$TMP/pr/$SEAT/.5dive-proxy"
+n0=$(wc -l < "$TMP/daemon.argv")
+o=$("$BROWSER" serve news.example.com 2>&1); rc=$?
+arm 'R10 a proxied seat falls back to the automated browser (0), not refused' "0 no" "$rc $(tail -n +$((n0 + 1)) "$TMP/daemon.argv" | grep -q -- '--input' && echo yes || echo no)"
+arm 'R10 ...and says so in ONE note line' 1 "$(grep -c 'defaults to input mode, but this seat has a proxy' <<<"$o")"
+_KILL+=("$(sed -n 's/^daemon_pid=//p' "$TMP/pr/$SEAT/news.example.com/.5dive-serve")" "$(sed -n 's/^xvfb_pid=//p' "$TMP/pr/$SEAT/news.example.com/.5dive-serve")")
+"$BROWSER" serve news.example.com --stop >/dev/null 2>&1
+o=$("$BROWSER" serve tiktok.com 2>&1); rc=$?
+arm 'R10 ...while an adapter'"'"'s own input is still refused under a proxy (69)' 69 "$rc"
+rm -f "$TMP/pr/$SEAT/.5dive-proxy"
+printf 'cdp\n' > "$TMP/drive-default"
+n0=$(reqs screen)
+o=$("$BROWSER" shot news.example.com https://news.example.com/ --out="$TMP/n2.png" 2>&1)
+arm 'R10 drive=cdp: the adapter-less site is the automated browser again' "$n0 no" "$(reqs screen) $(yn grep -qi 'input mode' <<<"$o")"
+arm 'R10 ...and tiktok.com is still input (its adapter wins)' 0 "$("$BROWSER" serve tiktok.com >/dev/null 2>&1; echo $?)"
+rm -f "$TMP/drive-default"
+unset FIVEDIVE_BROWSER_DRIVE_DEFAULT_FILE
 export PATH="$OLDPATH"
 cd "$ROOT"
 
