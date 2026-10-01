@@ -31,7 +31,9 @@ team's clicker, a publisher) paid the full snapshot-decide-act loop every day fo
   ("element was detached from the DOM"): every record and replay of that routine failed. A step
   now runs in short attempts and, when its marker is gone, re-resolves the same ref and runs
   again — never after a navigation or an action that completed, never for `type`, never for a
-  CSS selector, and the owner's check is read again on the element found again.
+  CSS selector, and the owner's check is read again on the element found again. "Again" is the
+  same ref; else the one field of the same name in the text-field roles (Wikipedia's comes back
+  a `combobox`, not a `searchbox`); else, for `press` only, the focused text field.
 - **`snapshot --delta`**: refs added/removed and text lines changed since the seat's last
   snapshot of the site, and no `page.png` when under 1% of its pixels changed. Falls back to
   full on a stale baseline (30 min) or a delta longer than the page. `lib/delta.cjs` (new): a
