@@ -25,7 +25,15 @@
 #        L1b the page has RECEIVED pointer input (a handshake) before L3 — L3 is
 #           gated on observed readiness, not on the title alone (quinn, iter 1)
 #        L2 Chrome's command line carries no --remote-debugging / --enable-automation
-#        L3 a click and typed text arrive as isTrusted events, non-ASCII included
+#        L1c the browser is the TOPMOST window at the L3 click point
+#        L3 a click and typed text arrive as isTrusted events, non-ASCII included.
+#           The input is sent ONCE; the arm then waits (bounded) to SEE it, because
+#           Chrome retitles the window asynchronously and a loaded runner took
+#           longer than the 300ms settle to (DIVE-5342: L5 then read the text L3
+#           had "missed"). A red L3 prints the window stack at the click point and
+#           saves the screen to $INPUT_HARNESS_ARTIFACTS, so it explains itself.
+#        L3m the instrument: the same L3 check on a click point another window
+#           covers goes red, and its dump names that window as topmost
 #        L4 `screen` returns a PNG of the whole display
 #        L5 an open handoff refuses agent input; closing it restores it
 #        L6 DOM ops are refused by name
@@ -60,7 +68,7 @@ gha() {  # gha <title> <text>
 }
 _diag() {
   (( ${FAIL:-0} )) || return 0
-  local f; for f in l.err l.inerr l.cverr l2.err; do
+  local f; for f in l.err l3.err l.cverr l2.err; do
     [[ -s "$TMP/$f" ]] && gha "input harness: daemon stderr ($f)" "$(grep -v -i dbus "$TMP/$f" | tail -15)"
   done; return 0
 }
@@ -73,6 +81,8 @@ arm() {  # arm <name> <expected> <got>
     gha "input harness FAIL: ${1:0:80}" "expected: $2"$'\n'"got: $3"; fi
 }
 yn() { if "$@"; then echo yes; else echo no; fi; }
+# Where a red live arm's screen goes. CI sets it and uploads it on failure.
+ART="${INPUT_HARNESS_ARTIFACTS:-}"; [[ -n "$ART" ]] && mkdir -p "$ART"
 
 # ---------------------------------------------------------------- U: x11.cjs
 out=$(node -e '
@@ -312,6 +322,41 @@ HTML
   LD=$!; _KILL+=("$LD")
   for i in $(seq 1 600); do grep -q '^ready' "$TMP/l.ready" 2>/dev/null && break; kill -0 "$LD" 2>/dev/null || break; sleep 0.05; done
   lc() { "$REAL_DAEMON" call "$LP/s.sock" <<<"$1"; }
+  # stack <label> <x> <y> — the window stack at a point (tests/x11_stack.cjs);
+  # its last line is `top=0x… browser=yes|no`. The screen goes to $ART if set.
+  stack() {
+    DISPLAY=":$disp" node "$ROOT/tests/x11_stack.cjs" "$1" "$2" "$3" "${cpid:-0}" ${ART:+"$ART/$1.png"} > "$TMP/stack.$1" 2>&1
+    tail -1 "$TMP/stack.$1"
+  }
+  # see_title <sock> <want> — poll the window title until it reads <want> or
+  # ~10s pass, and print what it read last. Sends NO input: a lost click or
+  # keystroke stays lost, and the arm reading this stays red.
+  see_title() {
+    local t="" i; for i in $(seq 1 50); do
+      t=$("$REAL_DAEMON" call "$1" <<<'{"op":"title"}' 2>/dev/null | jq -r .title)
+      [[ "$t" == "$2" ]] && break; sleep 0.2
+    done; printf '%s' "$t"
+  }
+  # drive <label> <x> <y> <text> <want-title> [expect-red] — L3's check: ONE
+  # click + type, then wait to see the page's title say it arrived. Sets GOT to
+  # "<rc> <title>". When it is not "0 <want>", the window stack at the click
+  # point and the screen are dumped (as ::error too, unless red is expected).
+  drive() {
+    local t0=$SECONDS rc t
+    lc "{\"op\":\"input\",\"steps\":[{\"op\":\"click\",\"x\":$2,\"y\":$3},{\"op\":\"type\",\"value\":\"$4\"}],\"settle\":300}" \
+      > "$TMP/$1.in" 2>"$TMP/$1.err"; rc=$?
+    t=$(jq -r .title "$TMP/$1.in" 2>/dev/null)
+    if (( rc == 0 )) && [[ "$t" != "$5" ]]; then
+      t=$(see_title "$LP/s.sock" "$5")
+      printf '   (%s: the title was not there at the 300ms settle; read after polling, %ss in all)\n' "$1" "$((SECONDS - t0))"
+    fi
+    GOT="$rc $t"
+    [[ "$GOT" == "0 $5" ]] && return 0
+    stack "$1" "$2" "$3" >/dev/null
+    sed 's/^/   /' "$TMP/stack.$1"
+    [[ -n "${6:-}" ]] || gha "input harness: window stack after a red $1" "$(cat "$TMP/stack.$1")"
+    return 0
+  }
   if ! grep -q '^ready' "$TMP/l.ready"; then
     arm 'L0 the live input daemon came up' ready "$(grep -v -i dbus "$TMP/l.err" | tail -2 | tr '\n' ' ')"
   else
@@ -329,12 +374,16 @@ HTML
     done
     arm 'L1b the page receives pointer input before L3 is sent (readiness observed, not assumed)' 'armed:wd=false' "$t"
     cpid=$(pgrep -f -- "--user-data-dir=$LP" | head -1)
+    # Nothing else may sit where L3 clicks: the display is this harness's own
+    # Xvfb, and this says so before L3 rather than after it goes red.
+    t=$(stack l1c 640 500)
+    arm 'L1c the browser is the topmost window at the L3 click point' 'browser=yes' "${t#* }"
+    [[ "${t#* }" == browser=yes ]] || sed 's/^/   /' "$TMP/stack.l1c"
     cmd=$(tr '\0' ' ' < "/proc/$cpid/cmdline" 2>/dev/null)
     arm 'L2 Chrome runs with no --remote-debugging and no --enable-automation' 'yes no' \
       "$(yn test -n "$cmd") $(yn grep -qE -- '--remote-debugging|--enable-automation' <<<"$cmd")"
-    lc '{"op":"input","steps":[{"op":"click","x":640,"y":500},{"op":"type","value":"héllo ✓"}],"settle":300}' > "$TMP/l.in" 2>"$TMP/l.inerr"; rc=$?
-    arm 'L3 a click and typed text arrive as isTrusted input, non-ASCII included' '0 typed:héllo ✓:click=true:key=true' \
-      "$rc $(jq -r .title "$TMP/l.in" 2>/dev/null)"
+    drive l3 640 500 'héllo ✓' 'typed:héllo ✓:click=true:key=true'
+    arm 'L3 a click and typed text arrive as isTrusted input, non-ASCII included' '0 typed:héllo ✓:click=true:key=true' "$GOT"
     lc '{"op":"screen"}' > "$TMP/l.sc" 2>/dev/null
     jq -r .png_b64 "$TMP/l.sc" | base64 -d > "$TMP/l.png" 2>/dev/null
     arm 'L4 screen returns a PNG of the whole 1280x800 display' '89504e47 1280 800' \
@@ -363,11 +412,20 @@ HTML
         await x.sync();
         for (let i = 0; i < 50 && !(await x.viewable(wid)); i++) await new Promise(r => setTimeout(r, 20));
         await x.setFocus(wid);
-        process.stdout.write("up\n");
+        process.stdout.write("up 0x" + wid.toString(16) + "\n");
         setInterval(() => {}, 1000);
       })().catch(e => { console.error(e.message); process.exit(1); });' "$X11LIB" > "$TMP/l.fw" 2>&1 &
     FW=$!; _KILL+=("$FW")
     for i in $(seq 1 100); do grep -q '^up' "$TMP/l.fw" && break; sleep 0.05; done
+    fwid=$(awk '/^up/{print $2}' "$TMP/l.fw")
+    # L3m — THE INSTRUMENT. L3's own check, pointed at a point the foreign
+    # window covers: it must go red, and its dump must name that window as the
+    # one on top. (The daemon refuses the click, so no key is sent: L9 below
+    # still starts from 'héllo ✓!'.)
+    drive l3m 500 400 M 'typed:héllo ✓!M:click=true:key=true' expect-red
+    arm 'L3m mutation: L3 on a click point another window covers goes red, and the dump names that window on top' \
+      "red top=${fwid:-?} browser=no" \
+      "$([[ "$GOT" == '0 typed:héllo ✓!M:click=true:key=true' ]] && echo green || echo red) $(tail -1 "$TMP/stack.l3m" 2>/dev/null)"
     lc '{"op":"input","steps":[{"op":"click","x":500,"y":400},{"op":"type","value":"Z"}],"settle":300}' > "$TMP/l.cv" 2>"$TMP/l.cverr"; rc=$?
     arm 'L8 a click on a point another window covers fails non-zero, naming it, and the plan stops' '1 yes 1 no' \
       "$rc $(yn grep -q 'covered by a window that is not the browser' "$TMP/l.cverr") $(jq -r .steps_run "$TMP/l.cv" 2>/dev/null) $(yn grep -q 'Z' <<<"$(jq -r .title "$TMP/l.cv" 2>/dev/null)")"
@@ -413,8 +471,11 @@ HTML
         const r = await ask({ op: "input", steps: [{ op: "click", x: 640, y: 500 }, { op: "type", value: "go" }], settle: 300 });
         process.stdout.write(r.out); process.exit(r.rc === null ? 1 : r.rc);
       })();' "$LP2/s.sock" > "$TMP/l2.in" 2>/dev/null; rc=$?
+    # As L3: the input went once; wait to SEE it, never re-send it.
+    t=$(jq -r .title "$TMP/l2.in" 2>/dev/null)
+    (( rc == 0 )) && [[ "$t" != 'typed:go:click=true:key=true' ]] && t=$(see_title "$LP2/s.sock" 'typed:go:click=true:key=true')
     arm 'L10 a fresh page driven the instant its title appears still gets the click and the text' '0 typed:go:click=true:key=true' \
-      "$rc $(jq -r .title "$TMP/l2.in" 2>/dev/null)"
+      "$rc $t"
     "$REAL_DAEMON" call "$LP2/s.sock" <<<'{"op":"shutdown"}' >/dev/null 2>&1
     for i in $(seq 1 100); do kill -0 "$LD2" 2>/dev/null || break; sleep 0.05; done
   fi
