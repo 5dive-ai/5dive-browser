@@ -106,8 +106,11 @@ ARTICLE=$(jq -r '.url' "$TMP/out")
 cmd "snapshot article" snapshot "$ARTICLE" --interactive
 (( RC == 0 )) || exit 1
 A="$(artifacts)"; TOKENS=$((TOKENS + $(snap_cost "$A")))
-LREF=$(jq -r --arg l "$LINK" '[.nodes[] | select(.role == "link" and .name == $l)][0].ref // empty' "$A/tree.json")
-[[ -n "$LREF" ]] || { echo "run 1: no link named $LINK on $ARTICLE" >&2; exit 1; }
+# Case-blind: a link's name is its title attribute first, and Wikipedia titles the
+# lead's "Analytical Engine" link with the article's own name, "Analytical engine".
+LREF=$(jq -r --arg l "$LINK" '[.nodes[] | select(.role == "link" and ((.name | ascii_downcase) == ($l | ascii_downcase)))][0].ref // empty' "$A/tree.json")
+[[ -n "$LREF" ]] || { echo "run 1: no link named $LINK on $ARTICLE; links near that name:" >&2
+  jq -r --arg w "${LINK##* }" '[.nodes[] | select(.role == "link" and ((.name | ascii_downcase) | contains($w | ascii_downcase))) | .ref][:15][]' "$A/tree.json" >&2; exit 1; }
 echo "  picked ref=$LREF" >&2
 cmd "act follow link --record" act "$ARTICLE" --steps="$(jq -nc --arg s "ref=$LREF" '[{op:"click",selector:$s}]')" --expect="$EXPECT2" --record=lookup --json
 TOKENS=$((TOKENS + $(txt_tokens "$TMP/out" "$TMP/err")))
