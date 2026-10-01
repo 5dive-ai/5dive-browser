@@ -47,6 +47,10 @@ jobs:
           name: input-harness-screens
           path: ${{ runner.temp }}/input-harness
           if-no-files-found: ignore
+      # DIVE-5335: routines (act --record, replay) and delta snapshots, through
+      # the real bin/browser and driver with the recording playwright stub.
+      - name: routine and delta harness
+        run: bash tests/browser_routine_delta_unit.sh
       # DIVE-5336: the owner's authenticator seed. LAST among the harnesses, because
       # its live arm needs the pinned playwright-core installed next to the plugin,
       # and the suites above grade the executor's "playwright is absent" refusals.
@@ -68,3 +72,18 @@ jobs:
         run: |
           test "$(jq -r .name browser/.claude-plugin/plugin.json)" = browser
           test "$(jq -r '.plugins[]|select(.name=="browser")|.source' .claude-plugin/marketplace.json)" = ./browser
+
+  # DIVE-5335: THE NUMBERS. A fixed routine on a real site, run 1 (snapshot +
+  # act) against runs 2 and 3 (replay), with real Chrome and the pinned
+  # playwright-core; plus full vs --delta re-reads. The table lands in the job
+  # summary, and the job fails if run 3 does not make fewer model calls than
+  # run 1. Its own job: it needs the network and a real browser, the harness
+  # job needs neither.
+  routine-bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: pinned playwright-core
+        run: npm install --prefix browser --no-audit --no-fund
+      - name: run 1 vs run 3 on en.wikipedia.org
+        run: bash tests/browser_routine_bench.sh

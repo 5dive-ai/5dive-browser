@@ -8,6 +8,51 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — routines (`act --record`, `replay`) and `snapshot --delta`: the second run costs less (DIVE-5335), 1.29.0
+
+(1.27.0 was held for this entry while it was in review; DIVE-5338 shipped 1.28.0 first, so it lands as 1.29.0.)
+
+The owner asked what the trending browser-agent projects could give our browser (2026-10-01).
+Two ideas, copied as ideas and not code: Stagehand's **action caching** and agent-browser's
+**`snapshot --delta` / `screenshot --if-changed`**. A daily browser routine (the distribution
+team's clicker, a publisher) paid the full snapshot-decide-act loop every day for the same clicks.
+
+- **`act --record=<name>`** keeps the steps of an act that succeeded — the refs (already
+  re-derivable role+name locators), the start URL and the `--expect` — and never a typed value:
+  fill/type/select values become numbered slots. An act that failed, was not ready or did not
+  match `--expect` is not recorded. Input mode refuses `--record` (no DOM to record).
+- **`replay <site> <name> [--values=…]`** runs every recorded act as an ordinary `act` (lease,
+  scope, login gate, owner's policy unchanged), in one call with no snapshot, and reports its
+  model calls. A renamed element gets the executors' existing one re-pick, and a rescued step is
+  written back to the routine. A miss nothing can re-pick stops on that act with the re-record
+  command; a pay stop is 73 with `--from=<k> --approved=<id>` to resume.
+- **`routine ls | show | forget [--from=<k>]`**.
+- **A ref whose element the page replaces is found again**, in both step loops
+  (`lib/aria.cjs` `onRef`). On en.wikipedia.org a `fill` on the search box loads the typeahead,
+  which mounts a new input in its place, and the next `press Enter` on the same ref timed out
+  ("element was detached from the DOM"): every record and replay of that routine failed. A step
+  now runs in short attempts and, when its marker is gone, re-resolves the same ref and runs
+  again — never after a navigation or an action that completed, never for `type`, never for a
+  CSS selector, and the owner's check is read again on the element found again. "Again" is the
+  same ref; else the one field of the same name in the text-field roles (Wikipedia's comes back
+  a `combobox`, not a `searchbox`); else, for `press` only, the focused text field.
+- **`snapshot --delta`**: refs added/removed and text lines changed since the seat's last
+  snapshot of the site, and no `page.png` when under 1% of its pixels changed. Falls back to
+  full on a stale baseline (30 min) or a delta longer than the page. `lib/delta.cjs` (new): a
+  PNG decoder on node's zlib, no new packages.
+- **Measured**: `tests/browser_routine_bench.sh`, the new `routine-bench` CI job — a fixed
+  routine on en.wikipedia.org with real Chrome; it fails unless run 3 makes fewer model calls
+  than run 1. The numbers are on the PR.
+- **Harness**: `tests/browser_routine_delta_unit.sh` (record without values, replay with zero
+  snapshot walks, self-heal write-back, miss, ls/show/forget, input-mode refusal, PNG decoder
+  across all five filters, delta through the real verb) with three mutants.
+
+**Considered, not taken** (main's teardown on the row): jev-ultrafast and browser-harness need an
+open Chrome debugging port, which the session daemon deliberately does not have; browser-use's
+"skills" are this same idea and its stealth is cloud-only; Playwright MCP's snapshots and
+persistent profiles we already have; Skyvern is AGPL; steel-browser's anti-bot layer waits for a
+count of how often box runs actually hit bot walls.
+
 ### Added — a box-level default drive mode: `config drive=input|cdp|auto` (DIVE-5338), 1.28.0
 
 lodar, 2026-10-01: agents should browse in the owner's own plain Chrome by default, with no
