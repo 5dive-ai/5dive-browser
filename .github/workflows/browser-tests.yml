@@ -36,6 +36,10 @@ jobs:
       # Xvfb + Chrome (real XTEST input, isTrusted, navigator.webdriver false).
       - name: input drive mode harness
         run: bash tests/browser_input_drive_unit.sh
+      # DIVE-5335: routines (act --record, replay) and delta snapshots, through
+      # the real bin/browser and driver with the recording playwright stub.
+      - name: routine and delta harness
+        run: bash tests/browser_routine_delta_unit.sh
       # A manifest or marketplace file that does not parse breaks `5dive plugin
       # add` at install time, where nobody is watching. Cheap, so it is its own
       # named check rather than an assertion buried in the suite.
@@ -50,3 +54,18 @@ jobs:
         run: |
           test "$(jq -r .name browser/.claude-plugin/plugin.json)" = browser
           test "$(jq -r '.plugins[]|select(.name=="browser")|.source' .claude-plugin/marketplace.json)" = ./browser
+
+  # DIVE-5335: THE NUMBERS. A fixed routine on a real site, run 1 (snapshot +
+  # act) against runs 2 and 3 (replay), with real Chrome and the pinned
+  # playwright-core; plus full vs --delta re-reads. The table lands in the job
+  # summary, and the job fails if run 3 does not make fewer model calls than
+  # run 1. Its own job: it needs the network and a real browser, the harness
+  # job needs neither.
+  routine-bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: pinned playwright-core
+        run: npm install --prefix browser --no-audit --no-fund
+      - name: run 1 vs run 3 on en.wikipedia.org
+        run: bash tests/browser_routine_bench.sh
