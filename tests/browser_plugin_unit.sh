@@ -300,7 +300,7 @@ t  'T2c6 a root caller with SUDO_USER re-executes as the seat before touching a 
 # relay seat itself, only for serve/viewer/status. Dropped to the CALLER, it
 # would be the agent registering its own bind — the one thing the owner's tap
 # exists to prevent.
-t  'T2c7 ...but setup, adblock, the owner'"'"'s approve and the Connect relay stay root'"'"'s' 'yes' "$(grep -A6 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -q 'setup|adblock|approve|approvals|adapters|_connect|totp|-h|--help|help|"") ;;' && echo yes || echo no)"
+t  'T2c7 ...but setup, adblock, config, the owner'"'"'s approve and the Connect relay stay root'"'"'s' 'yes' "$(grep -A8 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -q 'setup|adblock|config|approve|approvals|adapters|_connect|totp|-h|--help|help|"") ;;' && echo yes || echo no)"
 # DIVE-4997 added `adapters` (the owner's approve/reject/pending of a reflex
 # login check: root reads every seat's proposals and writes AS the seat), so six.
 # DIVE-5336 added `totp`, and only its `import` reaches the list (every other
