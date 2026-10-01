@@ -315,6 +315,25 @@ usage() {
   A security challenge (CAPTCHA, 2FA, "unusual activity") is a HARD STOP that asks
   for a person. 5dive does not attempt to solve one. What this is: persistent
   human-authenticated sessions — not anti-bot bypassing.
+  ONE EXCEPTION, AND IT IS THE OWNER'S: an authenticator-app 2FA prompt, on a site
+  whose owner saved that site's authenticator seed on this box. `run` then types
+  the current 6-digit code itself and carries on. The seed and the code are never
+  printed, logged or sent anywhere. CAPTCHAs, emailed or SMS codes still stop.
+  5dive browser totp set <site>       # save the site's authenticator seed (the base32
+                                      # secret behind its QR, or the otpauth:// link),
+                                      # read from stdin — hidden at a terminal. 0600,
+                                      # inside the site's profile; `forget` removes it.
+  sudo 5dive browser totp import <site>
+                                      # move a seed the owner pasted on the one-time
+                                      # secrets link (connector browser-totp, key
+                                      # TOTP_<SITE>) into the site's profile. `run` and
+                                      # `totp fill` try this themselves when no seed is saved.
+  5dive browser totp status <site>    # saved or not — never the seed, never a code
+  5dive browser totp fill <site> [<url>]
+                                      # type the current code into the 2FA field on <url>
+                                      # (default: the site's probe page). Prints the
+                                      # field it typed into, never the code.
+  5dive browser totp forget <site>
   5dive browser run <site> <action> [--key=value ...] [--approved-id=<id>]
                                       # execute an adapter action, deterministically,
                                       # inside the logged-in profile. The verdict is an
@@ -1934,6 +1953,14 @@ cmd_run() {
   # scheduler, because a network blip must not page a person, and a REFUSAL
   # here, because the action is the irreversible half.
   local state; state=$(_probe "$site" "$dir")
+  # THE OWNER'S AUTHENTICATOR, BEFORE THE STOP (DIVE-5336). Only a challenge, only
+  # with a seed the owner saved, and only a verdict the RE-PROBE gives: a code
+  # that was typed and did not clear the page leaves the stop below exactly as it
+  # was. Anything a seed cannot answer (a CAPTCHA, an emailed code) re-probes as
+  # the same CHALLENGE and stops there.
+  if [[ "$state" == CHALLENGE* ]] && _totp_clear "$site" "$dir"; then
+    state=$(_probe "$site" "$dir")
+  fi
   case "$state" in
     CHALLENGE*)
       die "$E_COLD" "$site is presenting a security challenge. Stopping: 5dive does not attempt to solve one, by decision and not by limitation. A person clears it — 5dive browser auth $site" ;;
@@ -5744,6 +5771,219 @@ cmd_proxy() {
   return 0
 }
 
+# >>> DIVE-5336 the owner's authenticator seed
+#
+# THE CARVE-OUT FROM "IT NEVER TYPES A PASSWORD", stated once so nobody widens it
+# by accident. The header's rule 1 stands: no password, ever. What is typed here
+# is the second factor the OWNER chose to put on this box, for the site the seed
+# was saved for, into a page on that site's own host — the owner logging in as
+# themselves. A CAPTCHA, an emailed or SMS code, an "are you human" step: none of
+# them has a seed, so none of them is answered, and they stop exactly as before.
+#
+# WHERE THE SEED LIVES: $TOTP_FILE_NAME, 0600, inside the site's 0700 profile.
+# Not the seat dir and not a store of its own, because the profile is already the
+# unit everything else is keyed on — the lease, the broker, `forget` — so the
+# seed is held by exactly the uid that holds the session, a brokered seat asks the
+# daemon to type it without ever reading it, and forgetting the login forgets it.
+#
+# HOW IT GETS HERE: never through 5dive's API (lodar 2026-10-01: "the secret
+# should never touch our api"). The owner pastes it on the box's one-time secrets
+# link (DIVE-5319), which lands it as TOTP_<SITE> in the root-only connector
+# store; `totp import` (root) moves it into the profile and deletes the store's
+# copy, so it exists in one place. `totp set` takes it on stdin at the box.
+TOTP_FILE_NAME=".5dive-totp"
+TOTP_CONNECTOR="browser-totp"
+CONNECTORS_DIR="${FIVEDIVE_BROWSER_CONNECTORS_DIR:-/etc/5dive/connectors}"
+# The seat's way to root's import, overridable for the harness like CONNECT_PRIV.
+TOTP_IMPORT=(sudo -n /usr/local/bin/5dive browser totp import)
+[[ -n "${FIVEDIVE_BROWSER_TOTP_IMPORT:-}" ]] && TOTP_IMPORT=("$FIVEDIVE_BROWSER_TOTP_IMPORT")
+
+# Ask root's import only when this seat holds the grant for it. A refused
+# `sudo -n` mails root (DIVE-4397) and a standard seat has no such grant, so the
+# grant is read first, the way _reflex_cli and _connect do; the `-l` probe of the
+# exact command is answered without a password and without a mail.
+_totp_ask_import() {  # <site>
+  if [[ "${TOTP_IMPORT[0]}" == sudo && $EUID -ne 0 ]]; then
+    sudo -n -l "${TOTP_IMPORT[@]:2}" "$1" --quiet >/dev/null 2>&1 || return 1
+  fi
+  "${TOTP_IMPORT[@]}" "$1" --quiet </dev/null >/dev/null 2>&1
+}
+
+# The connector KEY for a profile: TOTP_ + the name upper-cased, every non
+# alphanumeric an underscore. github.com -> TOTP_GITHUB_COM, github.com_work ->
+# TOTP_GITHUB_COM_WORK. The shape `5dive secret write` accepts.
+_totp_key() { local k; k="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '_')"; printf 'TOTP_%s\n' "$k"; }
+
+# A seed in either form the owner is likely to have: the bare base32 secret
+# (spaces and lower case allowed, as apps print it), or the otpauth:// link the
+# QR encodes. An otpauth link that asks for anything but SHA1/6 digits/30 s is
+# REFUSED, not stored: its codes would be wrong forever and look like a broken
+# login. Prints the normalised base32, or returns 1. Never echoes its input.
+_totp_normalise() {
+  local v="$1" q
+  if [[ "$v" == otpauth://* ]]; then
+    [[ "$v" == otpauth://totp/* ]] || return 1
+    q="${v#*\?}"
+    local alg digits period secret kv
+    alg="$(tr '&' '\n' <<<"$q" | sed -n 's/^algorithm=//Ip' | head -1)"
+    digits="$(tr '&' '\n' <<<"$q" | sed -n 's/^digits=//Ip' | head -1)"
+    period="$(tr '&' '\n' <<<"$q" | sed -n 's/^period=//Ip' | head -1)"
+    secret="$(tr '&' '\n' <<<"$q" | sed -n 's/^secret=//Ip' | head -1)"
+    [[ -z "$alg" || "${alg^^}" == SHA1 ]] || return 2
+    [[ -z "$digits" || "$digits" == 6 ]] || return 2
+    [[ -z "$period" || "$period" == 30 ]] || return 2
+    v="$secret"
+  fi
+  v="$(printf '%s' "$v" | tr -d ' \t=-' | tr '[:lower:]' '[:upper:]')"
+  [[ "$v" =~ ^[A-Z2-7]{16,128}$ ]] || return 1
+  printf '%s\n' "$v"
+}
+
+cmd_totp() {
+  local sub="${1:-}" site="${2:-}"; shift 2 2>/dev/null || true
+  case "$sub" in
+    set|import|status|fill|forget) ;;
+    *) die "$E_USAGE" "usage: 5dive browser totp set|import|status|fill|forget <site>" ;;
+  esac
+  [[ -n "$site" ]] || die "$E_USAGE" "which site? e.g. 5dive browser totp $sub github.com"
+  _valid_site "$site" && ! _is_public "$site" || die "$E_USAGE" "'$site' is not a site a person logs in to"
+  case "$sub" in
+    import) _totp_import "$site" "$@"; return $? ;;
+    fill)
+      _open_site "$site"
+      local url="${1:-}"
+      [[ -z "$url" || "$url" =~ ^https?:// ]] || die "$E_USAGE" "totp fill takes an http(s) url; got: $url"
+      _lease_take "$site" "$_SITE_DIR" "totp fill" no
+      trap '_lease_and_serve_release' EXIT
+      local out rc=0; out="$(_totp_fill "$site" "$_SITE_DIR" "$url")" || rc=$?
+      printf '%s\n' "$out"
+      return "$rc" ;;
+  esac
+
+  _open_site "$site"
+  local dir="$_SITE_DIR" f="$_SITE_DIR/$TOTP_FILE_NAME"
+  if (( _SITE_BROKERED )); then
+    [[ "$sub" == status ]] || die "$E_PERM" "$site is the box's login, held by the '$_SITE_OWNER' seat, so its seed lives in that profile and only that seat writes it. Paste it on the secrets link instead (see: 5dive browser totp status $site), or run as the owner: sudo -u $_SITE_OWNER 5dive browser totp $sub $site"
+    printf '%s: %s is the box'"'"'s login, held by %s — a seat cannot look inside that profile. `run` asks the session to type the code when the site asks for one; if no seed is saved there, it stops as before.\n' "$PROG" "$site" "$_SITE_OWNER"
+    return 0
+  fi
+  case "$sub" in
+    status)
+      if [[ -f "$f" ]]; then
+        local m; m="$(stat -c '%a' "$f")"
+        [[ "$m" == 600 ]] || die "$E_PERM" "$f is mode $m, want 600 — it will not be used. Save it again: 5dive browser totp set $site"
+        printf '%s: %s: an authenticator seed is saved. `run` types the current code at a 2FA prompt on %s.\n' "$PROG" "$site" "$(_site_base "$site")"
+      else
+        printf '%s: %s: no authenticator seed saved — a 2FA prompt stops and asks the owner, as before.\n' "$PROG" "$site"
+        printf 'To save one without it touching 5dive'"'"'s servers, file a secret gate the owner answers on the box'"'"'s one-time link:\n  5dive task need <DIVE-id> --type=secret --secret-key=%s --connector=%s --ask="Paste the authenticator setup key for %s (the text under its QR code)"\nor, at this box:  5dive browser totp set %s\n' \
+          "$(_totp_key "$site")" "$TOTP_CONNECTOR" "$(_site_base "$site")" "$site"
+      fi
+      return 0 ;;
+    forget)
+      if [[ -e "$f" ]]; then
+        rm -f -- "$f" || die "$E_UNAVAILABLE" "could not remove $f"
+        _audit_row "$dir" totp-forget ""
+        printf '%s: %s: authenticator seed removed.\n' "$PROG" "$site"
+      else
+        printf '%s: %s: no authenticator seed was saved.\n' "$PROG" "$site"
+      fi
+      return 0 ;;
+  esac
+
+  # set — stdin only, never argv: an argument is in ps and in shell history.
+  local v
+  if [[ -t 0 ]]; then
+    printf 'Paste the authenticator setup key for %s (hidden), then Enter: ' "$site" >&2
+    IFS= read -rs v || v=""; printf '\n' >&2
+  else
+    IFS= read -r v || true
+  fi
+  v="${v%$'\r'}"
+  local norm nrc=0; norm="$(_totp_normalise "$v")" || nrc=$?
+  unset v
+  (( nrc == 2 )) && die "$E_USAGE" "that otpauth link asks for an algorithm, digit count or period other than SHA1 / 6 / 30 s. Those codes cannot be typed for you; nothing was saved."
+  (( nrc == 0 )) || die "$E_USAGE" "that is not an authenticator setup key: expected the base32 text under the QR code (letters A-Z and digits 2-7, at least 16) or an otpauth://totp/ link. Nothing was saved."
+  local tmp="$f.tmp.$$"
+  ( umask 077; printf '%s\n' "$norm" > "$tmp" ) && chmod 600 "$tmp" && mv -f "$tmp" "$f" \
+    || { rm -f "$tmp"; die "$E_UNAVAILABLE" "could not write the seed into $dir"; }
+  unset norm
+  _audit_row "$dir" totp-set ""
+  printf '%s: %s: authenticator seed saved. At a 2FA prompt on %s, `run` now types the current code itself.\n' "$PROG" "$site" "$(_site_base "$site")"
+}
+
+# ROOT ONLY: secrets store -> the profile's owner. The owner is whoever holds the
+# login the seed belongs to — the caller's own profile if it has one, else the
+# box's — never a seat the caller names. The store's copy is removed after the
+# write, so the seed is in one place; a failed write leaves it where it was.
+_totp_import() {
+  local site="$1" quiet=0; [[ "${2:-}" == --quiet ]] && quiet=1
+  [[ $EUID -eq 0 ]] || die "$E_PERM" "totp import reads the box's secrets store, which is root's: sudo 5dive browser totp import $site"
+  local caller="${SUDO_USER:-}" owner=""
+  [[ -n "$caller" && "$caller" != root && -d "$PROFILE_ROOT/$caller/$site" ]] && owner="$caller"
+  [[ -z "$owner" && -d "$PROFILE_ROOT/$BOX_SEAT/$site" ]] && owner="$BOX_SEAT"
+  [[ -n "$owner" ]] || die "$E_UNAVAILABLE" "no login for $site on this box to attach a seed to — connect the site first: 5dive browser auth $site"
+  local key env; key="$(_totp_key "$site")"; env="$CONNECTORS_DIR/$TOTP_CONNECTOR.env"
+  local line; line="$(grep -m1 -E "^${key}=" "$env" 2>/dev/null || true)"
+  if [[ -z "$line" ]]; then
+    (( quiet )) || printf '%s: no %s in the secrets store — nothing to import. The owner pastes it on the secret gate'"'"'s one-time link (connector %s).\n' "$PROG" "$key" "$TOTP_CONNECTOR" >&2
+    return 1
+  fi
+  printf '%s\n' "${line#*=}" | env -u FIVEDIVE_BROWSER_SEAT runuser -u "$owner" -- "$0" totp set "$site" >/dev/null \
+    || die "$E_UNAVAILABLE" "the seed in the secrets store could not be saved for $site (it is left there, unchanged)"
+  unset line
+  local tmp
+  if tmp="$(mktemp "$env.XXXXXX")"; then
+    chmod 600 "$tmp"
+    grep -vE "^${key}=" "$env" > "$tmp" || true
+    chown --reference="$env" "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$env" || rm -f "$tmp"
+  fi
+  (( quiet )) || printf '%s: %s: authenticator seed moved from the secrets store into %s'"'"'s profile.\n' "$PROG" "$site" "$owner"
+  return 0
+}
+
+# One fill, through whichever process holds the profile: the warm session when
+# one is up (a brokered seat has nothing else), the one-shot driver otherwise.
+# Prints the executor's JSON line — which names a field, never a code.
+_totp_fill() {  # <site> <dir> [<url>]
+  local site="$1" dir="$2" url="${3:-}" host; host="$(_site_base "$site")"
+  [[ -n "$url" ]] || url="$(_site_url "$site")"
+  # NO SEED YET: take one from the secrets store if the owner put it there.
+  # Best-effort and silent — a seat without the grant never asks sudo. A brokered
+  # seat cannot see whether the owner's profile holds one, so it always asks;
+  # with nothing in the store, the import is a quiet no-op.
+  if (( _SITE_BROKERED )) || [[ ! -f "$dir/$TOTP_FILE_NAME" ]]; then
+    _totp_ask_import "$site" || true
+  fi
+  if (( _SITE_BROKERED )) || _daemon_live "$dir"; then
+    _daemon_call "$dir" "$(jq -nc --arg u "$url" --arg h "$host" --argjson l "$(_daemon_lease_json)" \
+        '{op:"totp", url:$u, host:$h} + $l')"
+  else
+    (( ! _SITE_BROKERED )) && [[ ! -f "$dir/$TOTP_FILE_NAME" ]] && { printf '{"filled":false,"why":"no-seed"}\n'; return 1; }
+    local chrome; chrome=$(_chrome) && chrome=$(command -v "$chrome" 2>/dev/null) \
+      || die "$E_UNAVAILABLE" "no chrome on this box to type the authenticator code in"
+    local driver="${FIVEDIVE_BROWSER_DRIVER:-$_SELF_DIR/driver-playwright}"
+    jq -nc --arg p "$dir" --arg u "$url" --arg h "$host" '{mode:"totp", profile:$p, url:$u, host:$h}' \
+      | FIVEDIVE_BROWSER_PROFILE="$dir" FIVEDIVE_BROWSER_CHROME="$chrome" \
+        FIVEDIVE_BROWSER_LEASE="$(_lease_meta "$_LEASE_DIR")" FIVEDIVE_BROWSER_LEASE_TOKEN="$_LEASE_TOKEN" \
+        "$driver"
+  fi | { local r; IFS= read -r r || true; printf '%s\n' "$r"; jq -e '.filled == true' <<<"$r" >/dev/null 2>&1; }
+}
+
+# `run`'s half: try the owner's seed on a page that probed as a challenge. 0 only
+# when a code was typed; the caller re-probes, and the re-probe is the verdict.
+_totp_clear() {  # <site> <dir>
+  local r; r="$(_totp_fill "$1" "$2" 2>/dev/null)" || {
+    [[ "$(jq -r '.why // empty' <<<"$r" 2>/dev/null)" == foreign-host ]] \
+      && printf '%s: the %s challenge page is not on %s itself, so the authenticator code was not typed into it.\n' "$PROG" "$1" "$(_site_base "$1")" >&2
+    return 1; }
+  _audit_row "$2" totp-fill "$(jq -r '.field // ""' <<<"$r" 2>/dev/null)"
+  printf '%s: %s asked for a 2FA code; typed the owner'"'"'s authenticator code (field %s). Re-checking the session.\n' \
+    "$PROG" "$1" "$(jq -r '.field // "?"' <<<"$r")" >&2
+  return 0
+}
+# <<< DIVE-5336
+
 cmd_doc() {
   local target=""
   for a in "$@"; do
@@ -6178,12 +6418,15 @@ cmd_connect_request() {
 # DIVE-4997: the owner's `adapters pending|approve|reject` stay root (they read
 # every seat's proposals and write AS that seat); `adapters drift` captures, so it
 # is the seat's, like every other verb.
+# DIVE-5336: `totp import` reads the root-only secrets store, then drops to the
+# profile's owner itself to write the seed. Every other `totp` verb is the seat's.
 if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
   _v1="${1:-}"; [[ "$_v1" == adapters && "${2:-}" == drift ]] && _v1=adapters-drift
+  [[ "$_v1" == totp && "${2:-}" != import ]] && _v1=totp-seat
   case "$_v1" in
     # `adblock` joins `setup` here: it writes the MACHINE-WIDE chrome policy
     # file, which is root's. Dropping to the seat would turn it into a refusal.
-    setup|adblock|approve|approvals|adapters|_connect|-h|--help|help|"") ;;
+    setup|adblock|approve|approvals|adapters|_connect|totp|-h|--help|help|"") ;;
     *)
       # DIVE-4813: usually the caller, and for a brokered `serve` the owner.
       _drop="$(_root_drop_target "${SUDO_USER}" "$@")"
@@ -6664,6 +6907,7 @@ case "${1:-}" in
   doc)   shift; cmd_doc  "$@" ;;
   adblock) shift; cmd_adblock "$@" ;;
   proxy) shift; cmd_proxy "$@" ;;
+  totp)  shift; cmd_totp  "$@" ;;
   run)   shift; cmd_run   "$@" ;;
   tree)  shift; cmd_tree  "$@" ;;
   lease) shift; cmd_lease "$@" ;;

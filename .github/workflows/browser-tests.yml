@@ -36,6 +36,13 @@ jobs:
       # Xvfb + Chrome (real XTEST input, isTrusted, navigator.webdriver false).
       - name: input drive mode harness
         run: bash tests/browser_input_drive_unit.sh
+      # DIVE-5336: the owner's authenticator seed. LAST among the harnesses, because
+      # its live arm needs the pinned playwright-core installed next to the plugin,
+      # and the suites above grade the executor's "playwright is absent" refusals.
+      - name: install the pinned playwright-core
+        run: npm install --prefix browser --no-audit --no-fund
+      - name: totp harness
+        run: bash tests/browser_totp_unit.sh
       # A manifest or marketplace file that does not parse breaks `5dive plugin
       # add` at install time, where nobody is watching. Cheap, so it is its own
       # named check rather than an assertion buried in the suite.
