@@ -25,6 +25,13 @@ team's clicker, a publisher) paid the full snapshot-decide-act loop every day fo
   written back to the routine. A miss nothing can re-pick stops on that act with the re-record
   command; a pay stop is 73 with `--from=<k> --approved=<id>` to resume.
 - **`routine ls | show | forget [--from=<k>]`**.
+- **A ref whose element the page replaces is found again**, in both step loops
+  (`lib/aria.cjs` `onRef`). On en.wikipedia.org a `fill` on the search box loads the typeahead,
+  which mounts a new input in its place, and the next `press Enter` on the same ref timed out
+  ("element was detached from the DOM"): every record and replay of that routine failed. A step
+  now runs in short attempts and, when its marker is gone, re-resolves the same ref and runs
+  again — never after a navigation or an action that completed, never for `type`, never for a
+  CSS selector, and the owner's check is read again on the element found again.
 - **`snapshot --delta`**: refs added/removed and text lines changed since the seat's last
   snapshot of the site, and no `page.png` when under 1% of its pixels changed. Falls back to
   full on a stale baseline (30 min) or a delta longer than the page. `lib/delta.cjs` (new): a
