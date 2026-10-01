@@ -8,6 +8,27 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — the owner's authenticator seed: `run` passes an authenticator-app 2FA prompt itself (DIVE-5336), 1.26.0
+
+lodar, 2026-10-01: a box agent should get past a two-factor login on its own instead of stalling
+until a person taps a code in, and "the secret should never touch our api".
+
+- **`5dive browser totp set|import|status|fill|forget <site>`.** `set` takes the seed (base32 or
+  an `otpauth://totp/` link) from stdin only, and writes `.5dive-totp` 0600 inside the site's 0700
+  profile. `sudo … totp import` moves a seed the owner pasted on the one-time secrets link
+  (DIVE-5319; connector `browser-totp`, key `TOTP_<SITE>`) into the profile and removes the
+  store's copy. `totp` joins the set of verbs root keeps, for `import` only.
+- **`run` on a `CHALLENGE`** tries the seed first: the executor, or the warm session for a
+  brokered seat, types the RFC 6238 code into the code box on the site's own host, and the
+  RE-PROBE decides. No seed, no field, a foreign host, or a page that is still a challenge
+  after the code: the old stop, word for word.
+- **`lib/totp.cjs`** is shared by `bin/driver-playwright` (`mode: "totp"`) and
+  `bin/session-daemon` (`op: "totp"`). Their result names the field, never the code.
+- **`tests/browser_totp_unit.sh`** (new CI step, after `npm install` of the pinned
+  playwright-core): RFC vectors, the host and field rules, the verbs, `run` with a fake driver,
+  the real `sudo` import, and a LIVE arm against a local TOTP-gated site in real Chrome. That arm
+  greps for the seed and every accepted code and expects 0.
+
 ### Added — input mode: agents act in plain Chrome through the screen, keyboard and mouse (DIVE-5287), 1.25.0
 
 tiktok.com would not render for the automated browser: blank `/foryou`, no challenge, no

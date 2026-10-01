@@ -309,6 +309,13 @@ when they tap Done you carry on from the page they left. Take a `shot` before yo
 A challenge whose title says so stops an act by itself (exit 75). TikTok's puzzle does not change
 the title, so when you see one in a screenshot, hand the window over. Never try to solve it.
 
+The one exception is the owner's own authenticator. On a site whose owner saved its
+authenticator seed on the box, `run` types the 2FA code itself, and
+`5dive browser totp fill <site> [<url>]` does it on demand. Neither shows you the code. With no
+seed saved, it stops like any challenge. `5dive browser totp status <site>` prints the secret
+gate to file so the owner can paste the seed on the box's one-time link. Never ask for the seed
+in chat.
+
 ## What will actually go wrong
 
 - **No server-mode stack on the box.** chromium / Xvfb / x11vnc / websockify are installed
