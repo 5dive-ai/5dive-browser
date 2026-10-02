@@ -131,6 +131,9 @@ export FIVEDIVE_BROWSER_TMP_ROOT="$TMP/tmproot"
 export FIVEDIVE_BROWSER_AUTO_PROPOSE=0 FIVEDIVE_BROWSER_DRIFT_ON_PROBE=0 FIVEDIVE_BROWSER_EVICT_ON_PROBE=0
 export FIVEDIVE_BROWSER_APPROVAL_POLICY="$TMP/no-policy.json"
 export FIVEDIVE_BROWSER_CONNECT_PRIV="$TMP/fake-connect"
+# NO ARM REACHES REAL SUDO for an on-demand serve (DIVE-5389). The R9b arms
+# point this at the plugin itself; everywhere else it is absent.
+export FIVEDIVE_BROWSER_WAKE_PRIV="$TMP/no-wake"
 SEAT="$(id -un)"
 mkdir -p "$TMP/pr/$SEAT" "$TMP/ad" "$TMP/x11"; chmod 711 "$TMP/pr"; chmod 700 "$TMP/pr/$SEAT"
 mkdir -p "$TMP/rv/$SEAT"   # the rendezvous: where serve publishes the .offered marker
@@ -306,6 +309,71 @@ if [[ -S "$TMP/rv/$SEAT/tiktok.com.sock" ]]; then
   n0=$(reqs title)
   o=$(brk tree reddit.com https://www.reddit.com/ 2>&1)
   arm 'R9 regression: a brokered verb on a CDP site sends the daemon no title probe' "$n0 no" "$(reqs title) $(yn grep -q 'INPUT mode' <<<"$o")"
+
+  # R9b — DIVE-5389: Connect then Done leaves the box login connected and NOT
+  # served. A brokered verb then has it started AS THE OWNER, on demand, through
+  # the one privileged verb (here the plugin itself: the seam runs it unprivileged).
+  wk() { FIVEDIVE_BROWSER_WAKE_PRIV="$BROWSER" brk "$@"; }
+  killserve() { _KILL+=("$(sed -n 's/^daemon_pid=//p' "$TMP/pr/$SEAT/$1/.5dive-serve" 2>/dev/null)" "$(sed -n 's/^xvfb_pid=//p' "$TMP/pr/$SEAT/$1/.5dive-serve" 2>/dev/null)"); }
+  "$BROWSER" serve tiktok.com --stop >/dev/null 2>&1
+  n0=$(wc -l < "$TMP/daemon.argv")
+  o=$(wk shot tiktok.com --out="$TMP/b2.png" 2>&1); rc=$?; killserve tiktok.com
+  arm 'R9b a brokered input verb on a connected, unserved site starts the serve and succeeds' "0 yes yes" \
+    "$rc $(yn test -s "$TMP/b2.png") $(yn test -S "$TMP/rv/$SEAT/tiktok.com.sock")"
+  arm 'R9b ...one browser was started, as the owner (its record is in the owner store)' "$((n0 + 1)) yes" \
+    "$(wc -l < "$TMP/daemon.argv") $(yn test -f "$TMP/pr/$SEAT/tiktok.com/.5dive-serve")"
+  arm 'R9b ...and the seat is told it was started, not told to ask a person' "yes no" \
+    "$(yn grep -q 'started the box browser' <<<"$o") $(yn grep -q 'Start one from here' <<<"$o")"
+  "$BROWSER" serve reddit.com --stop >/dev/null 2>&1
+  arm 'R9b (precondition) the CDP site is not being served' no "$(yn test -S "$TMP/rv/$SEAT/reddit.com.sock")"
+  o=$(wk tree reddit.com https://www.reddit.com/ 2>&1); rc=$?; killserve reddit.com
+  arm 'R9b ...a CDP site the same way (the shared broker check, not only input mode)' "yes yes" \
+    "$(yn test -S "$TMP/rv/$SEAT/reddit.com.sock") $(yn grep -q 'started the box browser' <<<"$o")"
+  [[ "$o" == *'started the box browser'* ]] || printf 'R9b CDP output was: %s\n' "$o"
+  o=$(wk shot tiktok.com --out="$TMP/b3.png" 2>&1); rc=$?
+  arm 'R9b ...a site already served is used as it is: nothing new is started' "0 no" \
+    "$rc $(yn grep -q 'started the box browser' <<<"$o")"
+
+  # Under the memory floor: refused with the floor reason, nothing started.
+  "$BROWSER" serve tiktok.com --stop >/dev/null 2>&1
+  printf 'MemTotal:        3900000 kB\nMemAvailable:     512000 kB\n' > "$TMP/meminfo.low"
+  n0=$(wc -l < "$TMP/daemon.argv")
+  o=$(FIVEDIVE_BROWSER_MEMINFO="$TMP/meminfo.low" wk shot tiktok.com --out="$TMP/b4.png" 2>&1); rc=$?
+  arm 'R9c under the memory floor the on-demand serve is refused (69) with the floor reason' "69 yes" \
+    "$rc $(yn grep -q '500 MB of memory free, under the 800 MB floor' <<<"$o")"
+  arm 'R9c ...and nothing was started' "$n0 no no" \
+    "$(wc -l < "$TMP/daemon.argv") $(yn test -S "$TMP/rv/$SEAT/tiktok.com.sock") $(yn test -f "$TMP/pr/$SEAT/tiktok.com/.5dive-serve")"
+  printf 'MemAvailable:    1200000 kB\n' > "$TMP/meminfo.ok"
+  o=$(FIVEDIVE_BROWSER_MEMINFO="$TMP/meminfo.ok" wk shot tiktok.com --out="$TMP/b5.png" 2>&1); rc=$?; killserve tiktok.com
+  arm 'R9c (control) above the floor the same call starts it' "0 yes" "$rc $(yn test -S "$TMP/rv/$SEAT/tiktok.com.sock")"
+  "$BROWSER" serve tiktok.com --stop >/dev/null 2>&1
+  o=$(FIVEDIVE_BROWSER_SERVE_MIN_MB=2000 FIVEDIVE_BROWSER_MEMINFO="$TMP/meminfo.ok" wk shot tiktok.com --out="$TMP/b6.png" 2>&1); rc=$?
+  arm 'R9c (control) the floor is the configured one, not a constant in the message' "69 yes" \
+    "$rc $(yn grep -q 'under the 2000 MB floor' <<<"$o")"
+
+  # No privileged path: the old refusal, now saying what was tried and why it failed.
+  o=$(brk shot tiktok.com --out="$TMP/b7.png" 2>&1); rc=$?
+  arm 'R9d with no way to start it the seat is refused (69), saying the start failed and how to get it' "69 yes yes" \
+    "$rc $(yn grep -q 'did not work' <<<"$o") $(yn grep -q 'sudo 5dive browser serve tiktok.com' <<<"$o")"
+  o=$(FIVEDIVE_BROWSER_NO_WAKE=1 FIVEDIVE_BROWSER_WAKE_PRIV="$BROWSER" brk shot tiktok.com --out="$TMP/b8.png" 2>&1); rc=$?
+  arm 'R9d ...FIVEDIVE_BROWSER_NO_WAKE keeps the old behaviour' "69 no" "$rc $(yn test -S "$TMP/rv/$SEAT/tiktok.com.sock")"
+
+  # The privileged verb's own refusals. It is the root half: one site on stdin,
+  # only a site the box OFFERS to a seat that has none of its own.
+  pv() { printf "$1" | FIVEDIVE_BROWSER_SEAT=agent-borrower FIVEDIVE_BROWSER_BOX_SEAT="$SEAT" "$BROWSER" _serve-offered 2>&1; }
+  o=$(pv 'nosuch.test\0'); rc=$?
+  arm 'R9e _serve-offered refuses a site the box has not connected (77)' "77 yes" "$rc $(yn grep -q 'not a box login offered' <<<"$o")"
+  o=$(pv 'tiktok.com\0reddit.com\0'); rc=$?
+  arm 'R9e ...takes exactly one site' 64 "$rc"
+  o=$(pv '../etc\0'); rc=$?
+  arm 'R9e ...refuses a name that is not a site' 64 "$rc"
+  o=$(printf 'tiktok.com\0' | FIVEDIVE_BROWSER_SEAT="$SEAT" FIVEDIVE_BROWSER_BOX_SEAT="$SEAT" "$BROWSER" _serve-offered 2>&1); rc=$?
+  arm 'R9e ...and refuses the owner itself (its own serve is not an on-demand one)' 77 "$rc"
+  mkdir -p "$TMP/pr/agent-borrower/tiktok.com"; chmod 700 "$TMP/pr/agent-borrower" "$TMP/pr/agent-borrower/tiktok.com"
+  o=$(pv 'tiktok.com\0'); rc=$?
+  arm 'R9e ...and a seat that keeps its own login for the site' 77 "$rc"
+  rm -rf "$TMP/pr/agent-borrower"
+  arm 'R9e none of those started a browser' no "$(yn test -S "$TMP/rv/$SEAT/tiktok.com.sock")"
 else
   SKIP=$((SKIP+1)); printf 'SKIP: R9 — this machine cannot open a broker socket (no SO_PEERCRED via python3)\n'
 fi

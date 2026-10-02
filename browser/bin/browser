@@ -617,11 +617,155 @@ _require_store() {  # _require_store [<site>]
 _broker_ready() {  # _broker_ready <site> <profile-dir>
   (( _SITE_BROKERED )) || return 0
   _daemon_live "$2" && return 0
-  die "$E_UNAVAILABLE" "$1 is logged in on this box under the '$_SITE_OWNER' seat, but nothing is serving that session right now — and '$(_seat)' cannot open the profile directly: it is mode 0700 to $_SITE_OWNER, which is what stops any seat here from replaying somebody else's login. A brokered seat acts THROUGH the running browser or not at all.
+  # DIVE-5389: nothing serving is the NORMAL state after a Connect (Done stops
+  # the login view), so the seat starts it as the owner rather than asking.
+  local why
+  if why=$(_broker_wake "$1") && _daemon_live "$2"; then
+    printf '%s: %s was not being served; started the box browser for it as %s.\n' "$PROG" "$1" "$_SITE_OWNER" >&2
+    return 0
+  fi
+  [[ -n "$why" ]] || why="it started, but no browser answers on its socket."
+  die "$E_UNAVAILABLE" "$1 is logged in on this box under the '$_SITE_OWNER' seat, but nothing is serving that session right now, and starting it for '$(_seat)' did not work: $why
+'$(_seat)' cannot open the profile directly: it is mode 0700 to $_SITE_OWNER, which is what stops any seat here from replaying somebody else's login. A brokered seat acts THROUGH the running browser or not at all.
 Start one from here:  sudo 5dive browser serve $1
 (root re-execs that as '$_SITE_OWNER', which owns the session, so it does NOT need \`sudo -u\` — the admin grant on this box is enough. A seat without that grant asks the owner:  sudo -u $_SITE_OWNER 5dive browser serve $1)
 If that starts but says 'no warm session', this box has no playwright-core, so there is no daemon to broker through and only $_SITE_OWNER can use the profile:  npm install --prefix $(cd "$_SELF_DIR/.." && pwd)"
 }
+
+# >>> DIVE-5389 A BROKERED SEAT SERVES THE BOX LOGIN ON DEMAND
+#
+# Connect, then Done, leaves the site connected and NOT served: Done is
+# viewer-revoke -> serve --stop -> status. On a box with hired agents that was
+# the default state, and every brokered verb died here until somebody holding
+# the owner's seat ran `serve` by hand (chill-gorge, discord.com 2026-10-02,
+# devhunt.org 2026-09-30 — DIVE-5242's box-local route was that hand).
+#
+# So the seat asks ROOT to start it, through ONE exact sudo command whose only
+# argument (the site) travels on stdin — the `_connect` shape. Root re-derives
+# everything a caller could lie about: who asked (SUDO_UID), whether the box
+# offers this site to that seat (the same three box facts DIVE-4813's drop
+# reads), and whether there is room. It then runs plain `serve <site>` as the
+# owner and nothing else — no flags pass through, it cannot stop, auth or
+# forget, and it never creates a profile.
+#
+# THE MEMORY FLOOR. Each served site is a Chrome of ~420 MB; chill-gorge is a
+# 3.8 GB box. Below SERVE_MEM_FLOOR_MB of MemAvailable an on-demand start is
+# refused with that reason and starts nothing, rather than OOM the box. Only the
+# on-demand path is floored: an owner who serves by hand is deciding for
+# themselves. Unreadable meminfo is not a refusal (there is no measurement).
+#
+# WHY NOT "Done leaves it warm" (the row's alternative): that holds ~420 MB per
+# connected site whether anybody ever uses it; on demand costs it only for a
+# site an agent actually reaches for. Once started it stays up until the owner
+# stops it — the same as a hand serve.
+#
+# THE GRANT is written by `setup` (/etc/sudoers.d/5dive-browser) for the
+# rendezvous group — the group that can already connect to every served socket,
+# so it adds no reach into a session, only the ability to have one started.
+SERVE_MEM_FLOOR_MB=800
+SERVE_MEMINFO=/proc/meminfo
+WAKE_PRIV=(sudo -n /usr/local/bin/5dive browser _serve-offered)
+WAKE_SUDOERS_DIR="${FIVEDIVE_BROWSER_SUDOERS_DIR:-/etc/sudoers.d}"
+WAKE_VISUDO="${FIVEDIVE_BROWSER_VISUDO:-visudo}"
+# TEST SEAMS, honoured only WITHOUT root, like CONNECT_PRIV's: unprivileged they
+# point the caller at its own files with its own rights.
+if [[ $EUID -ne 0 ]]; then
+  SERVE_MEM_FLOOR_MB="${FIVEDIVE_BROWSER_SERVE_MIN_MB:-$SERVE_MEM_FLOOR_MB}"
+  SERVE_MEMINFO="${FIVEDIVE_BROWSER_MEMINFO:-$SERVE_MEMINFO}"
+  [[ -n "${FIVEDIVE_BROWSER_WAKE_PRIV:-}" ]] && WAKE_PRIV=("$FIVEDIVE_BROWSER_WAKE_PRIV" _serve-offered)
+fi
+[[ "$SERVE_MEM_FLOOR_MB" =~ ^[0-9]{1,6}$ ]] || SERVE_MEM_FLOOR_MB=800
+
+# Room for one more browser? Silent and 0 when there is; the reason and 1 when not.
+_serve_floor_refusal() {
+  local avail
+  avail=$(awk '/^MemAvailable:/ {print int($2/1024); exit}' "$SERVE_MEMINFO" 2>/dev/null)
+  [[ "$avail" =~ ^[0-9]+$ ]] || return 0
+  (( avail >= SERVE_MEM_FLOOR_MB )) && return 0
+  printf 'this box has %s MB of memory free, under the %s MB floor for starting another browser (each one holds about 420 MB), so nothing was started. A served site nobody is using frees room when its owner stops it (`5dive browser served` lists them).\n' \
+    "$avail" "$SERVE_MEM_FLOOR_MB"
+  return 1
+}
+
+# The caller's half: ask root to start <site> as its owner. 0 when it did; the
+# reason on stdout when it did not.
+_broker_wake() {  # <site>
+  if [[ -n "${FIVEDIVE_BROWSER_NO_WAKE:-}" ]]; then
+    echo "on-demand serving is turned off for this seat (FIVEDIVE_BROWSER_NO_WAKE)."; return 1
+  fi
+  local err rc=0
+  err=$(printf '%s\0' "$1" | "${WAKE_PRIV[@]}" 2>&1 >/dev/null) || rc=$?
+  (( rc == 0 )) && return 0
+  if [[ "${WAKE_PRIV[0]}" == sudo ]] && ! sudo -n -l /usr/local/bin/5dive browser _serve-offered >/dev/null 2>&1; then
+    echo "this seat has no grant to start the box's browsers. The owner installs it once with:  $SETUP_CMD"
+    return 1
+  fi
+  err=$(printf '%s\n' "$err" | grep -v '^[[:space:]]*$' | tail -n 3)
+  printf '%s\n' "${err#"$PROG: "}"
+  return 1
+}
+
+# `_serve-offered` — the privileged half. In the root-kept verb list at the
+# DIVE-4348 drop below, because the drop would hand it to the caller's seat.
+cmd_serve_offered() {
+  local -a w=(); local a
+  while IFS= read -r -d '' a; do w+=("$a"); done
+  # Under root the caller is the kernel's answer through sudo, never a flag.
+  # Unprivileged (the test seam) it is this process's own seat, which grants
+  # nothing: every directory is still opened with this uid's rights.
+  local caller
+  if [[ $EUID -eq 0 ]]; then caller=$(_connect_caller); else caller=$(_seat); fi
+  [[ -n "$caller" ]] || die "$E_PERM" "_serve-offered must be reached through sudo from an agent seat"
+  (( ${#w[@]} == 1 )) || die "$E_USAGE" "_serve-offered takes exactly one site, NUL-terminated on stdin"
+  local site="${w[0]}"
+  _valid_site "$site" && ! _is_public "$site" || die "$E_USAGE" "'$site' is not a login this box can offer"
+  [[ "$caller" != "$BOX_SEAT" && "$(_root_drop_target "$caller" serve "$site")" == "$BOX_SEAT" ]] \
+    || die "$E_PERM" "$site is not a box login offered to '$caller' (the box has not connected it, or '$caller' is its owner or keeps its own login for it), so there is nothing to start for it"
+  _SITE_OWNER="$BOX_SEAT"; _SITE_BROKERED=1; _SITE_DIR="$PROFILE_ROOT/$BOX_SEAT/$site"
+  # One start at a time per owner, so two seats arriving together do not both
+  # pass the floor and start two browsers; the second finds the first's.
+  local lk; lk="$(_rv_dir "$BOX_SEAT")/.serve-offered.lock"
+  # (The braces matter: a bare `exec 9>>f 2>/dev/null` makes BOTH redirections
+  # permanent, and every refusal below would leave this process silently.)
+  if command -v flock >/dev/null 2>&1 && { exec 9>>"$lk"; } 2>/dev/null; then flock -w 90 9 || true; fi
+  if _daemon_live "$_SITE_DIR"; then printf '%s is already being served\n' "$site"; return 0; fi
+  local why; why=$(_serve_floor_refusal) || die "$E_UNAVAILABLE" "$why"
+  export FIVEDIVE_BROWSER_ON_BEHALF_OF="$caller"
+  # ITS OWN SCOPE, NOT THE CALLER'S UNIT. Started from inside the calling seat's
+  # service, the browser would be in that seat's cgroup: a restart of the agent
+  # that asked would kill a session every other seat is using, and its ~420 MB
+  # would count against that agent's memory limit. A transient scope outlives
+  # this command for as long as the browser does (DIVE-5242 measured the same
+  # shape on chill-gorge's hand route).
+  if [[ $EUID -eq 0 && -d /run/systemd/system ]] && command -v systemd-run >/dev/null 2>&1; then
+    systemd-run --scope --quiet --collect --unit="5dive-browser-serve-${site//[^a-zA-Z0-9]/-}-$$" -- \
+      runuser -u "$BOX_SEAT" -- env FIVEDIVE_BROWSER_SEAT="$BOX_SEAT" "$0" serve "$site"
+    return $?
+  fi
+  _as_seat "$BOX_SEAT" env FIVEDIVE_BROWSER_SEAT="$BOX_SEAT" "$0" serve "$site"
+}
+
+# Written by `setup` for the rendezvous group. Best-effort like the rendezvous:
+# a box where it cannot be written keeps the old "ask the owner" refusal.
+_install_wake_grant() {  # <group> -> 0 when the grant is in place
+  local g="$1" f tmp
+  [[ "$g" =~ ^[a-z_][a-z0-9_-]{0,31}$ && -d "$WAKE_SUDOERS_DIR" ]] || return 1
+  f="$WAKE_SUDOERS_DIR/5dive-browser"
+  # A dot in the name: sudo skips the staged file until it is moved into place.
+  tmp=$(mktemp "$WAKE_SUDOERS_DIR/.5dive-browser.XXXXXX" 2>/dev/null) || return 1
+  cat >"$tmp" <<EOF
+# Managed by 5dive browser setup (DIVE-5389). Do not edit by hand; setup rewrites it.
+# A seat in group $g finds a site the box has connected but nobody is serving,
+# and has it started AS THE OWNER. One exact command, no argument wildcard: the
+# site travels on stdin, and the verb re-derives the caller, the offer and the
+# memory floor as root. It cannot stop, sign in, forget or create anything.
+%$g ALL=(root) NOPASSWD: /usr/local/bin/5dive browser _serve-offered
+EOF
+  chmod 0440 "$tmp"
+  if ! "$WAKE_VISUDO" -cqf "$tmp" >/dev/null 2>&1; then rm -f "$tmp"; return 1; fi
+  mv -f "$tmp" "$f"
+}
+# <<< DIVE-5389
 
 # >>> DIVE-4813 WHICH SEAT ROOT BECOMES, and why it is not always the caller
 #
@@ -839,11 +983,19 @@ cmd_setup() {
   fi
 
   _install_probe_timer "$seat"
+  local wake_ok=0
+  (( rv_ok )) && _install_wake_grant "$agroup" && wake_ok=1
   printf 'profile store ready\n  %s  (root, 0711 — traverse, not list)\n  %s  (%s, 0700)\n  liveness probe: every ~6h (served profiles are skipped)\n' \
     "$PROFILE_ROOT" "$PROFILE_ROOT/$seat" "$seat"
   if (( rv_ok )); then
     printf '  %s  (%s:%s, 0750 — the broker rendezvous; every agent seat in group %s uses THIS box login, with no second login of its own)\n' \
       "$SESSION_ROOT/$seat" "$seat" "$agroup" "$agroup"
+    if (( wake_ok )); then
+      printf '  %s  (root, 0440 — a seat in %s that finds one of these logins unserved starts it as %s, on demand, above a %s MB memory floor)\n' \
+        "$WAKE_SUDOERS_DIR/5dive-browser" "$agroup" "$seat" "$SERVE_MEM_FLOOR_MB"
+    else
+      printf '  no on-demand serve grant in %s — a seat that finds one of these logins unserved is told to ask for it to be started.\n' "$WAKE_SUDOERS_DIR" >&2
+    fi
   else
     printf '  no broker rendezvous at %s — other seats on this box cannot use %s'"'"'s logins and each one would need a login of its own. Nothing else is affected.\n' \
       "$SESSION_ROOT/$seat" "$seat" >&2
@@ -6943,7 +7095,9 @@ if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
     # `adblock` joins `setup` here: it writes the MACHINE-WIDE chrome policy
     # file, which is root's. Dropping to the seat would turn it into a refusal.
     # `config` too: the drive default is one box-wide file (DIVE-5338).
-    setup|adblock|config|approve|approvals|adapters|_connect|totp|-h|--help|help|"") ;;
+    # `_serve-offered` (DIVE-5389) re-derives the caller from SUDO_UID and drops
+    # to the OWNER itself, so the drop here would hand it to the wrong seat.
+    setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|totp|-h|--help|help|"") ;;
     *)
       # DIVE-4813: usually the caller, and for a brokered `serve` the owner.
       _drop="$(_root_drop_target "${SUDO_USER}" "$@")"
@@ -7187,7 +7341,8 @@ _input_challenge_title() {
 
 # Open an input-mode site for a verb: the profile, a live input daemon, and
 # (unless <purpose> is empty) the lease. The owner's own seat starts the serve
-# if nothing holds the profile; a brokered seat cannot, and is told how.
+# if nothing holds the profile; a brokered seat has it started as the owner, on
+# demand, by `_open_site` -> `_broker_ready` (DIVE-5389).
 _input_open() {  # _input_open <site> <purpose> <lease-wait|no>
   local site="$1" purpose="$2" wait="${3:-no}"
   command -v jq >/dev/null 2>&1 || die "$E_UNAVAILABLE" "jq is needed to talk to the $site browser and is not installed for this seat"
@@ -7529,5 +7684,8 @@ case "${1:-}" in
   handoff) shift; cmd_handoff "$@" ;;
   # Not in usage: the privileged half, reached only as `sudo -n … browser _connect`.
   _connect) shift; cmd_connect_priv "$@" ;;
+  # Not in usage: a brokered seat's on-demand serve, reached only as
+  # `sudo -n … browser _serve-offered` with the site on stdin (DIVE-5389).
+  _serve-offered) shift; cmd_serve_offered "$@" ;;
   *) die "$E_USAGE" "unknown: $PROG $1 (see: $PROG --help)" ;;
 esac
