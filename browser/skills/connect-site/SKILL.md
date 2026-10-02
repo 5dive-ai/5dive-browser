@@ -193,3 +193,10 @@ status` says which sites are currently unfiltered. It is off for the whole host
 (both `example.com` and its subdomains) — there is no partial setting — and a
 browser already running under `serve` may need `serve example.com --stop` before it
 picks the change up.
+
+## From real jobs
+
+Lessons from browser jobs that went wrong on real sites (DIVE-5390). One line each:
+
+- **Each site's login is its own.** A Google sign-in on one site does not carry to another, so "Sign in with Google" on a new site still needs the owner to connect that site.
+- **Served is not signed in.** A running browser can hold an expired session. Check `5dive browser status <site>` reads authenticated before you hand off work that needs the login, and run the connect handover if it does not.
