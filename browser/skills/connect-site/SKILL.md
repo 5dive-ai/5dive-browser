@@ -130,13 +130,15 @@ keyboard attached to the person's account.
   where the box has a login and something is serving it, your seat acts through the running
   browser and needs **no second human login**. A login you made yourself wins over the box's.
   The viewer stays the owning seat's act; the relay still redeems `claude`.
-- **If nothing is serving the box's login, START IT YOURSELF — do not hand a human a shell
-  command** (DIVE-4813). `sudo 5dive browser serve <site>`, from your own seat. Root re-execs
-  that as the seat that owns the session, so it does **not** need `sudo -u` — which is the
-  point, because `sudo -u <someone>` is a runas no 5dive agent grant contains, and printing it
-  for a person to run is the failure this rule exists to stop. Then act normally: `snapshot`,
-  `read`, `shot` all go through the running browser. If that `sudo` is itself refused, your
-  seat is not admin tier — say so plainly and name the site; do not improvise around it.
+- **If nothing is serving the box's login, just use it — your verb starts it** (DIVE-5389). A
+  site the owner connected and tapped Done on is connected but not served. Your first `status`,
+  `snapshot`, `shot` or `act` on it has the box start that browser as its owner, on demand, and
+  then runs; you will see one line saying it was started. Do not hand a human a shell command.
+  If it is refused, the message says why: under the box's memory floor (about 800 MB free)
+  nothing is started — say that plainly and name the site, do not retry in a loop. On a box whose
+  owner has not re-run `sudo 5dive browser setup` since this release, the older route still
+  works from an admin seat: `sudo 5dive browser serve <site>` (DIVE-4813; root re-execs it as the
+  owning seat, so it does **not** need `sudo -u`).
 - **`serve --stop` is still the owning seat's act**, and so is `lease --release`: they tear down
   a browser other seats and a human viewer may be using, which is not yours to do on their
   behalf. Stop only what your own seat serves.

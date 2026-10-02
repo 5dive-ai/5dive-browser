@@ -8,6 +8,39 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — a hired agent uses a site the owner just connected, with no admin step (DIVE-5389), 1.32.0
+
+On chill-gorge (2026-10-02) lodar connected discord.com and tapped Done. Clicker, a hired seat that
+uses the owner's logins through the broker, was refused until head ran a box-local serve script by
+hand; devhunt.org went the same way on 09-30 (DIVE-5242). Done is viewer-revoke, `serve --stop`,
+status, so after every Connect nothing holds the profile, and a brokered seat could only be told
+to ask somebody.
+
+- **A brokered verb starts the box's browser for that site itself.** When the box offers the login
+  and nothing serves it, `_broker_ready` (every brokered verb, input or CDP) runs
+  `sudo -n /usr/local/bin/5dive browser _serve-offered` with the site on stdin, then carries on.
+  The seat sees one line on stderr saying the browser was started.
+- **`_serve-offered` (root)** takes exactly one site and no flags. It reads the caller from
+  SUDO_UID, never from input. It serves only a site the box offers to a seat that is not the owner
+  and has no login of its own (DIVE-4813's three box facts). It runs plain `serve <site>` as the
+  owner and nothing else: no stop, auth, forget or profile creation. One start runs at a time per
+  owner, so two seats arriving together start one browser. Under systemd the browser runs in its
+  own transient scope, not in the asking agent's unit. Restarting that agent does not kill a
+  session other seats are using, and its ~420 MB does not count against that agent's memory limit.
+- **Memory floor:** below 800 MB MemAvailable the start is refused with that reason and nothing
+  starts (each served site is a Chrome of ~420 MB, and chill-gorge has 3.8 GB). Only the on-demand
+  path is floored. An owner's own `serve` is not.
+- **The grant:** `sudo 5dive browser setup` now writes `/etc/sudoers.d/5dive-browser`, checked by
+  `visudo -c`, for the rendezvous group. That is the same group that can already drive every
+  served socket. It is the one exact command with no argument wildcard. A box that has not re-run
+  setup keeps the old refusal, which now also says the start was tried and why it failed.
+  `FIVEDIVE_BROWSER_NO_WAKE=1` turns the start off for a seat.
+- **Not chosen:** leaving the site warm-served at Done. That would hold ~420 MB per connected site
+  whether or not any agent uses it.
+- Harness: `tests/browser_input_drive_unit.sh` R9b–R9e, covering an input site and a CDP site
+  started on demand, an already-served site left alone, the floor and its control, the no-grant
+  refusal, and the root verb's refusals.
+
 ### Fixed — the Connected-sites panel says what a person reading the page would say (DIVE-5388), 1.31.0
 
 On chill-gorge (2026-10-02) the panel said "Needs you" on reddit.com and openalternative.co
