@@ -665,11 +665,15 @@ If that starts but says 'no warm session', this box has no playwright-core, so t
 SERVE_MEM_FLOOR_MB=800
 SERVE_MEMINFO=/proc/meminfo
 WAKE_PRIV=(sudo -n /usr/local/bin/5dive browser _serve-offered)
-WAKE_SUDOERS_DIR="${FIVEDIVE_BROWSER_SUDOERS_DIR:-/etc/sudoers.d}"
-WAKE_VISUDO="${FIVEDIVE_BROWSER_VISUDO:-visudo}"
+WAKE_SUDOERS_DIR=/etc/sudoers.d
+WAKE_VISUDO=visudo
 # TEST SEAMS, honoured only WITHOUT root, like CONNECT_PRIV's: unprivileged they
-# point the caller at its own files with its own rights.
+# point the caller at its own files with its own rights. The sudoers dir and the
+# visudo binary are here too: under root, setup writes the grant to the real
+# dir through the real visudo, whatever the environment says.
 if [[ $EUID -ne 0 ]]; then
+  WAKE_SUDOERS_DIR="${FIVEDIVE_BROWSER_SUDOERS_DIR:-$WAKE_SUDOERS_DIR}"
+  WAKE_VISUDO="${FIVEDIVE_BROWSER_VISUDO:-$WAKE_VISUDO}"
   SERVE_MEM_FLOOR_MB="${FIVEDIVE_BROWSER_SERVE_MIN_MB:-$SERVE_MEM_FLOOR_MB}"
   SERVE_MEMINFO="${FIVEDIVE_BROWSER_MEMINFO:-$SERVE_MEMINFO}"
   [[ -n "${FIVEDIVE_BROWSER_WAKE_PRIV:-}" ]] && WAKE_PRIV=("$FIVEDIVE_BROWSER_WAKE_PRIV" _serve-offered)
