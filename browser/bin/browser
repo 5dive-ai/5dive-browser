@@ -860,6 +860,93 @@ _chrome() {
   return 1
 }
 
+# A HEADLESS LAUNCH ALWAYS HAS A WALL-CLOCK CAP (DIVE-5375). --virtual-time-budget
+# bounds PAGE time; it says nothing about a Chrome that wedges before the page or
+# outside it. On chill-gorge (2026-10-01) a status probe's Chrome logged "Failed to
+# connect to the bus" at start and never exited: it held linkedin.com's
+# SingletonLock for 28 hours, every later probe failed on "SingletonLock: File
+# exists", and the tile read "Not checked yet" the whole time. So every one-shot
+# launch goes through `timeout`, the shape `read` already had: N is the budget
+# plus slack, -k 5 is the KILL for a Chrome that ignores TERM, and because timeout
+# makes its own process group, the TERM/KILL reaches Chrome's children too.
+# Exit 124 (TERM worked) or 137 (KILL was needed) means "capped", never a page.
+_chrome_capped() {  # <budget-ms> <chrome> <args...>
+  local ms="$1"; shift
+  [[ "$ms" =~ ^[0-9]{1,7}$ ]] || ms=8000
+  local slack="${FIVEDIVE_BROWSER_CHROME_SLACK_S:-30}"
+  [[ "$slack" =~ ^[0-9]{1,4}$ ]] || slack=30
+  timeout -k 5 "$(( (ms + 999) / 1000 + slack ))" "$@"
+}
+_chrome_cap_s() {  # <budget-ms> — the N _chrome_capped used, for a message
+  local ms="$1" slack="${FIVEDIVE_BROWSER_CHROME_SLACK_S:-30}"
+  [[ "$ms" =~ ^[0-9]{1,7}$ ]] || ms=8000
+  [[ "$slack" =~ ^[0-9]{1,4}$ ]] || slack=30
+  echo "$(( (ms + 999) / 1000 + slack ))"
+}
+
+# _lock_owner <profile-dir> — "<pid>" when the profile's SingletonLock names a
+# process on THIS host (Chrome writes it as a symlink to "<hostname>-<pid>"), and
+# a failure otherwise. A lock from another host is not ours to judge.
+_lock_owner() {
+  local t pid
+  t=$(readlink -- "$1/SingletonLock" 2>/dev/null) || return 1
+  pid="${t##*-}"
+  [[ "$pid" =~ ^[0-9]+$ && "${t%-*}" == "$(uname -n)" ]] || return 1
+  echo "$pid"
+}
+
+# _lock_clear_dead <profile-dir> — remove a SingletonLock whose process is gone.
+# Chrome would take over such a lock itself, but a capped launch that we just
+# killed is the one case where we KNOW the holder is dead, so say it in the
+# profile rather than leave the next reader to work it out. /proc, not kill -0:
+# a live process of another uid answers kill -0 with EPERM, which reads as dead.
+_lock_clear_dead() {
+  local pid; pid=$(_lock_owner "$1") || return 0
+  [[ -d "/proc/$pid" ]] && return 0
+  rm -f -- "$1/SingletonLock" "$1/SingletonSocket" "$1/SingletonCookie"
+}
+
+# _reap_stale_probe <profile-dir> — the profile is locked by a ONE-SHOT headless
+# Chrome (--headless plus --dump-dom or --screenshot, at exactly this
+# --user-data-dir, no debugging port) that has run longer than any capped launch
+# could: kill it, so this probe can open the profile. Such a process has no
+# viewer and no caller left — a launch from before the cap, or one whose
+# `timeout` was itself killed. Anything else holding the lock is NEVER touched: a
+# viewer's or a served browser is not headless, and the session daemon's Chrome
+# is driven over a pipe and has neither one-shot flag. Returns 0 when the lock is
+# now free of a live holder.
+_reap_stale_probe() {
+  local dir="${1%/}" pid a headless=0 oneshot=0 mine=0 port=0 age
+  pid=$(_lock_owner "$dir") || return 1
+  [[ -d "/proc/$pid" ]] || { _lock_clear_dead "$dir"; return 0; }
+  while IFS= read -r -d '' a; do
+    case "$a" in
+      --headless|--headless=*) headless=1 ;;
+      --dump-dom|--screenshot|--screenshot=*) oneshot=1 ;;
+      --remote-debugging-*) port=1 ;;
+      --user-data-dir=*) a="${a#--user-data-dir=}"; [[ "${a%/}" == "$dir" ]] && mine=1 ;;
+    esac
+  done < "/proc/$pid/cmdline" 2>/dev/null
+  (( headless && oneshot && mine && ! port )) || return 1
+  local stale="${FIVEDIVE_BROWSER_PROBE_STALE_S:-600}"
+  [[ "$stale" =~ ^[0-9]{1,7}$ ]] || stale=600
+  age=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ') || return 1
+  [[ "$age" =~ ^[0-9]+$ ]] && (( age >= stale )) || return 1
+  printf '%s: a headless probe Chrome (pid %s, %ss old) was holding %s; stopping it\n' "$PROG" "$pid" "$age" "$dir" >&2
+  command -v pkill >/dev/null 2>&1 && pkill -TERM -P "$pid" 2>/dev/null
+  kill -TERM "$pid" 2>/dev/null
+  local i
+  for (( i = 0; i < 25; i++ )); do [[ -d "/proc/$pid" ]] || break; sleep 0.2; done
+  if [[ -d "/proc/$pid" ]]; then
+    command -v pkill >/dev/null 2>&1 && pkill -KILL -P "$pid" 2>/dev/null
+    kill -KILL "$pid" 2>/dev/null
+    for (( i = 0; i < 10; i++ )); do [[ -d "/proc/$pid" ]] || break; sleep 0.2; done
+  fi
+  [[ -d "/proc/$pid" ]] && return 1
+  _lock_clear_dead "$dir"
+  return 0
+}
+
 cmd_auth() {
   local site="" status=0
   while (($#)); do
@@ -1042,11 +1129,15 @@ _chrome_launch_error() {
   local chrome="$1"
   local d; d=$(mktemp -d) || { printf 'no scratch directory to test a launch in'; return 0; }
   local err
-  err=$("$chrome" --headless --no-sandbox --disable-gpu --user-data-dir="$d" \
+  err=$(_chrome_capped 2000 "$chrome" --headless --no-sandbox --disable-gpu --user-data-dir="$d" \
         --virtual-time-budget=2000 --dump-dom about:blank 2>&1 >/dev/null)
   local rc=$?
   rm -rf "$d"
   (( rc == 0 )) && return 1
+  if (( rc == 124 || rc == 137 )); then
+    printf 'it did not finish an about:blank launch within %ss and was stopped' "$(_chrome_cap_s 2000)"
+    return 0
+  fi
   err=$(printf '%s' "$err" | tr '\n\r\t' '   ' | cut -c1-200)
   printf 'it exited %s%s' "$rc" "${err:+ — $err}"
   return 0
@@ -1177,6 +1268,11 @@ _probe() {
   [[ "$total" =~ ^[0-9]{1,7}$ ]] || total=8000
   [[ "$poll"  =~ ^[1-9][0-9]{0,6}$ ]] || poll=400
   local rc waited=0 verdict=""
+  # A PROFILE HELD BY A FORGOTTEN PROBE (DIVE-5375): see _reap_stale_probe. A
+  # second Chrome at a held profile exits at once with an empty document, so
+  # without this every probe after a wedged one reads UNKNOWN until a person
+  # finds the process.
+  (( warm )) || _reap_stale_probe "$dir" || true
   while :; do
     if (( warm )); then
       # THE DAEMON DOES THE WAITING ON THIS PATH, in one tab rather than one tab
@@ -1189,7 +1285,7 @@ _probe() {
           >"$dom" 2>"$dom.err"
       rc=$?
     else
-      "$chrome" --headless --no-sandbox --disable-gpu --user-data-dir="$dir" \
+      _chrome_capped 8000 "$chrome" --headless --no-sandbox --disable-gpu --user-data-dir="$dir" \
             --virtual-time-budget=8000 --dump-dom "$url" >"$dom" 2>"$dom.err"
       rc=$?
     fi
@@ -1211,6 +1307,16 @@ _probe() {
     sleep "$(( poll / 1000 )).$(printf '%03d' "$(( poll % 1000 ))")"
     waited=$(( waited + poll ))
   done
+  if (( ! warm )) && (( rc == 124 || rc == 137 )); then
+    # CAPPED (DIVE-5375): Chrome was stopped at the wall-clock cap. Say so, and
+    # free the profile for the next probe. Not the launch diagnosis below: that
+    # would spend another capped launch to learn what this one just showed.
+    _lock_clear_dead "$dir"
+    rm -f "$dom" "$dom.err"
+    local cap; cap=$(_chrome_cap_s 8000)
+    _stamp "$dir" "UNKNOWN — probe timed out (chrome did not finish within ${cap}s and was stopped)"
+    echo "UNKNOWN (probe timed out: chrome did not finish within ${cap}s and was stopped)"; return 0
+  fi
   if (( rc != 0 )) || [[ ! -s "$dom" ]]; then
     # A BROWSER THAT CANNOT START IS NOT AN UNREADABLE SESSION (DIVE-4587). Both
     # arrive here as a non-zero chrome and an empty document, and collapsing them
@@ -2521,7 +2627,7 @@ cmd_capture() {
     f="$out/signed-out.html"; (( k == 2 )) && f="$out/signed-out-2.html"
     cold=$(mktemp -d) || die "$E_UNAVAILABLE" "mktemp failed"
     ( umask 077
-      "$chrome" --headless --no-sandbox --disable-gpu --user-data-dir="$cold" \
+      _chrome_capped 8000 "$chrome" --headless --no-sandbox --disable-gpu --user-data-dir="$cold" \
         --virtual-time-budget=8000 --dump-dom "$url" >"$f" 2>/dev/null ) || orc=$?
     rm -rf "$cold"
     (( orc == 0 )) || break
@@ -2539,9 +2645,10 @@ cmd_capture() {
   else
     how=cold
     ( umask 077
-      "$chrome" --headless --no-sandbox --disable-gpu --user-data-dir="$dir" \
+      _chrome_capped 8000 "$chrome" --headless --no-sandbox --disable-gpu --user-data-dir="$dir" \
         --virtual-time-budget=8000 --dump-dom "$url" >"$out/signed-in.html" 2>/dev/null )
     irc=$?
+    _lock_clear_dead "$dir"
   fi
   chmod 600 "$out"/*.html 2>/dev/null || true
   local ob ob2 ib; ob=$(wc -c <"$out/signed-out.html" 2>/dev/null || echo 0); ob2=$(wc -c <"$out/signed-out-2.html" 2>/dev/null || echo 0)
@@ -4358,10 +4465,11 @@ cmd_shot() {
 
   # The flags are the security claim: --headless with NO --remote-debugging-*, so
   # this render opens no socket any other seat could reach. See the header.
-  "$chrome" --headless --no-sandbox --disable-gpu --hide-scrollbars \
+  _chrome_capped "$wait" "$chrome" --headless --no-sandbox --disable-gpu --hide-scrollbars \
       --user-data-dir="$dir" --window-size="$w,$h" \
       --virtual-time-budget="$wait" --screenshot="$out" "$url" >/dev/null 2>&1
   local rc=$?
+  _lock_clear_dead "$dir"
   if (( rc != 0 )) || [[ ! -s "$out" ]]; then
     rm -f "$out"
     die "$E_UNAVAILABLE" "the render produced no image (chrome exited $rc). Nothing was written — an empty, missing or stale PNG must not be reported as a screenshot."
@@ -4372,10 +4480,11 @@ cmd_shot() {
   # build decided wins. Two loads, each with one job, is the only shape whose
   # result is the same on every chrome.
   if [[ -n "$domout" ]]; then
-    "$chrome" --headless --no-sandbox --disable-gpu \
+    _chrome_capped "$wait" "$chrome" --headless --no-sandbox --disable-gpu \
         --user-data-dir="$dir" --virtual-time-budget="$wait" \
         --dump-dom "$url" >"$domout" 2>/dev/null
     local drc=$?
+    _lock_clear_dead "$dir"
     if (( drc != 0 )) || [[ ! -s "$domout" ]]; then
       rm -f "$domout"
       printf '%s: WARNING — the PNG rendered but the DOM dump did not (chrome exited %s). %s was not written.\n' "$PROG" "$drc" "$domout" >&2
