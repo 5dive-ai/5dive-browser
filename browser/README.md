@@ -176,6 +176,13 @@ for it to exit (bounded at `FIVEDIVE_BROWSER_STOP_GRACE` seconds, default 10, th
 it stops the Xvfb. It returns only once the profile is free, so the status check Done runs next
 never finds the profile still locked. An agent's plain Chrome does not wait for the cookie commit.
 
+The same wait covers a browser a person was let into through the viewer, whatever holds it
+(DIVE-5374). On an input-mode box (or a warm serve) the viewer attaches to the session daemon's
+Chrome, not to a login view. `viewer-redeem` records `.5dive-viewer.admitted`, and `--stop` of a
+serve started before that record waits for the commit before it asks the daemon to shut down, if
+the person left (or was admitted) within the last 60 s. A stop of a browser nobody viewed does not
+wait.
+
 ### What protects the session while the viewer is open
 
 A viewer onto a logged-in profile is not a screenshot; it is the credential with a keyboard
