@@ -366,6 +366,14 @@ without a scheduled probe the agent finds out **mid-publish**. So:
   browser needs a CDP endpoint, and a loopback debugging port on a logged-in profile is reachable
   by every seat on the box — the credential the 0700 store exists to protect, handed over with no
   file permission needed. Not a trade `status` gets to make.
+- **Every headless launch has a wall-clock cap** (DIVE-5375). `--virtual-time-budget` bounds page
+  time, not a Chrome that wedges before or outside the page. The probe, the launch check, `shot` and
+  `capture` run Chrome under `timeout -k 5 <budget + FIVEDIVE_BROWSER_CHROME_SLACK_S>` (default
+  slack 30 s), as `read` already did. A capped probe reports and stamps `UNKNOWN — probe timed
+  out` and removes the SingletonLock its dead Chrome left. A probe that finds the profile locked by
+  a one-shot headless Chrome (`--headless` plus `--dump-dom`/`--screenshot`, no debugging channel)
+  older than `FIVEDIVE_BROWSER_PROBE_STALE_S` (default 600) stops it first. A viewer's, a served
+  or a session daemon's browser is never touched.
 - **`UNKNOWN` is deliberately asymmetric, and both halves are load-bearing.** `status` stays
   QUIET on it and exits 0 — a network blip must not page a person, or the signal becomes noise.
   `run` **refuses** on it, because the action is the irreversible half and an unverified session

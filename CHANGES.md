@@ -8,6 +8,28 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a wedged probe Chrome can no longer hold a login's profile for hours (DIVE-5375), 1.29.2
+
+On chill-gorge (2026-10-01 01:52Z) a status probe's headless Chrome logged "Failed to connect to
+the bus" at start and never exited. It held linkedin.com's SingletonLock for 28 hours, every later
+probe failed on "SingletonLock: File exists" and stamped `UNKNOWN — chrome did not load the page`,
+and the dashboard read "Not checked yet". `--virtual-time-budget` bounds page time only, and the
+probe's launch had no wall-clock cap.
+
+- Every one-shot headless launch (status probe, launch check, `shot` and its DOM pass,
+  `capture`) runs under `timeout -k 5 <budget + slack>` (`FIVEDIVE_BROWSER_CHROME_SLACK_S`,
+  default 30 s), the shape `read` already had. `timeout` owns the process group, so Chrome's
+  children are stopped with it.
+- A capped probe reports `UNKNOWN (probe timed out …)`, stamps `UNKNOWN — probe timed out` and
+  removes a SingletonLock that names the dead pid, so the next probe opens the profile.
+- A probe that finds the profile locked by a one-shot headless Chrome (`--headless` plus
+  `--dump-dom`/`--screenshot` at this `--user-data-dir`, no debugging channel) older than
+  `FIVEDIVE_BROWSER_PROBE_STALE_S` (default 600 s) stops it and its children first. A viewer's or
+  served browser (not headless) and the session daemon's (a debugging pipe) are never touched.
+- Harness: `tests/browser_probe_timeout_unit.sh`, 19 arms with a fake Chrome that keeps the
+  one-instance rule and can hang. The pre-fix tree hangs on T1 until the harness's 40 s cap
+  (7 red).
+
 ### Fixed — a sign-in made through the viewer survives Done on an input-mode (or warm) browser (DIVE-5374), 1.29.1
 
 On 2026-10-02 the owner signed in to github.com through the viewer on chill-gorge (a `drive=input`
