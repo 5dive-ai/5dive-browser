@@ -30,6 +30,31 @@ probe's launch had no wall-clock cap.
   one-instance rule and can hang. The pre-fix tree hangs on T1 until the harness's 40 s cap
   (7 red).
 
+### Fixed — a sign-in made through the viewer survives Done on an input-mode (or warm) browser (DIVE-5374), 1.29.1
+
+On 2026-10-02 the owner signed in to github.com through the viewer on chill-gorge (a `drive=input`
+box) and tapped Done 7 s later. The dashboard said "log in again", and no `user_session` was on
+disk. DIVE-5286's wait for Chrome's cookie commit ran only for a login view (`login=1`, a
+`chrome_pid` in the serve record). On an input-mode box the viewer attaches to the session
+daemon's plain Chrome, which has neither, so the stop asked the daemon to go at once and the
+daemon SIGTERMed Chrome about 1 s after Done. A SIGTERM drops Chrome's uncommitted batch.
+
+- `viewer-redeem` now writes `.5dive-viewer.admitted` (`admitted_at=<epoch>`) in the profile. The
+  revoke that Done runs first overwrites the ticket's state, so this record is what tells the
+  stop that a person was in.
+- `serve --stop` waits for the cookie commit (same `FIVEDIVE_BROWSER_COOKIE_SETTLE` cap, default
+  24 s) when the serve is a login view OR a person was admitted after the serve started,
+  whichever process holds the Chrome: a direct Chrome, the input-mode daemon or a warm CDP
+  daemon. The wait now runs BEFORE the daemon is asked to shut down. The stop removes the record.
+- Only within 60 s of the person leaving (`left_at`, written when the view is taken down — Done's
+  revoke does that a second before its stop). An input-mode daemon lives for hours, and a later
+  stop (the idle sweep's) must not sit out the cap for a view that ended long ago.
+- An agent's own stop of a browser nobody viewed is not held.
+- Harness: `tests/browser_input_drive_unit.sh` R11 (the fake daemon now commits a sign-in on a
+  timer and loses it on shutdown). The pre-fix tree fails R11a and R11e. A mutant without the
+  new key loses the sign-in. Also, the fake daemon now honours `shutdown` on a warm serve, as the
+  real one does.
+
 ### Added — routines (`act --record`, `replay`) and `snapshot --delta`: the second run costs less (DIVE-5335), 1.29.0
 
 (1.27.0 was held for this entry while it was in review; DIVE-5338 shipped 1.28.0 first, so it lands as 1.29.0.)
