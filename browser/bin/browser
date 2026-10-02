@@ -7088,6 +7088,8 @@ cmd_connect_request() {
 # is the seat's, like every other verb.
 # DIVE-5336: `totp import` reads the root-only secrets store, then drops to the
 # profile's owner itself to write the seed. Every other `totp` verb is the seat's.
+# DIVE-5389: `_serve-offered` re-derives the caller from SUDO_UID and drops to the
+# OWNER itself, so the drop here would hand it to the wrong seat.
 if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
   _v1="${1:-}"; [[ "$_v1" == adapters && "${2:-}" == drift ]] && _v1=adapters-drift
   [[ "$_v1" == totp && "${2:-}" != import ]] && _v1=totp-seat
@@ -7095,8 +7097,6 @@ if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
     # `adblock` joins `setup` here: it writes the MACHINE-WIDE chrome policy
     # file, which is root's. Dropping to the seat would turn it into a refusal.
     # `config` too: the drive default is one box-wide file (DIVE-5338).
-    # `_serve-offered` (DIVE-5389) re-derives the caller from SUDO_UID and drops
-    # to the OWNER itself, so the drop here would hand it to the wrong seat.
     setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|totp|-h|--help|help|"") ;;
     *)
       # DIVE-4813: usually the caller, and for a brokered `serve` the owner.

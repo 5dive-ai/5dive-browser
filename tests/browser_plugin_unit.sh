@@ -303,7 +303,7 @@ t  'T2c6 a root caller with SUDO_USER re-executes as the seat before touching a 
 # relay seat itself, only for serve/viewer/status. Dropped to the CALLER, it
 # would be the agent registering its own bind — the one thing the owner's tap
 # exists to prevent.
-t  'T2c7 ...but setup, adblock, config, the owner'"'"'s approve and the Connect relay stay root'"'"'s' 'yes' "$(grep -A8 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -q 'setup|adblock|config|approve|approvals|adapters|_connect|totp|-h|--help|help|"") ;;' && echo yes || echo no)"
+t  'T2c7 ...but setup, adblock, config, the owner'"'"'s approve and the Connect relay stay root'"'"'s' 'yes' "$(grep -A8 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -q 'setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|totp|-h|--help|help|"") ;;' && echo yes || echo no)"
 # DIVE-4997 added `adapters` (the owner's approve/reject/pending of a reflex
 # login check: root reads every seat's proposals and writes AS the seat), so six.
 # DIVE-5336 added `totp`, and only its `import` reaches the list (every other
@@ -311,7 +311,9 @@ t  'T2c7 ...but setup, adblock, config, the owner'"'"'s approve and the Connect 
 # secrets store and drops to the profile's owner itself to write the seed. Seven.
 # DIVE-5338 added `config`: it writes the box-wide default drive mode, a root-owned
 # file no seat may write. Eight.
-t  'T2c8 ...and no OTHER verb joined them' '8' "$(grep -A8 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -oP '^\s+\K[a-z_|]+(?=\|-h\|--help)' | tr '|' '\n' | grep -c .)"
+# DIVE-5389 added `_serve-offered`: a brokered seat's on-demand serve, which reads
+# the caller from SUDO_UID and drops to the box login's OWNER itself. Nine.
+t  'T2c8 ...and no OTHER verb joined them' '9' "$(grep -A8 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -oP '^\s+\K[a-z_|-]+(?=\|-h\|--help)' | tr '|' '\n' | grep -c .)"
 
 # DIVE-4813 — WHICH SEAT ROOT BECOMES. An admin agent asked to open a site the
 # box had connected under `claude` and was told to run `sudo -u claude 5dive
@@ -464,8 +466,12 @@ SUNIT="$SDIR/5dive-browser-probe@.service"
 STIMER="$SDIR/5dive-browser-probe@.timer"
 export SYSTEMCTL_LOG="$TMP/systemctl.log"
 : > "$SYSTEMCTL_LOG"
+# The rendezvous group is THIS process's group: `setup` chowns the rendezvous to
+# seat:group, and a non-root runner can only chown to a group it is in — the
+# seat's NAMED primary group is not always the one this process runs with.
+SGRP="$(id -gn)"
 setup_run() {  # setup_run — drive a real cmd_setup into $TMP/setup-store
-  run env PATH="$SETUPBIN:$PATH" \
+  run env PATH="$SETUPBIN:$PATH" FIVEDIVE_BROWSER_AGENT_GROUP="$SGRP" \
       FIVEDIVE_BROWSER_PROFILE_ROOT="$TMP/setup-store" \
       FIVEDIVE_BROWSER_SYSTEMD_DIR="$SDIR" \
       FIVEDIVE_BROWSER_SYSTEMCTL=systemctl \
@@ -502,7 +508,7 @@ tn 'T2c8 ...and not with a monotonic trigger that makes it inert' 'OnUnitActiveS
 tc 'T2c8 ...fleet does not probe in lockstep'  'RandomizedDelaySec=' "$(cat "$STIMER")"
 # DIVE-5389: the on-demand serve grant. One exact command for the rendezvous
 # group, no argument wildcard, checked by visudo before it is moved into place.
-WGRP="$(id -gn "$SEAT")"
+WGRP="$SGRP"
 t  'T2c8w setup writes the on-demand serve grant' 'yes' "$([[ -f "$SUDOD/5dive-browser" ]] && echo yes || echo no)"
 t  'T2c8w ...0440, as sudo requires of a drop-in' '440' "$(stat -c '%a' "$SUDOD/5dive-browser" 2>/dev/null)"
 t  'T2c8w ...the one rule, for the rendezvous group, exact command' \
