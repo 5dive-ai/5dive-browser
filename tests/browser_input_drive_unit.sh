@@ -49,6 +49,8 @@
 #           and the plan stops there (it used to report rc=0 over a lost click)
 #        L9 keyboard focus taken by another window is moved back before typing
 #        L7 shutdown takes Chrome with it
+#        L11 title_probe (DIVE-5388) reads a probe page's title in a tab of its own
+#           and closes only that tab; with a handoff open it does not navigate
 #        L10 a FRESH page driven the instant its title appears still gets the
 #           text: the daemon holds input until the page is quiet (the CI race)
 set -uo pipefail
@@ -635,6 +637,26 @@ HTML
     arm 'L5 ...and closing it gives the window back' '0 yes' "$rc $(yn grep -q 'héllo ✓!' <<<"$(jq -r .title "$TMP/l.in2")")"
     lc '{"op":"tree","url":"https://example.com/"}' >/dev/null 2>"$TMP/l.t"; rc=$?
     arm 'L6 a DOM op is refused by name (70)' '70 yes' "$rc $(yn grep -q 'INPUT mode' "$TMP/l.t")"
+    # L11 (DIVE-5388) — the login check in a TAB OF ITS OWN: Ctrl+T, the probe URL
+    # typed, the settled title read, Ctrl+W. The person's tab must be exactly where
+    # it was afterwards, and Chrome must still be running (a Ctrl+W on the last tab
+    # would close it). A local http page, because a goto takes http(s) only.
+    node -e 'const h=require("http").createServer((q,r)=>{r.setHeader("content-type","text/html");r.end("<html><head><title>Log in to Fixture</title></head><body>sign in</body></html>")});h.listen(0,"127.0.0.1",()=>console.log(h.address().port))' > "$TMP/l.port" 2>/dev/null &
+    _KILL+=("$!")
+    for i in $(seq 1 50); do [[ -s "$TMP/l.port" ]] && break; sleep 0.1; done
+    before=$(lc '{"op":"title"}' 2>/dev/null | jq -r .window_title)
+    lc "{\"op\":\"title_probe\",\"url\":\"http://127.0.0.1:$(cat "$TMP/l.port")/\"}" > "$TMP/l.tp" 2>"$TMP/l.tp.err"; rc=$?
+    arm 'L11 title_probe loads the probe page in a new tab and reads its title' '0 true Log in to Fixture' \
+      "$rc $(jq -r '"\(.navigated) \(.title)"' "$TMP/l.tp" 2>/dev/null)"
+    after=""; for i in $(seq 1 25); do
+      after=$(lc '{"op":"title"}' 2>/dev/null | jq -r .window_title); [[ "$after" == "$before" ]] && break; sleep 0.2
+    done
+    arm 'L11 ...then closes ONLY that tab: the window is back on the page it was on' "$before" "$after"
+    arm 'L11 ...and Chrome is still running' yes "$(yn kill -0 "$cpid")"
+    lc '{"op":"hand","act":"open","reason":"test"}' >/dev/null 2>&1
+    lc "{\"op\":\"title_probe\",\"url\":\"http://127.0.0.1:$(cat "$TMP/l.port")/\"}" > "$TMP/l.tp2" 2>/dev/null; rc=$?
+    arm 'L11 ...with a handoff open it does not touch the window' '0 false' "$rc $(jq -r .navigated "$TMP/l.tp2" 2>/dev/null)"
+    lc '{"op":"hand","act":"close"}' >/dev/null 2>&1
     # A FOREIGN WINDOW over part of Chrome, holding the keyboard focus: what an
     # agent's input meets when anything else is on the display.
     DISPLAY=":$disp" node -e '

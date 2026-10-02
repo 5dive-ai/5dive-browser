@@ -35,6 +35,10 @@ jobs:
       # frees the profile, and a stale one-shot headless holder is reaped.
       - name: browser probe timeout harness
         run: bash tests/browser_probe_timeout_unit.sh
+      # DIVE-5388: served sites checked through their own browser, a headless bot
+      # check is `unverifiable` not "Needs you", and the generic header check.
+      - name: served probe and generic check harness
+        run: bash tests/browser_served_probe_unit.sh
       # DIVE-5287: input mode. Routing through the real bin/browser with a fake
       # daemon, lib/x11.cjs unit arms, and LIVE arms against the runner's own
       # Xvfb + Chrome (real XTEST input, isTrusted, navigator.webdriver false).

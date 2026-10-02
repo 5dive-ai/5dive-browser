@@ -236,7 +236,7 @@ usage() {
   5dive browser setup                 # one-time, as root: create the profile store
   5dive browser auth <site>           # open a browser; log in yourself, once
   5dive browser status [site]         # per-site auth state (run on a SCHEDULE)
-  5dive browser probe-all             # scheduled check; skips profiles in use
+  5dive browser probe-all             # scheduled check; a served site through its own browser
   5dive browser ls                    # profiles, and when each was last seen alive
 
   On a managed box there is no display, so the browser lives on one:
@@ -295,6 +295,12 @@ usage() {
                                       # they get a "Connect <site>" button, their tap opens
                                       # the one-time link, their "Done" tap checks the login.
                                       # Nothing is bound until they tap.
+  5dive browser connect-request <site> --challenge [--url=<page>] [--reason=<what you were doing>]
+                                      # stuck on a captcha: the owner gets an "Open <site>"
+                                      # button, clears the check in the box browser on that
+                                      # page, taps Done — and that browser comes BACK TO YOU
+                                      # on the page, so your next read goes through it. You never
+                                      # solve the check; you carry on after their Done.
 
   INPUT MODE (an adapter with "drive": "input", e.g. tiktok.com, or every logged-in site when the
   box default is `config drive=input`): plain Chrome driven through the screen, keyboard and
@@ -989,7 +995,7 @@ cmd_setup() {
   _install_probe_timer "$seat"
   local wake_ok=0
   (( rv_ok )) && _install_wake_grant "$agroup" && wake_ok=1
-  printf 'profile store ready\n  %s  (root, 0711 — traverse, not list)\n  %s  (%s, 0700)\n  liveness probe: every ~6h (served profiles are skipped)\n' \
+  printf 'profile store ready\n  %s  (root, 0711 — traverse, not list)\n  %s  (%s, 0700)\n  liveness probe: every ~6h (a served site is checked through its own browser)\n' \
     "$PROFILE_ROOT" "$PROFILE_ROOT/$seat" "$seat"
   if (( rv_ok )); then
     printf '  %s  (%s:%s, 0750 — the broker rendezvous; every agent seat in group %s uses THIS box login, with no second login of its own)\n' \
@@ -1321,19 +1327,87 @@ _signin_guard() {
   return 0
 }
 
+# THE SIGN-IN WORDS, FOR A PAGE WITH NO DOM TO READ (DIVE-5388). A window
+# title naming a sign-in ("Log in to Discord", "Sign in - Google Accounts") is
+# the login page. Only used where the probe page is NOT itself a sign-in page:
+# an adapter whose probe.url is /login/ (reddit, x.com) shows those words to a
+# signed-in visitor too, and there only its own title markers can decide.
+INPUT_SIGNIN_TITLE='(^|[^a-z])(log ?in|login|sign ?in|signin|sign ?up|signup)([^a-z]|$)|登录|登入|ログイン|로그인'
+_input_title_marker() {  # <site> <logged_out|logged_in>
+  local a; a="$(_adapter_path "$1")"
+  [[ -f "$a" ]] && jq -r --arg k "$2" '.probe[$k + "_when_title_matches"] // empty' "$a" 2>/dev/null
+}
+
+# INPUT MODE: THE TITLE OF THE PROBE PAGE, LOADED IN A TAB OF ITS OWN (DIVE-5388).
+# There is no DOM here, and that is the point of the mode — the sites served
+# this way refuse an automated browser — so the check reads what a person at
+# the screen could: the window title after the probe page loads. It loads in a
+# NEW tab that is closed afterwards, and only when nobody is driving (no
+# handoff, no person in the viewer, no agent holding the lease): the window is
+# where an agent or a person works, and a health check must not move it.
+#   challenge title       -> challenge, seen in the owner's own browser: Needs you
+#   sign-in title         -> expired
+#   adapter's signed-in   -> authenticated
+#   anything else         -> unverifiable, dated by the last signed-in read; or
+#                            unknown when there has never been one. Never a login
+#                            by elimination.
 _input_probe() {  # <site> <dir>
-  local site="$1" dir="$2" t title
+  local site="$1" dir="$2" t title why="" looked=0
   if ! _daemon_live "$dir" || ! t=$(_daemon_call "$dir" '{"op":"title"}' 2>/dev/null) \
      || [[ "$(jq -r '.drive // empty' <<<"$t" 2>/dev/null)" != input ]]; then
     echo "UNKNOWN (input mode, and no input-mode browser is serving $site — nothing loads a page to check it; 5dive browser serve $site)"
     return 0
   fi
+  local url; url=$(_site_url "$site")
+  local challenge; challenge=$(_input_challenge_title "$site")
+  if (( _SITE_BROKERED )); then
+    why="this seat uses the box login and does not move the owner's window"
+  elif [[ "$(jq -r '.handoff // false' <<<"$t")" == true ]]; then
+    why="the owner has the window (handoff)"
+  elif [[ "$(jq -r '.viewer // false' <<<"$t")" == true ]]; then
+    why="a person is in the viewer"
+  elif _lease_live "$dir"; then
+    why="an agent holds the browser"
+  else
+    local ans
+    if ans=$(_daemon_call "$dir" "$(jq -nc --arg u "$url" --arg c "$challenge" '{op:"title_probe", url:$u, challenge:$c}')" 2>/dev/null) \
+       && [[ "$(jq -r '.navigated // false' <<<"$ans" 2>/dev/null)" == true ]]; then
+      t="$ans"; looked=1
+    else
+      why=$(jq -r '.why // empty' <<<"$ans" 2>/dev/null)
+      why="${why:-the browser did not open a tab for the check (a session daemon from before this check cannot; it is restarted by: 5dive browser serve $site --stop)}"
+    fi
+  fi
   title=$(jq -r '.title // ""' <<<"$t")
-  if grep -qiE -- "$(_input_challenge_title "$site")" <<<"$title"; then
+  if grep -qiE -- "$challenge" <<<"$title"; then
+    if (( looked )); then _signed_in_forget "$dir"; _stamp "$dir" challenge; fi
     echo "CHALLENGE — human action required (the window shows \"$title\"; we do not solve these: 5dive browser handoff $site)"
     return 1
   fi
-  echo "unconfirmed (input mode: the window shows \"$title\" — there is no DOM to confirm a login from; a screen is the check: 5dive browser shot $site)"
+  if (( ! looked )); then
+    echo "unconfirmed (input mode: not checked now — $why; the window shows \"$title\"; a screen is the check: 5dive browser shot $site)"
+    return 0
+  fi
+  local out_t in_t; out_t=$(_input_title_marker "$site" logged_out); in_t=$(_input_title_marker "$site" logged_in)
+  if [[ -z "$out_t" ]] && ! grep -qiE "$GENERIC_SIGNIN_URL" <<<"$url"; then out_t="$INPUT_SIGNIN_TITLE"; fi
+  if [[ -n "$out_t" ]] && grep -qiE -- "$out_t" <<<"$title"; then
+    _signed_in_forget "$dir"; _stamp "$dir" expired
+    echo "session expired — human action required (input mode: $url loaded as \"$title\")"
+    return 1
+  fi
+  if [[ -n "$in_t" ]] && grep -qiE -- "$in_t" <<<"$title"; then
+    _signed_in_note "$dir" input; _stamp "$dir" authenticated
+    echo "authenticated (input mode: $url loaded as \"$title\"; checked $(date -u +%Y-%m-%dT%H:%MZ))"
+    return 0
+  fi
+  local seen
+  if seen=$(_signed_in_last "$dir"); then
+    _stamp_at "$dir" "$seen" unverifiable
+    echo "unverifiable — input mode: $url loaded as \"$title\", and a title cannot say whether this is signed in; last seen signed in $seen. A screen is the check: 5dive browser shot $site"
+    return 0
+  fi
+  _stamp "$dir" unknown
+  echo "unconfirmed (input mode: $url loaded as \"$title\", and a title cannot say whether this is signed in; it has not been seen signed in yet. A screen is the check: 5dive browser shot $site)"
   return 0
 }
 
@@ -1342,7 +1416,8 @@ _probe() {
   # INPUT MODE HAS NO DOM TO PROBE (DIVE-5287), and loading the probe URL would
   # move the window an agent or a person is working in. It reads the title.
   if [[ "$(_site_drive_adapter "$site")" == input ]] \
-     || { (( ! _SITE_BROKERED )) && [[ "$(_kv "$(_serve_pidfile "$dir")" drive)" == input ]]; }; then
+     || { (( ! _SITE_BROKERED )) && [[ "$(_kv "$(_serve_pidfile "$dir")" drive)" == input ]]; } \
+     || { (( _SITE_BROKERED )) && [[ "$(_kv "$(_rv_offer "$_SITE_OWNER" "$site")" drive)" == input ]]; }; then
     _input_probe "$site" "$dir"; return $?
   fi
   # SERVED MEANS WE CANNOT LOOK, AND SAYING SO IS THE WHOLE FIX. Chrome allows one
@@ -1413,8 +1488,8 @@ _probe() {
   # THE GENERIC CHECK (DIVE-4943 scope 2), and only for a page verb's gate: with no
   # adapter, the one thing we can still recognise is a page that is VISIBLY a
   # sign-in — a password field, or a form that posts to a login/session/auth path.
-  # `status` keeps its UNKNOWN (the tile's memory must not claim a login nobody
-  # confirmed); only the gate in front of a render reads this.
+  # `status` reads the page's header instead (DIVE-5388, below the loop), which
+  # can also say signed IN; the gate keeps this narrower test and its guard.
   local generic=0
   if [[ -z "$marker" && -z "$positive" && "${_PROBE_GENERIC:-0}" == 1 ]]; then
     generic=1; marker="$GENERIC_SIGNIN_MARKER"
@@ -1437,7 +1512,7 @@ _probe() {
       # back. Two regex engines must never both be allowed to decide a login.
       _daemon_call "$dir" "$(jq -nc --arg u "$url" --arg o "$marker" --arg i "$positive" \
             --arg c "$challenge" --argjson w "$total" \
-            '{op:"probe", url:$u, wait:$w, until:{logged_out:$o, logged_in:$i, challenge:$c}}')" \
+            '{op:"probe", url:$u, wait:$w, until:{logged_out:$o, logged_in:$i, challenge:$c}, report_url:true}')" \
           >"$dom" 2>"$dom.err"
       rc=$?
     else
@@ -1505,16 +1580,57 @@ _probe() {
     _stamp "$dir" "UNKNOWN — chrome did not load the page${why:+: $why}"
     echo "UNKNOWN (chrome did not load the page${why:+ — $why})"; return 0
   fi
+  # THE GENERIC CHECK, FOR `status` TOO (DIVE-5388). A connected site with no
+  # adapter used to stop at UNKNOWN here — 7 of 13 sites on chill-gorge had no
+  # check at all. lib/generic-login.cjs reads the page's header: a Log in / Sign
+  # in / Sign up control there (or a password form anywhere, or a landing on a
+  # sign-in path) is signed out; a header WITH controls and none of them a
+  # sign-in is signed in; anything else is still UNKNOWN. Challenge was tested
+  # above, first, as it always is. The page verbs' gate keeps its own narrower
+  # reading (generic=1 below): this one is the tile's.
+  local gwhy="" furl=""
+  (( warm )) && furl=$(sed -n 's/^5dive-probe-final-url: //p' "$dom.err" 2>/dev/null | tail -1)
+  if [[ -z "$verdict" && -z "$marker" && -z "$positive" ]] && (( ! generic )) && _have node \
+     && [[ -r "$_SELF_DIR/../lib/generic-login.cjs" ]]; then
+    local g; g=$(node "$_SELF_DIR/../lib/generic-login.cjs" "$dom" 2>/dev/null)
+    gwhy=$(sed -n 2p <<<"$g")
+    if [[ -n "$furl" ]] && ! grep -qiE "$GENERIC_SIGNIN_URL" <<<"$url" && grep -qiE "$GENERIC_SIGNIN_URL" <<<"$furl"; then
+      verdict=expired gwhy="the page redirected to a sign-in ($furl)"
+    else
+      case "$(head -1 <<<"$g")" in
+        out) verdict=expired ;;
+        in)  verdict=authenticated ;;
+        *)   gwhy="" ;;
+      esac
+    fi
+    [[ -n "$verdict" ]] && _maybe_propose "$site" "$dir"
+  fi
   rm -f "$dom" "$dom.err"
+  local via=headless; (( warm )) && via=served
   case "$verdict" in
     challenge)
+      # A BOT CHECK THAT MEETS OUR CHECK IS NOT "NEEDS YOU" (DIVE-5388). Only the
+      # headless probe, and only for a login the owner's own served browser last
+      # read signed in: Reddit and Cloudflare Turnstile show their check to an
+      # automated headless Chrome and not to the browser the session lives in,
+      # so this verdict is about the probe. A challenge in the served browser
+      # itself (warm) is the real thing and still stops for a person.
+      local seen
+      if (( ! warm )) && seen=$(_signed_in_last "$dir" 'served|input'); then
+        _stamp_at "$dir" "$seen" unverifiable
+        echo "unverifiable — the automatic check met a bot check, which $site shows automated browsers; last seen signed in $seen in the served browser. Nothing for a person to do: serving it lets the check read it there (5dive browser serve $site)"
+        return 0
+      fi
+      (( warm )) && _signed_in_forget "$dir"
       # THERE IS DELIBERATELY NO BYPASS BEHIND THIS.
       _stamp "$dir" challenge
       echo "CHALLENGE — human action required (we do not solve these)"; return 1 ;;
     expired)
-      _stamp "$dir" expired; echo "session expired — human action required"; return 1 ;;
+      _signed_in_forget "$dir"
+      _stamp "$dir" expired; echo "session expired — human action required${gwhy:+ (generic check: $gwhy)}"; return 1 ;;
     authenticated)
-      _stamp "$dir" authenticated; echo "authenticated (checked $(date -u +%Y-%m-%dT%H:%MZ))"; return 0 ;;
+      _signed_in_note "$dir" "$via"
+      _stamp "$dir" authenticated; echo "authenticated (${gwhy:+generic check: $gwhy; }checked $(date -u +%Y-%m-%dT%H:%MZ))"; return 0 ;;
   esac
   # NO MARKER, NO VERDICT. `authenticated` is a claim about a LOGIN, and the only
   # evidence for it here is the adapter's logged-out marker failing to match. With
@@ -1550,6 +1666,7 @@ _probe() {
     echo "UNKNOWN (the page never showed either the signed-in or the signed-out marker within ${total}ms — the state could not be read; acting verbs stay refused)"
     return 0
   fi
+  _signed_in_note "$dir" "$via"
   _stamp "$dir" authenticated; echo "authenticated (checked $(date -u +%Y-%m-%dT%H:%MZ))"; return 0
 }
 # The liveness file is the TILE'S memory and it lives in the owner's 0700
@@ -1558,6 +1675,41 @@ _probe() {
 _stamp() {
   (( _SITE_BROKERED )) && return 0
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" > "$1/.5dive-liveness" 2>/dev/null || true
+}
+# _stamp_at <dir> <iso> <word> — a stamp whose date is NOT now. Used only by
+# `unverifiable`, whose date is the last time the login was SEEN signed in: the
+# tile parses "<iso> <word>" and nothing else (the API's parseLs), so the one
+# date the line carries is the one the owner needs — "last seen signed in 3h
+# ago", not "we failed to look 2 minutes ago".
+_stamp_at() {
+  (( _SITE_BROKERED )) && return 0
+  printf '%s %s\n' "$2" "$3" > "$1/.5dive-liveness" 2>/dev/null || true
+}
+
+# THE LAST SIGNED-IN READ, AND THROUGH WHAT (DIVE-5388). "<iso> <via>", via one
+# of headless (the cold probe), served (a CDP session daemon) or input (the
+# owner's own plain Chrome). Kept beside the stamp, not in it, because the stamp
+# is overwritten by every verdict and this must survive the verdicts that are
+# about the CHECK rather than the login: on chill-gorge (2026-10-02) Reddit and
+# a Cloudflare Turnstile site showed their bot check to the headless probe and
+# not to the served browser the same login was working in, and the tile said
+# "Needs you" over two healthy sessions. A logged-out or challenged read in the
+# owner's own browser removes it — that is the login, not the check.
+_signed_in_file() { echo "$1/.5dive-signed-in"; }
+_signed_in_note() {  # <dir> <via>
+  (( _SITE_BROKERED )) && return 0
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" > "$(_signed_in_file "$1")" 2>/dev/null || true
+}
+_signed_in_forget() {
+  (( _SITE_BROKERED )) && return 0
+  rm -f -- "$(_signed_in_file "$1")" 2>/dev/null || true
+}
+_signed_in_last() {  # <dir> [<via-alternation>] -> the iso, rc 1 when there is none (or not through <via>)
+  local l; l=$(head -1 "$(_signed_in_file "$1")" 2>/dev/null) || return 1
+  local iso="${l%% *}" via="${l#* }"
+  [[ "$iso" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z$ ]] || return 1
+  [[ -z "${2:-}" || "$via" =~ ^($2)$ ]] || return 1
+  printf '%s\n' "$iso"
 }
 
 cmd_probe_all() {
@@ -1570,8 +1722,15 @@ cmd_probe_all() {
     site=$(basename "$d")
     _is_public "$site" && continue   # the public profile is not a login (DIVE-4943)
     _audit "$d" 700
-    if _serve_running "$d" >/dev/null; then
-      printf '  %-20s skipped: served\n' "$site"
+    # A SERVED SITE IS CHECKED THROUGH THE BROWSER THAT HOLDS IT (DIVE-5388).
+    # This used to skip every served profile (DIVE-4519), and on a box that keeps
+    # its sites served the stamps aged to hours or a day and never saw a
+    # reconnect. A session daemon answers a probe in its own tab (CDP) or reads
+    # the window title after loading the probe page in a tab of its own (input
+    # mode), so only a served browser with NO daemon — a plain-Chrome login
+    # view, which nothing can ask — is still skipped.
+    if _serve_running "$d" >/dev/null && ! _daemon_live "$d"; then
+      printf '  %-20s skipped: served (a login view, which no probe can ask; checked when it stops)\n' "$site"
       continue
     fi
     output=$(_auth_status "$site" 2>&1); arc=$?
@@ -2243,7 +2402,7 @@ cmd_run() {
   fi
   case "$state" in
     CHALLENGE*)
-      die "$E_COLD" "$site is presenting a security challenge. Stopping: 5dive does not attempt to solve one, by decision and not by limitation. A person clears it — 5dive browser auth $site" ;;
+      die "$E_COLD" "$site is presenting a security challenge. Stopping: 5dive does not attempt to solve one, by decision and not by limitation. A person clears it. Ask your owner to, then carry on after their Done: 5dive browser connect-request $site --challenge --url=<the page you were on>" ;;
     session\ expired*)
       die "$E_COLD" "$site is logged out. Failing closed: no retry, no login attempt, no falling through to a generic click. A person clears this — 5dive browser auth $site" ;;
     authenticated*)
@@ -2891,6 +3050,25 @@ _adapter_write_dir() {  # <seat> — where approve writes; the first place the p
 # The probe's engine, counted: grep -oiE, zero is an answer and not a failure.
 _marker_count() { { grep -oiE -- "$1" "$2" 2>/dev/null || true; } | wc -l | tr -d ' '; }
 _render_title() { { grep -oiE '<title[^>]*>[^<]{1,200}' "$1" 2>/dev/null || true; } | head -n1 | sed -E 's/<title[^>]*>//'; }
+
+# DIVE-5200: THE HARD STOP ASKS THE PERSON. The public profile is never probed
+# (it has no login), so a captcha interstitial on a public page used to come back
+# as an ordinary render and the agent had nothing to do with it but give up.
+# This says what it is and names the handoff. Keyed on the page TITLE only
+# ("Just a moment…", "Verify you are human", …): a submission form that merely
+# embeds an invisible reCAPTCHA is not a stop, and must not send the owner a
+# link to nothing. A hint on stderr, never a refusal: the render is unchanged.
+_challenge_hint() {  # <html> <landed url> [<asked url>]
+  local f="$1" u="${2:-}" host title
+  [[ -n "$u" ]] || u="${3:-}"
+  [[ -s "$f" ]] || return 0
+  title="$(_render_title "$f")"
+  grep -qiE "$CHALLENGE_TITLE_MARKER" <<<"$title" || return 0
+  host="${u#*://}"; host="${host%%/*}"; host="${host%%\?*}"; host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
+  [[ -n "$host" && "$host" != "$u" ]] || host="<site>"
+  printf '%s: STOP — this page is a security check ("%s"), not the page you asked for. 5dive never solves one. Ask your owner to clear it, wait for their Done, then re-run this step: 5dive browser connect-request %s --challenge --url=%s  (A flat block with nothing to click, such as "access denied" or a 403, is the site refusing this box'"'"'s IP, and a person cannot clear that one either.)\n' \
+    "$PROG" "$(cut -c1-80 <<<"$title")" "$host" "${u:-<the page>}" >&2
+}
 _render_is_challenge() {  # <site> <html>
   grep -qiE "$(_site_challenge_marker "$1")" "$2" 2>/dev/null && return 0
   grep -qiE "$CHALLENGE_TITLE_MARKER" <<<"$(_render_title "$2")"
@@ -3740,11 +3918,12 @@ _serve_running() {  # _serve_running <dir> -> echoes display, 0 if live
 _kv() { [[ -f "$1" ]] && sed -n "s/^$2=//p" "$1" | head -1; }
 
 cmd_serve() {
-  local site="" stop=0 login=0
+  local site="" stop=0 login=0 start_url=""
   while (($#)); do
     case "$1" in
       --stop) stop=1 ;;
       --login) login=1 ;;
+      --url=*) start_url="${1#*=}" ;;
       -h|--help) usage; return 0 ;;
       -*) die "$E_USAGE" "unknown flag: $1" ;;
       *) site="$1" ;;
@@ -3752,6 +3931,14 @@ cmd_serve() {
   done
   [[ -n "$site" ]] || die "$E_USAGE" "which site? e.g. 5dive browser serve linkedin.com"
   _valid_site "$site" || die "$E_USAGE" "'$site' is not a usable profile name"
+  # DIVE-5200: a captcha handoff opens the browser on the page the agent was
+  # stopped on, not the site's front page. Only a page OF THIS SITE.
+  if [[ -n "$start_url" ]]; then
+    _connect_page_ok "$site" "$start_url" \
+      || die "$E_USAGE" "--url must be an http(s) page on $site, got: $start_url"
+  else
+    start_url="$(_site_url "$site")"
+  fi
   # SERVING IS THE OWNER'S ACT. A brokered seat asking to serve is asking to
   # open a profile directory it cannot read; saying so beats an EACCES from
   # somewhere deep inside Chrome.
@@ -3932,6 +4119,8 @@ cmd_serve() {
       printf 'already serving %s on :%s\n' "$site" "$disp"; return 0
     fi
   fi
+  # (An already-running browser keeps the tab it has; --url only picks where a
+  # NEW one opens. The person at the viewer can still move it themselves.)
   _serve_requires
 
   disp=$(_display_num "$site")
@@ -3986,7 +4175,7 @@ cmd_serve() {
     # The start URL is the cold path's last argument below, handed to the daemon
     # so a warm serve opens the SITE and not about:blank (DIVE-4944).
     DISPLAY=":$disp" FIVEDIVE_BROWSER_CHROME="$chrome_path" \
-      FIVEDIVE_BROWSER_START_URL="$(_site_url "$site")" \
+      FIVEDIVE_BROWSER_START_URL="$start_url" \
       _tmp_exec "$daemon" serve "$dir" "$dsock" $dbroker $( (( input )) && printf -- --input) >"$rdy" 2>"$derr" &
     dpid=$!
     # READY IS A LINE THE DAEMON PRINTS WHEN THE CONTEXT IS OPEN AND THE SOCKET
@@ -4049,7 +4238,7 @@ cmd_serve() {
   ( umask 077; : > "$errlog" ) 2>/dev/null || true
   DISPLAY=":$disp" _tmp_exec "$chrome" --user-data-dir="$dir" --no-first-run \
       --no-default-browser-check --window-size=1280,800 \
-      --disable-features=TranslateUI "$(_site_url "$site")" >/dev/null 2>"$errlog" &
+      --disable-features=TranslateUI "$start_url" >/dev/null 2>"$errlog" &
   local cpid=$!
 
   # WAIT FOR THE BROWSER BEFORE ADVERTISING IT. `serve` used to print success
@@ -4575,7 +4764,7 @@ _page_open_probe() {
     BROKEN*)
       die "$E_UNAVAILABLE" "$state. Nothing was rendered and nothing was read: a browser that will not start is a box fault, not a verdict about the $site session." ;;
     CHALLENGE*)
-      die "$E_COLD" "$site is presenting a security challenge, so anything rendered now is the challenge page and not the page you asked for. A person clears it — 5dive browser auth $site" ;;
+      die "$E_COLD" "$site is presenting a security challenge, so anything rendered now is the challenge page and not the page you asked for. A person clears it. Ask your owner to, then carry on after their Done: 5dive browser connect-request $site --challenge --url=<the page you asked for>" ;;
     session\ expired*)
       die "$E_COLD" "$site is logged out. Refusing rather than handing back a screenshot of the sign-in page: that PNG would look exactly like evidence and would be the opposite. A person clears this — 5dive browser auth $site" ;;
     *)
@@ -4976,6 +5165,7 @@ _cmd_read_like() { # _cmd_read_like read|links <site> <url> [flags]
   fi
 
   _signin_guard "$stage/page.html"
+  _challenge_hint "$stage/page.html" "$url"
   local extra rrc=0
   extra=$(_ready_verdict "$url" "$wait_for" "$waitj" "$stage/page.html" "$stage/tree.json" "$partial" "$capture") || rrc=$?
   _derive_capture "$stage" "$url" "$chrome" "$capture" "$extra"
@@ -5215,6 +5405,7 @@ cmd_snapshot() {
 
   [[ -s "$stage/page.html" ]] || die "$E_UNAVAILABLE" "the capture produced no document; no evidence files were written"
   _signin_guard "$stage/page.html" "$(jq -r '.url // ""' <<<"$payload" 2>/dev/null)"
+  _challenge_hint "$stage/page.html" "$(jq -r '.url // ""' <<<"$payload" 2>/dev/null)" "$url"
 
   # tree.json is the refs, written from the same payload the walk returned — so
   # "what I can click" and "what the page said" are one observation on disk.
@@ -5666,6 +5857,7 @@ cmd_act() {
   _policy_log "$site" "$errf" "$final" "$out/page.png"
 
   _signin_guard "$stage/page.html" "$final"
+  _challenge_hint "$stage/page.html" "$final"
 
   # THE SAME TRIPLE A SNAPSHOT LEAVES (DIVE-4983): page.md and page.meta.json from
   # the page the steps left, beside the tree.json the executor walked. Never
@@ -6796,6 +6988,7 @@ CONNECT_REQ_TTL=900          # the owner has 15 minutes to tap Connect
 CONNECT_DONE_TTL=7200        # and two hours to tap Done after that
 CONNECT_VIEW_TTL=$VIEWER_TTL_DEFAULT
 CONNECT_REASON_MAX=200
+CONNECT_URL_MAX=1000
 CONNECT_CONNECTORS_DIR=/etc/5dive/connectors
 CONNECT_CONNECTORD_ENV=/etc/5dive/connectord.env
 CONNECT_PROVISIONING_ENV=/etc/5dive/provisioning.env
@@ -6868,10 +7061,29 @@ _connect_file() { printf '%s/%s' "$CONNECT_DIR" "$(printf '%s' "$1" | sha256sum 
 
 _connect_field() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }
 
-_connect_request() {  # <caller> <site> <reason> [handoff]
-  local caller="$1" site="$2" reason="$3" mode="${4:-}" code f now exp label text kb sent=0 o resp
+# DIVE-5200: the page a captcha handoff opens on. An http(s) page OF THIS SITE,
+# nothing else: the owner is about to be shown it as "the page your agent was
+# stuck on", so it must not be a way to show them some other site.
+_connect_page_ok() {  # <site> <url>
+  local u="$2" host
+  (( ${#u} <= CONNECT_URL_MAX )) || return 1
+  [[ "$u" =~ ^https?://[^[:space:][:cntrl:]]+$ ]] || return 1
+  host="${u#*://}"; host="${host%%/*}"; host="${host%%\?*}"; host="${host%%#*}"; host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
+  [[ -n "$host" ]] && _shot_host_ok "$1" "$host"
+}
+
+_connect_request() {  # <caller> <site> <reason> [challenge <url> | handoff]
+  local caller="$1" site="$2" reason="$3" kind="${4:-login}" url="${5:-}" code f now exp label text kb sent=0 o resp
   _valid_site "$site" && [[ "$site" != "$PUBLIC_SITE" ]] \
     || die "$E_USAGE" "'$site' is not a site a person can log in to"
+  if [[ "$kind" == challenge ]]; then
+    [[ -n "$url" ]] || url="$(_site_url "$site")"
+    _connect_page_ok "$site" "$url" || die "$E_USAGE" "--url must be an http(s) page on $site"
+  elif [[ "$kind" == handoff ]]; then
+    url=""   # DIVE-5287: an input-mode window, opened as it is — no page to move it to
+  else
+    kind=login url=""
+  fi
   reason=$(printf '%s' "$reason" | tr -d '\000-\037\177' | cut -c1-"$CONNECT_REASON_MAX")
   _connect_channel "$caller" \
     || die "$E_UNAVAILABLE" "seat '$caller' has no paired Telegram channel, so there is nobody to ask. Ask the owner to use Connected sites in the 5dive dashboard."
@@ -6884,21 +7096,29 @@ _connect_request() {  # <caller> <site> <reason> [handoff]
   code=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
   f=$(_connect_file "$code")
   now=$(date -u +%s); exp=$(( now + CONNECT_REQ_TTL ))
-  ( umask 077; printf 'op=request\nseat=%s\nsite=%s\nexpires_at=%s\ncreated_at=%s\n' \
-      "$caller" "$site" "$exp" "$now" > "$f" )
+  ( umask 077; printf 'op=request\nseat=%s\nsite=%s\nexpires_at=%s\ncreated_at=%s\nkind=%s\nurl=%s\n' \
+      "$caller" "$site" "$exp" "$now" "$kind" "$url" > "$f" )
 
   label="${caller#agent-}"
-  if [[ "$mode" == handoff ]]; then
+  if [[ "$kind" == challenge ]]; then
+    # Plain words, what is blocking and where. The page's address stays out of
+    # the message: Telegram would preview it, and the site is all they need.
+    text="🧩 ${label} is stuck on a captcha on ${site} and cannot go on by itself."
+    [[ -n "$reason" ]] && text+=$'\n'"Doing: ${reason}"
+    text+=$'\n\n'"Tap Open for a one-time link to the browser on your box, on the page ${label} stopped at. Clear the check yourself, then tap Done and ${label} carries on. ${label} never solves these."
+    kb=$(jq -nc --arg t "Open ${site}" --arg d "bconn:${code}" '{inline_keyboard:[[{text:$t,callback_data:$d}]]}')
+  elif [[ "$kind" == handoff ]]; then
     # DIVE-5287: the SAME Connect button, onto the window the agent was driving.
     text="🖐 ${label} is working in ${site} on your box and needs you to take over."
     [[ -n "$reason" ]] && text+=$'\n'"What for: ${reason}"
     text+=$'\n\n'"Tap Connect to open the same browser window it is using. ${label} is paused while you are in it; tap Done when you are finished and it carries on from the page you left."
+    kb=$(jq -nc --arg t "Connect ${site}" --arg d "bconn:${code}" '{inline_keyboard:[[{text:$t,callback_data:$d}]]}')
   else
-  text="🔐 ${label} asks you to log in to ${site} in the browser on your box."
-  [[ -n "$reason" ]] && text+=$'\n'"Why: ${reason}"
-  text+=$'\n\n'"Tap Connect for a one-time login link. Nothing opens unless you tap. You log in yourself; ${label} never sees your password."
+    text="🔐 ${label} asks you to log in to ${site} in the browser on your box."
+    [[ -n "$reason" ]] && text+=$'\n'"Why: ${reason}"
+    text+=$'\n\n'"Tap Connect for a one-time login link. Nothing opens unless you tap. You log in yourself; ${label} never sees your password."
+    kb=$(jq -nc --arg t "Connect ${site}" --arg d "bconn:${code}" '{inline_keyboard:[[{text:$t,callback_data:$d}]]}')
   fi
-  kb=$(jq -nc --arg t "Connect ${site}" --arg d "bconn:${code}" '{inline_keyboard:[[{text:$t,callback_data:$d}]]}')
   for o in $CONNECT_TG_OWNERS; do
     resp=$(_connect_tg sendMessage --data-urlencode "chat_id=$o" --data-urlencode "text=$text" --data-urlencode "reply_markup=$kb")
     [[ "$(jq -r '.ok // false' <<<"$resp" 2>/dev/null)" == true ]] && sent=$((sent + 1))
@@ -6907,9 +7127,15 @@ _connect_request() {  # <caller> <site> <reason> [handoff]
     rm -f "$f"
     die "$E_UNAVAILABLE" "Telegram did not accept the Connect message, so nobody was asked. Nothing was bound."
   fi
-  printf 'asked the owner to connect %s (%s message%s). Nothing is bound until they tap; the request expires %s.\n' \
-    "$site" "$sent" "$([[ $sent == 1 ]] || echo s)" "$(date -u -d "@$exp" +%Y-%m-%dT%H:%M:%SZ)"
-  printf 'You will get a channel message when they tap and when they finish. Then `5dive browser status %s` has the verdict.\n' "$site"
+  if [[ "$kind" == challenge ]]; then
+    printf 'asked the owner to clear the check on %s (%s message%s). Nothing is bound until they tap; the request expires %s.\n' \
+      "$site" "$sent" "$([[ $sent == 1 ]] || echo s)" "$(date -u -d "@$exp" +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'You will get a channel message when they tap and when they finish. Do not poll. After their Done, re-read the page and carry on from the step you stopped on; check what already happened first, so nothing is sent twice.\n'
+  else
+    printf 'asked the owner to connect %s (%s message%s). Nothing is bound until they tap; the request expires %s.\n' \
+      "$site" "$sent" "$([[ $sent == 1 ]] || echo s)" "$(date -u -d "@$exp" +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'You will get a channel message when they tap and when they finish. Then `5dive browser status %s` has the verdict.\n' "$site"
+  fi
 }
 
 # Claim a code exactly once: the rename is atomic, so two taps (or a tap and a
@@ -6933,6 +7159,9 @@ _connect_claim() {  # <caller> <code> <op> <sender>  -> sets CONNECT_SITE; print
     die "$E_PERM" "that button has expired. Ask the agent to send a new one."
   fi
   CONNECT_SITE=$(_connect_field "$claimed" site)
+  CONNECT_KIND=$(_connect_field "$claimed" kind)
+  CONNECT_URL=$(_connect_field "$claimed" url)
+  [[ "$CONNECT_KIND" == challenge ]] || CONNECT_KIND=login CONNECT_URL=""
   rm -f "$claimed"
 }
 
@@ -6952,14 +7181,25 @@ _connect_tap() {  # <caller> <code> <sender>
   _connect_claim "$caller" "$code" request "$sender"
   site="$CONNECT_SITE"
   _valid_site "$site" || die "$E_PERM" "the request names no usable site"
+  local kind="$CONNECT_KIND"; local -a at=()
+  if [[ "$kind" == challenge ]]; then
+    _connect_page_ok "$site" "$CONNECT_URL" || die "$E_PERM" "the request names no usable page"
+    at=("--url=$CONNECT_URL")
+  fi
 
   err=$(mktemp); trap 'rm -f "$err"' EXIT
   # serve first, so an existing profile resolves the way it always has; auth
   # only when serve says there is no profile, then serve once more (DIVE-4895).
-  rc=0; _connect_as_box serve "$site" --login >/dev/null 2>"$err" || rc=$?
+  # --login (DIVE-5203): a person is about to use this browser, so it is plain
+  # Chrome — for a captcha as much as for a sign-in, since the checks that refuse
+  # an automated browser's login are the same ones that keep re-asking it.
+  rc=0; _connect_as_box serve "$site" --login "${at[@]}" >/dev/null 2>"$err" || rc=$?
   if (( rc != 0 )) && grep -q '\bno profile for\b' "$err"; then
     rc=0; _connect_as_box auth "$site" >/dev/null 2>"$err" || rc=$?
-    (( rc == 0 )) && { rc=0; _connect_as_box serve "$site" --login >/dev/null 2>"$err" || rc=$?; }
+    # auth on a display-less box serves the site's FRONT page itself, and a
+    # running browser keeps its tab; a captcha view must open on the stopped page.
+    (( rc == 0 && ${#at[@]} )) && { _connect_as_box serve "$site" --stop >/dev/null 2>&1 || true; }
+    (( rc == 0 )) && { rc=0; _connect_as_box serve "$site" --login "${at[@]}" >/dev/null 2>"$err" || rc=$?; }
   fi
   (( rc == 0 )) || die "$E_UNAVAILABLE" "the browser for $site did not start: $(tail -1 "$err")"
 
@@ -6993,10 +7233,10 @@ _connect_tap() {  # <caller> <code> <sender>
 
   done_code=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
   f=$(_connect_file "$done_code")
-  ( umask 077; printf 'op=done\nseat=%s\nsite=%s\nexpires_at=%s\n' \
-      "$caller" "$site" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" > "$f" )
-  printf 'site=%s\nurl=https://%s%s\nexpires=%s\ndone=%s\n' \
-    "$site" "$host" "$path" "$(date -u -d "@$exp" +%Y-%m-%dT%H:%M:%SZ)" "$done_code"
+  ( umask 077; printf 'op=done\nseat=%s\nsite=%s\nexpires_at=%s\nkind=%s\nurl=%s\n' \
+      "$caller" "$site" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" "$kind" "$CONNECT_URL" > "$f" )
+  printf 'site=%s\nurl=https://%s%s\nexpires=%s\ndone=%s\nkind=%s\n' \
+    "$site" "$host" "$path" "$(date -u -d "@$exp" +%Y-%m-%dT%H:%M:%SZ)" "$done_code" "$kind"
 }
 
 # Is the box's <site> an input-mode browser? Read from the box's own files, as
@@ -7017,6 +7257,24 @@ _connect_done() {  # <caller> <code> <sender>
   _connect_claim "$caller" "$code" done "$sender"
   site="$CONNECT_SITE"
   _valid_site "$site" || die "$E_PERM" "the request names no usable site"
+  if [[ "$CONNECT_KIND" == challenge ]]; then
+    # DIVE-5200: a cleared check lives in THIS profile (the clearance cookie), so
+    # Done closes the person's view and hands the same profile back to the agent
+    # — no probe: whether the page is clear is the agent's own next read of it,
+    # not a login verdict. The person used plain Chrome (DIVE-5203), which an
+    # agent cannot drive, so a plain serve now swaps it back for the warm session
+    # (cmd_serve: a login serve with no live view), opened on the stopped page.
+    # Doing it here rather than on the agent's next command is what lets a
+    # brokered seat, which cannot serve, carry on at all.
+    local st="the view is closed and the browser is back in the agent's hands, on the page it stopped at"
+    _connect_as_box viewer-revoke "$site" >/dev/null 2>&1 || true
+    local -a at=()
+    _connect_page_ok "$site" "$CONNECT_URL" && at=("--url=$CONNECT_URL")
+    _connect_as_box serve "$site" "${at[@]}" >/dev/null 2>&1 \
+      || st="the view is closed; the browser did not restart for the agent, so its next command starts it (the cleared check is kept in the profile)"
+    printf 'site=%s\nkind=challenge\nstatus_rc=0\nstatus=%s\n' "$site" "$st"
+    return 0
+  fi
   # revoke -> stop -> probe, in that order: a served profile cannot be probed
   # honestly, and only this last command may stamp the liveness file.
   _connect_as_box viewer-revoke "$site" >/dev/null 2>&1 || true
@@ -7045,23 +7303,27 @@ cmd_connect_priv() {
   case "${w[0]:-}" in
     request) (( ${#w[@]} == 3 )) || die "$E_USAGE" "_connect request <site> <reason>"
              _connect_request "$CONNECT_CALLER" "${w[1]}" "${w[2]}" ;;
+    challenge) (( ${#w[@]} == 4 )) || die "$E_USAGE" "_connect challenge <site> <url> <reason>"
+             _connect_request "$CONNECT_CALLER" "${w[1]}" "${w[3]}" challenge "${w[2]}" ;;
     handoff) (( ${#w[@]} == 3 )) || die "$E_USAGE" "_connect handoff <site> <reason>"
              _connect_request "$CONNECT_CALLER" "${w[1]}" "${w[2]}" handoff ;;
     tap)     (( ${#w[@]} == 3 )) || die "$E_USAGE" "_connect tap <code> <telegram user id>"
              _connect_tap "$CONNECT_CALLER" "${w[1]}" "${w[2]}" ;;
     done)    (( ${#w[@]} == 3 )) || die "$E_USAGE" "_connect done <code> <telegram user id>"
              _connect_done "$CONNECT_CALLER" "${w[1]}" "${w[2]}" ;;
-    *) die "$E_USAGE" "_connect: request, handoff, tap or done" ;;
+    *) die "$E_USAGE" "_connect: request, challenge, handoff, tap or done" ;;
   esac
 }
 
 # `connect-request` — the agent's verb. Unprivileged: it only hands the request
 # to root, which is where the code is minted and the button sent.
 cmd_connect_request() {
-  local site="" reason="" rc=0
+  local site="" reason="" rc=0 challenge=0 url=""
   while (($#)); do
     case "$1" in
       --reason=*) reason="${1#*=}" ;;
+      --challenge) challenge=1 ;;
+      --url=*) url="${1#*=}" ;;
       -h|--help) usage; return 0 ;;
       -*) die "$E_USAGE" "unknown flag: $1" ;;
       *) [[ -z "$site" ]] || die "$E_USAGE" "one site at a time"; site="$1" ;;
@@ -7069,7 +7331,17 @@ cmd_connect_request() {
   done
   [[ -n "$site" ]] || die "$E_USAGE" "which site? e.g. 5dive browser connect-request booking.com --reason=\"to search hotels for you\""
   _valid_site "$site" && [[ "$site" != "$PUBLIC_SITE" ]] || die "$E_USAGE" "'$site' is not a site a person can log in to"
-  printf '%s\0' request "$site" "$reason" | "${CONNECT_PRIV[@]}" || rc=$?
+  if (( challenge )); then
+    # DIVE-5200: stuck on a captcha. Name the SITE (the host), even when the page
+    # was read in the public profile: the check is cleared in a box browser for
+    # that site, and your next read of the page goes through it.
+    [[ -z "$url" ]] || _connect_page_ok "$site" "$url" \
+      || die "$E_USAGE" "--url must be the http(s) page on $site you were stopped on, got: $url"
+    printf '%s\0' challenge "$site" "$url" "$reason" | "${CONNECT_PRIV[@]}" || rc=$?
+  else
+    [[ -z "$url" ]] || die "$E_USAGE" "--url goes with --challenge (the page you were stopped on)"
+    printf '%s\0' request "$site" "$reason" | "${CONNECT_PRIV[@]}" || rc=$?
+  fi
   if (( rc == 1 )) && [[ "${CONNECT_PRIV[0]}" == sudo ]] && ! sudo -n -l /usr/local/bin/5dive browser _connect >/dev/null 2>&1; then
     die "$E_PERM" "this seat has no grant to send a Connect request. Ask the owner to use Connected sites in the 5dive dashboard."
   fi

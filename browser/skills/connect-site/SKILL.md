@@ -151,13 +151,14 @@ keyboard attached to the person's account.
   end a site's login (the site sees a new IP), so set it before connecting, not after.
 - **A challenge is classified BEFORE a logged-out state**, because a challenge page still
   carries the login markup. Trust the label; do not re-derive it from the HTML.
-- **Sessions die on the site's schedule, not ours.** A scheduled check must skip a profile
-  while it is served, then probe it once the browser is stopped; otherwise the profile lock
-  produces `UNKNOWN` instead of a liveness verdict.
+- **Sessions die on the site's schedule, not ours.** A served site is checked through the
+  browser that holds it. Only a plain-Chrome login view is skipped, and it is checked once it stops.
 - **Setup installs that schedule.** `sudo 5dive browser setup` enables a per-seat systemd timer
-  which runs `5dive browser probe-all` about every six hours. The sweep prints `skipped: served`
-  and leaves the existing liveness stamp untouched for a profile whose browser is open; close the
-  view/browser before asking for an immediate check.
+  which runs `5dive browser probe-all` about every six hours.
+- **`unverifiable` is not a sign-out.** It means the automatic check met a bot check that the
+  site shows automated browsers (or, in input mode, the title could not tell). Its date is when
+  the login was last seen signed in. Do not send the owner to reconnect over it; a screen
+  (`5dive browser shot <site>`) is the check.
 - **Hand-written adapters live outside the installed plugin.** An upgrade replaces the plugin
   directory, so a custom `<site>.json` belongs in the relay seat's store named in step 1, never
   in the dispatched package's `adapters/`.
@@ -168,7 +169,9 @@ This is **persistent human-authenticated sessions** — a person logs in, once, 
 the agent is granted permission to operate the session, never the credentials. It is not
 anti-bot bypassing. A CAPTCHA, a 2FA prompt or an "unusual activity" interstitial is a
 **hard stop that asks for a person**: surface it, do not attempt it, do not look for a way
-around it. The one exception is the owner's own authenticator: if the owner saved the site's
+around it. Ask them with `5dive browser connect-request <site> --challenge --url=<page>` (the
+use-browser skill has the whole handoff), then carry on after their Done. The one exception is
+the owner's own authenticator: if the owner saved the site's
 authenticator seed on the box (`5dive browser totp status <site>`), `run` types the 2FA code
 itself. To offer that, file the secret gate `totp status` prints, so the owner pastes the seed
 on the box's one-time link. Never ask for it in chat, and never echo it back. Never ask the human for a password, never accept one, never write one down, and
@@ -193,3 +196,10 @@ status` says which sites are currently unfiltered. It is off for the whole host
 (both `example.com` and its subdomains) — there is no partial setting — and a
 browser already running under `serve` may need `serve example.com --stop` before it
 picks the change up.
+
+## From real jobs
+
+Lessons from browser jobs that went wrong on real sites (DIVE-5390). One line each:
+
+- **Each site's login is its own.** A Google sign-in on one site does not carry to another, so "Sign in with Google" on a new site still needs the owner to connect that site.
+- **Served is not signed in.** A running browser can hold an expired session. Check `5dive browser status <site>` reads authenticated before you hand off work that needs the login, and run the connect handover if it does not.
