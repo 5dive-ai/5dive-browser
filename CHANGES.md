@@ -47,6 +47,29 @@ skipped every served profile, and there is no adapter for most sites a customer 
   no-adapter booking.com mutant now reads the measured logged-out header as signed out, through
   the generic check.
 
+### Added — stuck on a captcha, the agent asks the owner and carries on (DIVE-5200 ported from the registry), 1.30.0
+
+DIVE-5200 shipped as browser 1.24.0 in the 5dive-plugins registry copy only (5dive-plugins#140)
+and never landed here, so the two copies diverged both ways: the registry had the captcha ask and
+none of 1.28–1.29.2, and this repo had those and not the ask. The box converger's floor is a min
+over both copies, so it was held at the registry's 1.27.0 and DIVE-5374's sign-in fix could not
+reach a box installed from the registry. This release ports the ask, and the registry copy is
+synced from this one byte-for-byte (DIVE-5386).
+
+- `5dive browser connect-request <site> --challenge --url=<page>` sends the paired owner
+  "<agent> is stuck on a captcha on <site>" with an Open button, on the DIVE-4992 rails (no tap,
+  no bind; root mints the link and sends it as code). The page must be an http(s) page of that
+  site; root re-checks it, and again at the tap and at Done.
+- The browser opens on the stopped page as plain Chrome for the person. Done closes the view and
+  serves the page back to the agent, which re-reads it through the profile the check was cleared
+  in and carries on without a second ask. `serve --url=<page>` opens a page of the site only.
+- Page verbs name the command when a render is titled like a check. 5dive still never solves a
+  challenge.
+- It sits next to DIVE-5287's input-mode `handoff` in the same privileged `_connect` verb:
+  `request`, `challenge`, `handoff`, `tap`, `done`.
+- Harness: `tests/browser_connect_request_unit.sh` gains the C1–C17 and H1–H3 arms from
+  5dive-plugins 905a394 (127 pass; 27 red against the 1.29.2 binary).
+
 ### Fixed — a wedged probe Chrome can no longer hold a login's profile for hours (DIVE-5375), 1.29.2
 
 On chill-gorge (2026-10-01 01:52Z) a status probe's headless Chrome logged "Failed to connect to
@@ -277,9 +300,9 @@ does not reliably write the pending batch. So a sign-in less than ~30 s before D
 
 ### Fixed — a signed-in Reddit no longer reads as a security challenge (DIVE-5285), 1.24.1
 
-1.24.0 is DIVE-5200 (an agent stuck on a captcha asks the owner), which shipped in the registry only
-(5dive-plugins#140) and is not in this repo yet. This entry is numbered after it so both repos
-name the same fix with the same version.
+1.24.0 is DIVE-5200 (an agent stuck on a captcha asks the owner), which shipped in the registry
+first (5dive-plugins#140) and reached this repo in 1.30.0 (DIVE-5386). This entry is numbered after
+it so both repos name the same fix with the same version.
 
 Every agent reading a connected, signed-in Reddit was told "reddit.com is presenting a security
 challenge" and stopped. The reddit adapter probes `/login/`, and that page carries Google's

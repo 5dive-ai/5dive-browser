@@ -167,7 +167,9 @@ This is **persistent human-authenticated sessions** — a person logs in, once, 
 the agent is granted permission to operate the session, never the credentials. It is not
 anti-bot bypassing. A CAPTCHA, a 2FA prompt or an "unusual activity" interstitial is a
 **hard stop that asks for a person**: surface it, do not attempt it, do not look for a way
-around it. The one exception is the owner's own authenticator: if the owner saved the site's
+around it. Ask them with `5dive browser connect-request <site> --challenge --url=<page>` (the
+use-browser skill has the whole handoff), then carry on after their Done. The one exception is
+the owner's own authenticator: if the owner saved the site's
 authenticator seed on the box (`5dive browser totp status <site>`), `run` types the 2FA code
 itself. To offer that, file the secret gate `totp status` prints, so the owner pastes the seed
 on the box's one-time link. Never ask for it in chat, and never echo it back. Never ask the human for a password, never accept one, never write one down, and
@@ -192,3 +194,10 @@ status` says which sites are currently unfiltered. It is off for the whole host
 (both `example.com` and its subdomains) — there is no partial setting — and a
 browser already running under `serve` may need `serve example.com --stop` before it
 picks the change up.
+
+## From real jobs
+
+Lessons from browser jobs that went wrong on real sites (DIVE-5390). One line each:
+
+- **Each site's login is its own.** A Google sign-in on one site does not carry to another, so "Sign in with Google" on a new site still needs the owner to connect that site.
+- **Served is not signed in.** A running browser can hold an expired session. Check `5dive browser status <site>` reads authenticated before you hand off work that needs the login, and run the connect handover if it does not.
