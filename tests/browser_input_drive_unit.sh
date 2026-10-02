@@ -22,6 +22,10 @@
 #           site as input; an adapter's "drive": "cdp" still wins; a proxied seat
 #           falls back to the automated browser with a note, not a refusal; the
 #           setting is root's; `auto` is the shipped default again
+#        R11 a person's sign-in survives Done on a daemon-held browser (DIVE-5374):
+#           the stop waits for the cookie commit when a viewer was redeemed on this
+#           serve — input or warm CDP — within 60 s of the person leaving, and not
+#           otherwise; a mutant without it loses it
 #   L  LIVE, when this machine has Xvfb and Chrome (GitHub's ubuntu runner does):
 #      the real daemon, real plain Chrome, real XTEST input.
 #        L1 the page sees navigator.webdriver === false, and the daemon reports
@@ -163,6 +167,20 @@ const sock = rest.filter(a => !a.startsWith('--'))[0];
 fs.appendFileSync('$TMP/daemon.argv', process.argv.slice(2).join(' ') + '\n');
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
 let hand = false;
+// CHROME'S COOKIE BATCH (R11, DIVE-5374): what a person signs in with reaches
+// Default/Cookies only when the commit timer fires, FAKE_COMMIT_MS after the
+// sign-in (the test touches .fake-signin); a shutdown before then loses it.
+const commitMs = Number(process.env.FAKE_COMMIT_MS || 0);
+if (commitMs) {
+  let t0 = 0;
+  const iv = setInterval(() => {
+    if (!t0 && fs.existsSync(profile + '/.fake-signin')) t0 = Date.now();
+    if (t0 && Date.now() - t0 >= commitMs) {
+      fs.mkdirSync(profile + '/Default', { recursive: true });
+      fs.writeFileSync(profile + '/Default/Cookies', 'user_session\n'); clearInterval(iv);
+    }
+  }, 50);
+}
 const srv = net.createServer((c) => {
   let buf = '';
   c.on('data', (d) => {
@@ -175,6 +193,8 @@ const srv = net.createServer((c) => {
     if (req.op === 'ping') { send({ t: 'out', data: 'pong\n' }); return end(0); }
     // The real daemon re-enters bin/browser as the owner for this; the fake hands out a token.
     if (req.op === 'lease') { send({ t: 'out', data: req.act === 'acquire' ? 'fedcba9876543210fedcba9876543210\n' : 'free\n' }); return end(0); }
+    // Either mode: a warm (CDP) serve is stopped this way too (R11e).
+    if (req.op === 'shutdown') { end(0); srv.close(); try { fs.unlinkSync(sock); } catch (e) {} process.exit(0); }
     if (!input) { send({ t: 'err', msg: "unknown op '" + req.op + "'" }); return end(70); }
     if (req.op === 'title') { send({ t: 'out', data: JSON.stringify({ drive: 'input', title: 'Fake Page', handoff: hand, viewer: false }) + '\n' }); return end(0); }
     if (req.op === 'hand') { if (req.act === 'open') hand = true; if (req.act === 'close') hand = false;
@@ -185,7 +205,6 @@ const srv = net.createServer((c) => {
       if (rc === 75) send({ t: 'err', msg: 'CHALLENGE: fake' });
       return end(rc);
     }
-    if (req.op === 'shutdown') { end(0); srv.close(); try { fs.unlinkSync(sock); } catch (e) {} process.exit(0); }
     send({ t: 'err', msg: 'refused ' + req.op }); end(70);
   });
 });
@@ -351,6 +370,98 @@ arm 'R10 drive=cdp: the adapter-less site is the automated browser again' "$n0 n
 arm 'R10 ...and tiktok.com is still input (its adapter wins)' 0 "$("$BROWSER" serve tiktok.com >/dev/null 2>&1; echo $?)"
 rm -f "$TMP/drive-default"
 unset FIVEDIVE_BROWSER_DRIVE_DEFAULT_FILE
+
+# R11 — A PERSON'S SIGN-IN SURVIVES DONE ON A DAEMON-HELD BROWSER (DIVE-5374). On an
+# input-mode box the viewer attaches to the session daemon's plain Chrome, so the stop
+# Done runs has no chrome_pid and no login=1 — and DIVE-5286's cookie-commit wait was
+# skipped: chill-gorge lost a github.com sign-in made 7 s before Done (2026-10-02). The
+# fake daemon above commits the sign-in FAKE_COMMIT_MS after it and loses it on shutdown.
+"$BROWSER" serve tiktok.com --stop >/dev/null 2>&1
+R11D="$TMP/pr/$SEAT/tiktok.com"
+r11_serve() {  # r11_serve [browser] — a fresh input serve whose commit is 1.5 s after the sign-in
+  rm -f "$R11D/.fake-signin" "$R11D/Default/Cookies" "$R11D/.5dive-viewer.admitted"
+  FAKE_COMMIT_MS=1500 "${1:-$BROWSER}" serve tiktok.com >/dev/null 2>&1
+  _KILL+=("$(sed -n 's/^daemon_pid=//p' "$R11D/.5dive-serve")" "$(sed -n 's/^xvfb_pid=//p' "$R11D/.5dive-serve")")
+}
+r11_admit() {  # what viewer-redeem writes (graded there, in browser_plugin_unit.sh T10d)
+  ( umask 077; printf 'admitted_at=%s\n' "${1:-$(date -u +%s)}" > "$R11D/.5dive-viewer.admitted" )
+}
+r11_stop() {  # r11_stop [browser] — times the stop into R11MS
+  local s; s=$(date +%s%3N)
+  "${1:-$BROWSER}" serve tiktok.com --stop >/dev/null 2>&1; R11RC=$?
+  R11MS=$(( $(date +%s%3N) - s ))
+}
+r11_cookie() { cat "$R11D/Default/Cookies" 2>/dev/null; }
+
+r11_serve; r11_admit
+arm 'R11a (setup) an input serve with a person admitted to it' 'yes yes' \
+  "$(yn grep -q '^drive=input' "$R11D/.5dive-serve") $(yn test -s "$R11D/.5dive-viewer.admitted")"
+: > "$R11D/.fake-signin"   # the person signs in; Done comes at once, before the commit
+r11_stop
+arm 'R11a serve --stop stops' 0 "$R11RC"
+arm 'R11a ...and the sign-in is on disk: the stop waited for the commit' 'user_session' "$(r11_cookie)"
+arm 'R11a ...and left on the commit, not the 24 s cap' yes "$( (( R11MS < 6000 )) && echo yes || echo "no (${R11MS}ms)")"
+arm 'R11a ...and the daemon, its serve record and the admitted marker are gone' 'no no' \
+  "$(yn test -e "$R11D/.5dive-serve") $(yn test -e "$R11D/.5dive-viewer.admitted")"
+
+# R11b nobody was let in: an agent's stop of the same browser is not held.
+r11_serve; : > "$R11D/.fake-signin"
+r11_stop
+arm 'R11b with no person admitted the stop is not held' yes "$( (( R11MS < 3000 )) && echo yes || echo "no (${R11MS}ms)")"
+arm 'R11b (control) ...and the fake did lose its pending commit on shutdown' '' "$(r11_cookie)"
+
+# R11c a marker from an EARLIER serve does not hold this one.
+r11_serve; r11_admit 1; : > "$R11D/.fake-signin"
+r11_stop
+arm 'R11c a person admitted before this serve started does not hold its stop' yes "$( (( R11MS < 3000 )) && echo yes || echo "no (${R11MS}ms)")"
+
+# R11d nothing pending: the wait is capped, and the stop still stops.
+r11_serve; r11_admit
+FIVEDIVE_BROWSER_COOKIE_SETTLE=1 r11_stop
+arm 'R11d with no commit coming the stop waits out the cap and stops' '0 yes no' \
+  "$R11RC $( (( R11MS >= 900 && R11MS < 4000 )) && echo yes || echo "no (${R11MS}ms)") $(yn test -e "$R11D/.5dive-serve")"
+
+# R11e a warm (CDP) serve a person was viewing waits too: the key is the person, not the mode.
+"$BROWSER" serve reddit.com --stop >/dev/null 2>&1
+R11W="$TMP/pr/$SEAT/reddit.com"; rm -f "$R11W/.fake-signin" "$R11W/Default/Cookies"
+FAKE_COMMIT_MS=1500 "$BROWSER" serve reddit.com >/dev/null 2>&1
+_KILL+=("$(sed -n 's/^daemon_pid=//p' "$R11W/.5dive-serve")")
+( umask 077; printf 'admitted_at=%s\n' "$(date -u +%s)" > "$R11W/.5dive-viewer.admitted" )
+arm 'R11e (setup) a warm CDP serve' no "$(yn grep -q '^drive=input' "$R11W/.5dive-serve")"
+: > "$R11W/.fake-signin"
+"$BROWSER" serve reddit.com --stop >/dev/null 2>&1
+arm 'R11e ...and the sign-in a person made in it is on disk after the stop' 'user_session' "$(cat "$R11W/Default/Cookies" 2>/dev/null)"
+
+# R11f a person who left long ago does not hold a later stop (the idle sweep's): the input
+# daemon lives for hours, and what they changed before leaving is on disk by now.
+r11_serve; : > "$R11D/.fake-signin"
+( umask 077; printf 'admitted_at=%s\nleft_at=%s\n' "$(( $(date -u +%s) - 700 ))" "$(( $(date -u +%s) - 600 ))" > "$R11D/.5dive-viewer.admitted" )
+sed -i "s/^started_at=.*/started_at=$(( $(date -u +%s) - 800 ))/" "$R11D/.5dive-serve"
+r11_stop
+arm 'R11f a person who left 10 min ago does not hold the stop' yes "$( (( R11MS < 3000 )) && echo yes || echo "no (${R11MS}ms)")"
+
+# R11g ...but Done after a LONG view does: its revoke takes the view down a second before the stop.
+r11_serve
+sed -i "s/^started_at=.*/started_at=$(( $(date -u +%s) - 800 ))/" "$R11D/.5dive-serve"
+r11_admit "$(( $(date -u +%s) - 700 ))"
+sleep 300 & R11V=$!; _KILL+=("$R11V")
+( umask 077; printf 'vnc_pid=%s\n' "$R11V" > "$R11D/.5dive-viewer" )
+"$BROWSER" viewer-revoke tiktok.com >/dev/null 2>&1
+arm 'R11g (setup) the revoke recorded when the person left' yes "$(yn grep -q '^left_at=' "$R11D/.5dive-viewer.admitted")"
+: > "$R11D/.fake-signin"
+r11_stop
+arm 'R11g a sign-in at the end of a 10-minute view is on disk after Done' 'user_session' "$(r11_cookie)"
+
+# R11m MUTANT: the 1.28.0 stop, whose wait keys on login=1 alone — the sign-in is lost.
+MUT11="$TMP/mut11"; rm -rf "$MUT11"; cp -r "$ROOT/browser" "$MUT11"
+sed -i 's/^_viewer_admitted_since() {.*/&\n  return 1/' "$MUT11/bin/browser"
+arm 'R11m (anchor) the mutation applied' 1 "$(grep -A1 '^_viewer_admitted_since() {' "$MUT11/bin/browser" | grep -c '^  return 1$')"
+r11_serve "$MUT11/bin/browser"; r11_admit; : > "$R11D/.fake-signin"
+r11_stop "$MUT11/bin/browser"
+arm 'R11m the mutant still says it stopped' 0 "$R11RC"
+arm 'R11m ...and the sign-in never reached disk — the lost login' '' "$(r11_cookie)"
+sleep 2
+arm 'R11m (control) ...and the commit it cut off never came' '' "$(r11_cookie)"
 export PATH="$OLDPATH"
 cd "$ROOT"
 

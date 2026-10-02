@@ -1231,6 +1231,9 @@ t  'T10d (control) x11vnc recorded its argv, so the two arms below are graded' \
 tc 'T10d ...which x11vnc was handed as a FILE, never in argv' '-passwdfile' "$VNC_ARGV_D"
 tn 'T10d ...so the password itself never reaches /proc/<pid>/cmdline' \
    "$REDEEMED_PW" "$VNC_ARGV_D"
+# DIVE-5374: the record that a person was let in, which `serve --stop` keys its cookie wait on.
+t  'T10d ...and records that a person was admitted (for the stop that follows Done)' 'yes 600' \
+   "$(grep -qE '^admitted_at=[0-9]+$' "$VDIR/.5dive-viewer.admitted" 2>/dev/null && echo yes || echo no) $(stat -c '%a' "$VDIR/.5dive-viewer.admitted" 2>/dev/null)"
 run env PATH="$SPATH" bash -c "printf '%s' '$NONCE' | '$BROWSER' viewer-redeem viewsite --nonce=- --session=sess-A"
 t  'T10e A REPLAY OF THE SAME LINK IS REFUSED' 77 "$RC"
 tc 'T10e ...saying so in words a customer can act on' 'already been used' "$ERR"
@@ -1342,7 +1345,9 @@ tn 'T10o ...and never grades the guess' 'not valid for' "$ERR"
 # customer-facing failure as the timeout bug, arriving by a different door.
 run env PATH="$SPATH" "$BROWSER" viewer viewsite --bind=sess-A --ttl=600
 NONCE7="${OUT##*/}"
-run env PATH="$SPATH" DISPLAY= "$BROWSER" serve viewsite --stop
+# A person was admitted to this serve above (T10d), so the stop waits for a cookie commit the
+# fake Chrome never makes (DIVE-5374); cap it, the wait itself is graded in T49 and R11.
+run env PATH="$SPATH" DISPLAY= FIVEDIVE_BROWSER_COOKIE_SETTLE=1 "$BROWSER" serve viewsite --stop
 t  'T10p serve --stop exits 0' 0 "$RC"
 run env PATH="$SPATH" bash -c "printf '%s' '$NONCE7' | '$BROWSER' viewer-redeem viewsite --nonce=- --session=sess-A"
 t  'T10p A TICKET DOES NOT SURVIVE THE BROWSER IT VIEWS' 77 "$RC"
@@ -1610,7 +1615,7 @@ run env PATH="$SPATH" "$BROWSER" viewer loosev --bind=sess-A
 t  'T10l ...and by viewer' 77 "$RC"
 chmod 700 "$BADV"
 
-env PATH="$SPATH" "$BROWSER" serve viewsite --stop >/dev/null 2>&1 || true
+env PATH="$SPATH" FIVEDIVE_BROWSER_COOKIE_SETTLE=1 "$BROWSER" serve viewsite --stop >/dev/null 2>&1 || true
 
 # =========== T11/T12/T13 the Connected-sites tile shows a state a customer can trust (DIVE-4426)
 #
@@ -7532,6 +7537,7 @@ for f in browser/README.md browser/AGENTS.md browser/skills/use-browser/SKILL.md
      "$(tr -s ' \n' '  ' < "$ROOT/$f")"
 done
 tc 'T46e CHANGES.md carries the entry' 'DIVE-620' "$(cat "$ROOT/CHANGES.md")"
+tc 'T49g CHANGES.md carries the DIVE-5374 entry (the input-mode stop waits too)' 'DIVE-5374' "$(cat "$ROOT/CHANGES.md")"
 
 # --- T49 serve --stop waits for a login view's cookies to reach disk (DIVE-5286) ---------------
 # A login lost on Done: a GitHub sign-in 13 s before Done never reached disk (chill-gorge

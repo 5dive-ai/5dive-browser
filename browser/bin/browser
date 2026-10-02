@@ -3349,6 +3349,25 @@ _daemon_lease_json() {
 }
 _viewer_ticket()  { echo "$1/.5dive-viewer.ticket"; }
 _viewer_pidfile() { echo "$1/.5dive-viewer"; }
+# A PERSON WAS LET IN (DIVE-5374). Written at redeem and outliving the ticket's
+# state, which the revoke Done runs first overwrites — the stop that follows must
+# still know a person was in this browser, because their sign-in may not be on
+# disk yet. `left_at` is when the view was taken down. Cleared with the serve it
+# belongs to.
+_viewer_admitted_file() { echo "$1/.5dive-viewer.admitted"; }
+# True when a person was admitted to THIS serve (at or after <serve-started-at>)
+# and was in it within the last 60 s. Chrome commits a cookie batch ~30 s after
+# its first change, so whatever a person changed before they left a minute ago is
+# on disk already. Without that bound an input-mode daemon (which lives for hours)
+# would make every later stop of it, the idle sweep's included, sit out the cap.
+_viewer_admitted_since() {  # _viewer_admitted_since <dir> <serve-started-at>
+  local af at left; af="$(_viewer_admitted_file "$1")"
+  at=$(_kv "$af" admitted_at); left=$(_kv "$af" left_at)
+  [[ "$at" =~ ^[0-9]+$ ]] || return 1
+  [[ "$2" =~ ^[0-9]+$ ]] && (( at < $2 )) && return 1
+  [[ "$left" =~ ^[0-9]+$ ]] && (( left > at )) && at=$left
+  (( $(date -u +%s) - at <= 60 ))
+}
 
 _have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -3489,17 +3508,6 @@ cmd_serve() {
     _viewer_stop "$dir"
     local f; f="$(_serve_pidfile "$dir")"
     local xpid cpid dpid; xpid=$(_kv "$f" xvfb_pid); cpid=$(_kv "$f" chrome_pid); dpid=$(_kv "$f" daemon_pid)
-    # ASK THE DAEMON TO GO, THEN INSIST (DIVE-4621). The graceful path closes the
-    # context, which is how Chrome writes the profile out; SIGKILL on a browser
-    # mid-write is how a profile that holds a login gets corrupted, and the login
-    # is the durable half this whole design protects. The kill below is the
-    # backstop for a daemon that is wedged, not the route.
-    if [[ -n "$dpid" ]] && _pid_live "$dpid"; then
-      _daemon_call "$dir" '{"op":"shutdown"}' >/dev/null 2>&1 || true
-      local w=0
-      while (( w < 100 )) && _pid_live "$dpid"; do sleep 0.05; w=$(( w + 1 )); done
-      _pid_live "$dpid" && kill "$dpid" 2>/dev/null
-    fi
     # A LOGIN VIEW'S COOKIES ARE ON DISK ONLY AFTER CHROME'S NEXT COMMIT (DIVE-5286).
     # Chrome batches cookie writes and commits them ~30 s after the first change
     # of a batch, and a SIGTERM shutdown does NOT reliably write the pending
@@ -3515,14 +3523,26 @@ cmd_serve() {
     # probe in ONE request that the proxy cuts at 30 s (and the stop alone at 30
     # s), so the default 24 s keeps the whole of Done inside it. What the cap
     # gives up: a sign-in under ~6 s before Done can still be lost.
-    if [[ -n "$cpid" && "$(_kv "$f" login)" == 1 ]] && _pid_live "$cpid"; then
+    #
+    # AND A PERSON'S SIGN-IN IS NOT ONLY EVER IN A LOGIN VIEW (DIVE-5374). On an
+    # input-mode box the viewer attaches to the session daemon's plain Chrome, and
+    # a warm (CDP) serve can be viewed too: neither has a chrome_pid or login=1 in
+    # this pidfile, so the wait above was skipped and the daemon's close()
+    # SIGTERMed Chrome 1 s after Done — a github.com sign-in 7 s before Done was
+    # lost that way on chill-gorge (2026-10-02). So the wait keys on what the
+    # stop is protecting — a person was admitted to THIS serve's browser — and
+    # runs BEFORE the daemon is asked to go, whichever process holds the Chrome.
+    local hpid=""
+    if [[ -n "$cpid" ]] && _pid_live "$cpid"; then hpid="$cpid"
+    elif [[ -n "$dpid" ]] && _pid_live "$dpid"; then hpid="$dpid"; fi
+    if [[ -n "$hpid" ]] && { [[ -n "$cpid" && "$(_kv "$f" login)" == 1 ]] || _viewer_admitted_since "$dir" "$(_kv "$f" started_at)"; }; then
       local cs="${FIVEDIVE_BROWSER_COOKIE_SETTLE:-24}"; [[ "$cs" =~ ^[0-9]+$ ]] || cs=24
       local sref; sref=$(mktemp "${TMPDIR:-/tmp}/5dive-stop.XXXXXX" 2>/dev/null) || sref=""
       if [[ -n "$sref" ]] && (( cs > 0 )); then
         # A WALL-CLOCK deadline, not a count of sleeps: each turn of this loop
         # forks, and 480 turns of "0.05 s" measured 27.5 s — past the budget.
         local sdl=$(( $(date +%s%3N) + cs * 1000 )) ck committed=0
-        while (( $(date +%s%3N) < sdl )) && _pid_live "$cpid"; do
+        while (( $(date +%s%3N) < sdl )) && _pid_live "$hpid"; do
           for ck in "$dir/Default/Network/Cookies" "$dir/Default/Cookies"; do
             [[ "$ck" -nt "$sref" ]] && { committed=1; break 2; }
           done
@@ -3532,6 +3552,17 @@ cmd_serve() {
         (( committed )) && sleep 0.5
       fi
       [[ -n "$sref" ]] && rm -f "$sref"
+    fi
+    # ASK THE DAEMON TO GO, THEN INSIST (DIVE-4621). The graceful path closes the
+    # context, which is how Chrome writes the profile out; SIGKILL on a browser
+    # mid-write is how a profile that holds a login gets corrupted, and the login
+    # is the durable half this whole design protects. The kill below is the
+    # backstop for a daemon that is wedged, not the route.
+    if [[ -n "$dpid" ]] && _pid_live "$dpid"; then
+      _daemon_call "$dir" '{"op":"shutdown"}' >/dev/null 2>&1 || true
+      local w=0
+      while (( w < 100 )) && _pid_live "$dpid"; do sleep 0.05; w=$(( w + 1 )); done
+      _pid_live "$dpid" && kill "$dpid" 2>/dev/null
     fi
     # CHROME GOES FIRST, AND ALL THE WAY, BEFORE ITS DISPLAY (DIVE-5286). A stop
     # that returns while Chrome still holds SingletonLock hands the probe Done
@@ -3548,7 +3579,7 @@ cmd_serve() {
     fi
     [[ -n "$xpid" ]] && kill "$xpid" 2>/dev/null
     local ssock; ssock="$(_kv "$f" sock)"
-    rm -f "$f" "${ssock:-$dir/.5dive-session.sock}"
+    rm -f "$f" "${ssock:-$dir/.5dive-session.sock}" "$(_viewer_admitted_file "$dir")"
     printf 'stopped the %s browser. The profile is untouched — it is the durable half.\n' "$site"
     return 0
   fi
@@ -3798,6 +3829,12 @@ _viewer_stop() {
   local dir="$1" f; f="$(_viewer_pidfile "$dir")"
   local p
   for p in $(_kv "$f" vnc_pid) $(_kv "$f" ws_pid); do kill "$p" 2>/dev/null; done
+  # The view coming down is when the person left (DIVE-5374): Done's revoke lands
+  # here a second before its stop.
+  local af; af="$(_viewer_admitted_file "$dir")"
+  if [[ -f "$f" && -f "$af" ]]; then
+    ( umask 077; { grep -v '^left_at=' "$af"; printf 'left_at=%s\n' "$(date -u +%s)"; } > "$af.$$" && mv -f "$af.$$" "$af" ) 2>/dev/null || true
+  fi
   rm -f "$f"
   # The VNC password outlives nothing. It is only ever meaningful while the
   # process that was started with it is alive, so a copy left behind in the
@@ -4012,6 +4049,7 @@ cmd_viewer_redeem() {
   _lease_preempt "$dir" "a person at the viewer" "$lease_ttl" "${vncpid:-$$}" >/dev/null
 
   _viewer_revoke_file "$dir" consumed
+  ( umask 077; printf 'admitted_at=%s\n' "$(date -u +%s)" > "$(_viewer_admitted_file "$dir")" ) 2>/dev/null || true
   printf 'target=127.0.0.1:%s\npassword=%s\n' "$port" "$vncpw"
 }
 
