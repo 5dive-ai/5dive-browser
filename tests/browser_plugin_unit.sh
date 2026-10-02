@@ -6648,8 +6648,12 @@ t  'T39f (anchor) the mutant package has no booking.com adapter, and google.com 
    "$([[ -e "$MUT39/adapters/booking.com.json" ]] && echo yes || echo no) $(jq -c .probe "$MUT39/adapters/google.com.json")"
 mkprofile booking.com "$BKOUT39" >/dev/null
 run env -u FIVEDIVE_BROWSER_ADAPTER_DIR "$MUT39/bin/browser" status booking.com
-tc 'T39f MUTANT (no shipped adapter), booking.com logged out: status can only say UNKNOWN' 'UNKNOWN (no adapter for booking.com' "$OUT"
-tn 'T39f ...so the expired session is never reported' 'session expired' "$OUT"
+# DIVE-5388: with no adapter, `status` now runs the generic header check, and the
+# measured logged-out booking.com header (its "Sign in" link) is exactly what it
+# reads. So this half no longer proves "no adapter, no verdict" — it proves the
+# generic check catches a real logged-out header. The adapter still outranks it.
+tc 'T39f MUTANT (no shipped adapter), booking.com logged out: the generic check reads the header Sign in' \
+   'session expired — human action required (generic check: a "Sign in" control in the page header)' "$OUT"
 mkprofile google.com "$GLOUT39" >/dev/null
 run env -u FIVEDIVE_BROWSER_ADAPTER_DIR "$MUT39/bin/browser" status google.com
 tc 'T39f MUTANT (no probe), google.com logged out: status can only say UNKNOWN' 'UNKNOWN (' "$OUT"

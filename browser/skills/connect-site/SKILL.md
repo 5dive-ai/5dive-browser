@@ -149,13 +149,14 @@ keyboard attached to the person's account.
   end a site's login (the site sees a new IP), so set it before connecting, not after.
 - **A challenge is classified BEFORE a logged-out state**, because a challenge page still
   carries the login markup. Trust the label; do not re-derive it from the HTML.
-- **Sessions die on the site's schedule, not ours.** A scheduled check must skip a profile
-  while it is served, then probe it once the browser is stopped; otherwise the profile lock
-  produces `UNKNOWN` instead of a liveness verdict.
+- **Sessions die on the site's schedule, not ours.** A served site is checked through the
+  browser that holds it. Only a plain-Chrome login view is skipped, and it is checked once it stops.
 - **Setup installs that schedule.** `sudo 5dive browser setup` enables a per-seat systemd timer
-  which runs `5dive browser probe-all` about every six hours. The sweep prints `skipped: served`
-  and leaves the existing liveness stamp untouched for a profile whose browser is open; close the
-  view/browser before asking for an immediate check.
+  which runs `5dive browser probe-all` about every six hours.
+- **`unverifiable` is not a sign-out.** It means the automatic check met a bot check that the
+  site shows automated browsers (or, in input mode, the title could not tell). Its date is when
+  the login was last seen signed in. Do not send the owner to reconnect over it; a screen
+  (`5dive browser shot <site>`) is the check.
 - **Hand-written adapters live outside the installed plugin.** An upgrade replaces the plugin
   directory, so a custom `<site>.json` belongs in the relay seat's store named in step 1, never
   in the dispatched package's `adapters/`.
