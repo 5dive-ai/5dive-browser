@@ -236,7 +236,7 @@ usage() {
   5dive browser setup                 # one-time, as root: create the profile store
   5dive browser auth <site>           # open a browser; log in yourself, once
   5dive browser status [site]         # per-site auth state (run on a SCHEDULE)
-  5dive browser probe-all             # scheduled check; skips profiles in use
+  5dive browser probe-all             # scheduled check; a served site through its own browser
   5dive browser ls                    # profiles, and when each was last seen alive
 
   On a managed box there is no display, so the browser lives on one:
@@ -839,7 +839,7 @@ cmd_setup() {
   fi
 
   _install_probe_timer "$seat"
-  printf 'profile store ready\n  %s  (root, 0711 — traverse, not list)\n  %s  (%s, 0700)\n  liveness probe: every ~6h (served profiles are skipped)\n' \
+  printf 'profile store ready\n  %s  (root, 0711 — traverse, not list)\n  %s  (%s, 0700)\n  liveness probe: every ~6h (a served site is checked through its own browser)\n' \
     "$PROFILE_ROOT" "$PROFILE_ROOT/$seat" "$seat"
   if (( rv_ok )); then
     printf '  %s  (%s:%s, 0750 — the broker rendezvous; every agent seat in group %s uses THIS box login, with no second login of its own)\n' \
@@ -1165,19 +1165,87 @@ _signin_guard() {
   return 0
 }
 
+# THE SIGN-IN WORDS, FOR A PAGE WITH NO DOM TO READ (DIVE-5388). A window
+# title naming a sign-in ("Log in to Discord", "Sign in - Google Accounts") is
+# the login page. Only used where the probe page is NOT itself a sign-in page:
+# an adapter whose probe.url is /login/ (reddit, x.com) shows those words to a
+# signed-in visitor too, and there only its own title markers can decide.
+INPUT_SIGNIN_TITLE='(^|[^a-z])(log ?in|login|sign ?in|signin|sign ?up|signup)([^a-z]|$)|登录|登入|ログイン|로그인'
+_input_title_marker() {  # <site> <logged_out|logged_in>
+  local a; a="$(_adapter_path "$1")"
+  [[ -f "$a" ]] && jq -r --arg k "$2" '.probe[$k + "_when_title_matches"] // empty' "$a" 2>/dev/null
+}
+
+# INPUT MODE: THE TITLE OF THE PROBE PAGE, LOADED IN A TAB OF ITS OWN (DIVE-5388).
+# There is no DOM here, and that is the point of the mode — the sites served
+# this way refuse an automated browser — so the check reads what a person at
+# the screen could: the window title after the probe page loads. It loads in a
+# NEW tab that is closed afterwards, and only when nobody is driving (no
+# handoff, no person in the viewer, no agent holding the lease): the window is
+# where an agent or a person works, and a health check must not move it.
+#   challenge title       -> challenge, seen in the owner's own browser: Needs you
+#   sign-in title         -> expired
+#   adapter's signed-in   -> authenticated
+#   anything else         -> unverifiable, dated by the last signed-in read; or
+#                            unknown when there has never been one. Never a login
+#                            by elimination.
 _input_probe() {  # <site> <dir>
-  local site="$1" dir="$2" t title
+  local site="$1" dir="$2" t title why="" looked=0
   if ! _daemon_live "$dir" || ! t=$(_daemon_call "$dir" '{"op":"title"}' 2>/dev/null) \
      || [[ "$(jq -r '.drive // empty' <<<"$t" 2>/dev/null)" != input ]]; then
     echo "UNKNOWN (input mode, and no input-mode browser is serving $site — nothing loads a page to check it; 5dive browser serve $site)"
     return 0
   fi
+  local url; url=$(_site_url "$site")
+  local challenge; challenge=$(_input_challenge_title "$site")
+  if (( _SITE_BROKERED )); then
+    why="this seat uses the box login and does not move the owner's window"
+  elif [[ "$(jq -r '.handoff // false' <<<"$t")" == true ]]; then
+    why="the owner has the window (handoff)"
+  elif [[ "$(jq -r '.viewer // false' <<<"$t")" == true ]]; then
+    why="a person is in the viewer"
+  elif _lease_live "$dir"; then
+    why="an agent holds the browser"
+  else
+    local ans
+    if ans=$(_daemon_call "$dir" "$(jq -nc --arg u "$url" --arg c "$challenge" '{op:"title_probe", url:$u, challenge:$c}')" 2>/dev/null) \
+       && [[ "$(jq -r '.navigated // false' <<<"$ans" 2>/dev/null)" == true ]]; then
+      t="$ans"; looked=1
+    else
+      why=$(jq -r '.why // empty' <<<"$ans" 2>/dev/null)
+      why="${why:-the browser did not open a tab for the check (a session daemon from before this check cannot; it is restarted by: 5dive browser serve $site --stop)}"
+    fi
+  fi
   title=$(jq -r '.title // ""' <<<"$t")
-  if grep -qiE -- "$(_input_challenge_title "$site")" <<<"$title"; then
+  if grep -qiE -- "$challenge" <<<"$title"; then
+    if (( looked )); then _signed_in_forget "$dir"; _stamp "$dir" challenge; fi
     echo "CHALLENGE — human action required (the window shows \"$title\"; we do not solve these: 5dive browser handoff $site)"
     return 1
   fi
-  echo "unconfirmed (input mode: the window shows \"$title\" — there is no DOM to confirm a login from; a screen is the check: 5dive browser shot $site)"
+  if (( ! looked )); then
+    echo "unconfirmed (input mode: not checked now — $why; the window shows \"$title\"; a screen is the check: 5dive browser shot $site)"
+    return 0
+  fi
+  local out_t in_t; out_t=$(_input_title_marker "$site" logged_out); in_t=$(_input_title_marker "$site" logged_in)
+  if [[ -z "$out_t" ]] && ! grep -qiE "$GENERIC_SIGNIN_URL" <<<"$url"; then out_t="$INPUT_SIGNIN_TITLE"; fi
+  if [[ -n "$out_t" ]] && grep -qiE -- "$out_t" <<<"$title"; then
+    _signed_in_forget "$dir"; _stamp "$dir" expired
+    echo "session expired — human action required (input mode: $url loaded as \"$title\")"
+    return 1
+  fi
+  if [[ -n "$in_t" ]] && grep -qiE -- "$in_t" <<<"$title"; then
+    _signed_in_note "$dir" input; _stamp "$dir" authenticated
+    echo "authenticated (input mode: $url loaded as \"$title\"; checked $(date -u +%Y-%m-%dT%H:%MZ))"
+    return 0
+  fi
+  local seen
+  if seen=$(_signed_in_last "$dir"); then
+    _stamp_at "$dir" "$seen" unverifiable
+    echo "unverifiable — input mode: $url loaded as \"$title\", and a title cannot say whether this is signed in; last seen signed in $seen. A screen is the check: 5dive browser shot $site"
+    return 0
+  fi
+  _stamp "$dir" unknown
+  echo "unconfirmed (input mode: $url loaded as \"$title\", and a title cannot say whether this is signed in; it has not been seen signed in yet. A screen is the check: 5dive browser shot $site)"
   return 0
 }
 
@@ -1186,7 +1254,8 @@ _probe() {
   # INPUT MODE HAS NO DOM TO PROBE (DIVE-5287), and loading the probe URL would
   # move the window an agent or a person is working in. It reads the title.
   if [[ "$(_site_drive_adapter "$site")" == input ]] \
-     || { (( ! _SITE_BROKERED )) && [[ "$(_kv "$(_serve_pidfile "$dir")" drive)" == input ]]; }; then
+     || { (( ! _SITE_BROKERED )) && [[ "$(_kv "$(_serve_pidfile "$dir")" drive)" == input ]]; } \
+     || { (( _SITE_BROKERED )) && [[ "$(_kv "$(_rv_offer "$_SITE_OWNER" "$site")" drive)" == input ]]; }; then
     _input_probe "$site" "$dir"; return $?
   fi
   # SERVED MEANS WE CANNOT LOOK, AND SAYING SO IS THE WHOLE FIX. Chrome allows one
@@ -1257,8 +1326,8 @@ _probe() {
   # THE GENERIC CHECK (DIVE-4943 scope 2), and only for a page verb's gate: with no
   # adapter, the one thing we can still recognise is a page that is VISIBLY a
   # sign-in — a password field, or a form that posts to a login/session/auth path.
-  # `status` keeps its UNKNOWN (the tile's memory must not claim a login nobody
-  # confirmed); only the gate in front of a render reads this.
+  # `status` reads the page's header instead (DIVE-5388, below the loop), which
+  # can also say signed IN; the gate keeps this narrower test and its guard.
   local generic=0
   if [[ -z "$marker" && -z "$positive" && "${_PROBE_GENERIC:-0}" == 1 ]]; then
     generic=1; marker="$GENERIC_SIGNIN_MARKER"
@@ -1281,7 +1350,7 @@ _probe() {
       # back. Two regex engines must never both be allowed to decide a login.
       _daemon_call "$dir" "$(jq -nc --arg u "$url" --arg o "$marker" --arg i "$positive" \
             --arg c "$challenge" --argjson w "$total" \
-            '{op:"probe", url:$u, wait:$w, until:{logged_out:$o, logged_in:$i, challenge:$c}}')" \
+            '{op:"probe", url:$u, wait:$w, until:{logged_out:$o, logged_in:$i, challenge:$c}, report_url:true}')" \
           >"$dom" 2>"$dom.err"
       rc=$?
     else
@@ -1349,16 +1418,57 @@ _probe() {
     _stamp "$dir" "UNKNOWN — chrome did not load the page${why:+: $why}"
     echo "UNKNOWN (chrome did not load the page${why:+ — $why})"; return 0
   fi
+  # THE GENERIC CHECK, FOR `status` TOO (DIVE-5388). A connected site with no
+  # adapter used to stop at UNKNOWN here — 7 of 13 sites on chill-gorge had no
+  # check at all. lib/generic-login.cjs reads the page's header: a Log in / Sign
+  # in / Sign up control there (or a password form anywhere, or a landing on a
+  # sign-in path) is signed out; a header WITH controls and none of them a
+  # sign-in is signed in; anything else is still UNKNOWN. Challenge was tested
+  # above, first, as it always is. The page verbs' gate keeps its own narrower
+  # reading (generic=1 below): this one is the tile's.
+  local gwhy="" furl=""
+  (( warm )) && furl=$(sed -n 's/^5dive-probe-final-url: //p' "$dom.err" 2>/dev/null | tail -1)
+  if [[ -z "$verdict" && -z "$marker" && -z "$positive" ]] && (( ! generic )) && _have node \
+     && [[ -r "$_SELF_DIR/../lib/generic-login.cjs" ]]; then
+    local g; g=$(node "$_SELF_DIR/../lib/generic-login.cjs" "$dom" 2>/dev/null)
+    gwhy=$(sed -n 2p <<<"$g")
+    if [[ -n "$furl" ]] && ! grep -qiE "$GENERIC_SIGNIN_URL" <<<"$url" && grep -qiE "$GENERIC_SIGNIN_URL" <<<"$furl"; then
+      verdict=expired gwhy="the page redirected to a sign-in ($furl)"
+    else
+      case "$(head -1 <<<"$g")" in
+        out) verdict=expired ;;
+        in)  verdict=authenticated ;;
+        *)   gwhy="" ;;
+      esac
+    fi
+    [[ -n "$verdict" ]] && _maybe_propose "$site" "$dir"
+  fi
   rm -f "$dom" "$dom.err"
+  local via=headless; (( warm )) && via=served
   case "$verdict" in
     challenge)
+      # A BOT CHECK THAT MEETS OUR CHECK IS NOT "NEEDS YOU" (DIVE-5388). Only the
+      # headless probe, and only for a login the owner's own served browser last
+      # read signed in: Reddit and Cloudflare Turnstile show their check to an
+      # automated headless Chrome and not to the browser the session lives in,
+      # so this verdict is about the probe. A challenge in the served browser
+      # itself (warm) is the real thing and still stops for a person.
+      local seen
+      if (( ! warm )) && seen=$(_signed_in_last "$dir" 'served|input'); then
+        _stamp_at "$dir" "$seen" unverifiable
+        echo "unverifiable — the automatic check met a bot check, which $site shows automated browsers; last seen signed in $seen in the served browser. Nothing for a person to do: serving it lets the check read it there (5dive browser serve $site)"
+        return 0
+      fi
+      (( warm )) && _signed_in_forget "$dir"
       # THERE IS DELIBERATELY NO BYPASS BEHIND THIS.
       _stamp "$dir" challenge
       echo "CHALLENGE — human action required (we do not solve these)"; return 1 ;;
     expired)
-      _stamp "$dir" expired; echo "session expired — human action required"; return 1 ;;
+      _signed_in_forget "$dir"
+      _stamp "$dir" expired; echo "session expired — human action required${gwhy:+ (generic check: $gwhy)}"; return 1 ;;
     authenticated)
-      _stamp "$dir" authenticated; echo "authenticated (checked $(date -u +%Y-%m-%dT%H:%MZ))"; return 0 ;;
+      _signed_in_note "$dir" "$via"
+      _stamp "$dir" authenticated; echo "authenticated (${gwhy:+generic check: $gwhy; }checked $(date -u +%Y-%m-%dT%H:%MZ))"; return 0 ;;
   esac
   # NO MARKER, NO VERDICT. `authenticated` is a claim about a LOGIN, and the only
   # evidence for it here is the adapter's logged-out marker failing to match. With
@@ -1394,6 +1504,7 @@ _probe() {
     echo "UNKNOWN (the page never showed either the signed-in or the signed-out marker within ${total}ms — the state could not be read; acting verbs stay refused)"
     return 0
   fi
+  _signed_in_note "$dir" "$via"
   _stamp "$dir" authenticated; echo "authenticated (checked $(date -u +%Y-%m-%dT%H:%MZ))"; return 0
 }
 # The liveness file is the TILE'S memory and it lives in the owner's 0700
@@ -1402,6 +1513,41 @@ _probe() {
 _stamp() {
   (( _SITE_BROKERED )) && return 0
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" > "$1/.5dive-liveness" 2>/dev/null || true
+}
+# _stamp_at <dir> <iso> <word> — a stamp whose date is NOT now. Used only by
+# `unverifiable`, whose date is the last time the login was SEEN signed in: the
+# tile parses "<iso> <word>" and nothing else (the API's parseLs), so the one
+# date the line carries is the one the owner needs — "last seen signed in 3h
+# ago", not "we failed to look 2 minutes ago".
+_stamp_at() {
+  (( _SITE_BROKERED )) && return 0
+  printf '%s %s\n' "$2" "$3" > "$1/.5dive-liveness" 2>/dev/null || true
+}
+
+# THE LAST SIGNED-IN READ, AND THROUGH WHAT (DIVE-5388). "<iso> <via>", via one
+# of headless (the cold probe), served (a CDP session daemon) or input (the
+# owner's own plain Chrome). Kept beside the stamp, not in it, because the stamp
+# is overwritten by every verdict and this must survive the verdicts that are
+# about the CHECK rather than the login: on chill-gorge (2026-10-02) Reddit and
+# a Cloudflare Turnstile site showed their bot check to the headless probe and
+# not to the served browser the same login was working in, and the tile said
+# "Needs you" over two healthy sessions. A logged-out or challenged read in the
+# owner's own browser removes it — that is the login, not the check.
+_signed_in_file() { echo "$1/.5dive-signed-in"; }
+_signed_in_note() {  # <dir> <via>
+  (( _SITE_BROKERED )) && return 0
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" > "$(_signed_in_file "$1")" 2>/dev/null || true
+}
+_signed_in_forget() {
+  (( _SITE_BROKERED )) && return 0
+  rm -f -- "$(_signed_in_file "$1")" 2>/dev/null || true
+}
+_signed_in_last() {  # <dir> [<via-alternation>] -> the iso, rc 1 when there is none (or not through <via>)
+  local l; l=$(head -1 "$(_signed_in_file "$1")" 2>/dev/null) || return 1
+  local iso="${l%% *}" via="${l#* }"
+  [[ "$iso" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z$ ]] || return 1
+  [[ -z "${2:-}" || "$via" =~ ^($2)$ ]] || return 1
+  printf '%s\n' "$iso"
 }
 
 cmd_probe_all() {
@@ -1414,8 +1560,15 @@ cmd_probe_all() {
     site=$(basename "$d")
     _is_public "$site" && continue   # the public profile is not a login (DIVE-4943)
     _audit "$d" 700
-    if _serve_running "$d" >/dev/null; then
-      printf '  %-20s skipped: served\n' "$site"
+    # A SERVED SITE IS CHECKED THROUGH THE BROWSER THAT HOLDS IT (DIVE-5388).
+    # This used to skip every served profile (DIVE-4519), and on a box that keeps
+    # its sites served the stamps aged to hours or a day and never saw a
+    # reconnect. A session daemon answers a probe in its own tab (CDP) or reads
+    # the window title after loading the probe page in a tab of its own (input
+    # mode), so only a served browser with NO daemon — a plain-Chrome login
+    # view, which nothing can ask — is still skipped.
+    if _serve_running "$d" >/dev/null && ! _daemon_live "$d"; then
+      printf '  %-20s skipped: served (a login view, which no probe can ask; checked when it stops)\n' "$site"
       continue
     fi
     output=$(_auth_status "$site" 2>&1); arc=$?

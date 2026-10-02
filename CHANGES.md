@@ -8,6 +8,45 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — the Connected-sites panel says what a person reading the page would say (DIVE-5388), 1.31.0
+
+On chill-gorge (2026-10-02) the panel said "Needs you" on reddit.com and openalternative.co
+while their served browsers were signed in, "No automatic check" on 7 of 13 connected sites,
+and every served site's stamp was hours old. Reddit's "prove your humanity" and Cloudflare
+Turnstile meet the headless probe, not the real Chrome the session lives in. `probe-all`
+skipped every served profile, and there is no adapter for most sites a customer types.
+
+- **A served site is checked through the browser that holds it.** `probe-all` no longer skips a
+  served profile that has a session daemon. A CDP daemon answers the probe in its own tab, as
+  `status` already did, and now also reports the URL the page landed on. Only a served browser
+  with no daemon (a plain-Chrome login view) is still `skipped: served`.
+- **Input mode: the probe page's title, in a tab of its own.** A new daemon op, `title_probe`,
+  opens a new tab, types the probe URL, reads the settled window title and closes the tab. It
+  closes the tab only if it provably opened it. `status` asks only when nobody is driving (no
+  handoff, no viewer, no lease). A challenge title gives `challenge`. A sign-in title gives
+  `expired` (generic words, or `probe.logged_out_when_title_matches`, never when the probe URL is
+  itself a sign-in page). `probe.logged_in_when_title_matches` gives `authenticated`. Anything
+  else gives `unverifiable`, or `unknown` if it was never seen signed in. No DOM channel was added
+  to input mode.
+- **A bot check that meets the check is not "Needs you".** Each signed-in read is remembered in
+  `<profile>/.5dive-signed-in` (`<iso> headless|served|input`). A headless challenge on a login
+  last read signed in by a served or input browser stamps `unverifiable`, dated by that read, and
+  exits 0. A challenge in the owner's own browser, or with no such read, is still `challenge`.
+- **Every connected site gets a check.** With no adapter, `status` runs `lib/generic-login.cjs`
+  over the page. It reads a Log in / Sign in / Sign up control in the header or nav, a password
+  form, or a redirect to a sign-in path as signed out. It reads a header with controls and no
+  sign-in as signed in. Anything else stays `unknown`. The page verbs' gate keeps its narrower
+  check.
+- **Re-check after Done**: `_connect_done` already runs `status` last. For an input site, which
+  stays served, that is now a real check through its own window.
+- Dashboard: `unverifiable` is a new stamp word in the same `<iso> <word>` shape, so the API is
+  unchanged. 5dive-frontend renders it as "Can't check automatically · last seen signed in <age>".
+  An older dashboard shows its default, "Not checked recently".
+- Harness: `tests/browser_served_probe_unit.sh` has 48 arms, with a fake Chrome and a fake
+  daemon (the real `call` client). On 1.29.2, 27 of them are red. `browser_plugin_unit.sh` T39f's
+  no-adapter booking.com mutant now reads the measured logged-out header as signed out, through
+  the generic check.
+
 ### Fixed — a wedged probe Chrome can no longer hold a login's profile for hours (DIVE-5375), 1.29.2
 
 On chill-gorge (2026-10-01 01:52Z) a status probe's headless Chrome logged "Failed to connect to
