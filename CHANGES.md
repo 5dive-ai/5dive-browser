@@ -8,6 +8,25 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — input mode types a whole Chinese (or any non-Latin) message, not the first 18 distinct characters (DIVE-5433), 1.32.1
+
+On chill-gorge (2026-10-03 03:21Z) Clicker typed a lodar-approved Chinese DM into Telegram Web in input
+mode and it stopped after '服务器上'. A character the keyboard has no key for is typed on a spare
+keycode bound to it for the moment. Xvfb's keymap has 18 spare keycodes, and 1.32.0 bound one per
+distinct character and never released it, so the 19th distinct character threw "no spare key" and
+the act ended with the text cut short. Bindings lived on the X server, so a restarted daemon on the
+same display found no spare keys at all.
+
+- **Spare keys are recycled, least recently used first** (`lib/x11.cjs` `keyFor`). A key is rebound
+  only after every other spare has been used since, so the page has long read the character it
+  carried. A character already on a key is reused without a rebind.
+- **A new connection reclaims keys an earlier one bound** (a single Unicode keysym and nothing else),
+  so a daemon restart on a live display types on.
+- `tests/browser_input_drive_unit.sh`: K1–K3 on a bare Xvfb (43 distinct characters on 18 spare
+  keys; the keys left bound are the newest 18; a new connection reclaims them), 3 pass, all 3 red
+  on 1.32.0 (K1 fails at the 19th character, as on chill-gorge). L12 types the Chinese sentence
+  into live Chrome and reads it back whole. New probe `tests/x11_keys.cjs` reads the map directly.
+
 ### Added — a hired agent uses a site the owner just connected, with no admin step (DIVE-5389), 1.32.0
 
 On chill-gorge (2026-10-02) lodar connected discord.com and tapped Done. Clicker, a hired seat that
