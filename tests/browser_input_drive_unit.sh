@@ -549,6 +549,7 @@ cd "$ROOT"
 if [[ -z "$REAL_XVFB" ]]; then
   SKIP=$((SKIP+1)); printf 'SKIP: K spare-key arms — this machine has no Xvfb\n'
 else
+  unset FIVEDIVE_BROWSER_X11_DIR      # the R arms point it at a fake display dir
   kdisp=""
   for n in $(seq 600 639); do [[ -e "/tmp/.X11-unix/X$n" ]] || { kdisp=$n; break; }; done
   # -noreset: Xvfb otherwise resets the keyboard map when its last client
@@ -741,8 +742,9 @@ HTML
     lc "{\"op\":\"input\",\"steps\":[{\"op\":\"type\",\"value\":\"$CJK\"}],\"settle\":300}" > "$TMP/l.cjk" 2>"$TMP/l.cjkerr"; rc=$?
     t=$(jq -r .title "$TMP/l.cjk" 2>/dev/null)
     (( rc == 0 )) && [[ "$t" != *"Q$CJK:"* ]] && t=$(see_title "$LP/s.sock" "typed:héllo ✓!Q$CJK:click=true:key=true")
-    arm "L12 a Chinese sentence of $distinct distinct characters on $spare spare keys reaches the page whole" '0 yes' \
-      "$rc $(yn grep -qF "Q$CJK:" <<<"$t")$(why "$TMP/l.cjkerr")"
+    got="$rc $(yn grep -qF "Q$CJK:" <<<"$t")"
+    [[ "$got" == '0 yes' ]] || got+=" title=$t$(why "$TMP/l.cjkerr")"
+    arm "L12 a Chinese sentence of $distinct distinct characters on $spare spare keys reaches the page whole" '0 yes' "$got"
     lc '{"op":"shutdown"}' >/dev/null 2>&1
     for i in $(seq 1 100); do kill -0 "$LD" 2>/dev/null || break; sleep 0.05; done
     chrome_up() { pgrep -f -- "--user-data-dir=$LP" >/dev/null; }
