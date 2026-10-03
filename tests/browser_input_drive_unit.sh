@@ -26,6 +26,13 @@
 #           the stop waits for the cookie commit when a viewer was redeemed on this
 #           serve — input or warm CDP — within 60 s of the person leaving, and not
 #           otherwise; a mutant without it loses it
+#   K  lib/x11.cjs on a bare Xvfb (no Chrome), DIVE-5433: the spare keys a
+#      character with no key of its own is typed on are RECYCLED.
+#        K1 more distinct characters than the display has spare keys type through
+#           (1.32.0 threw "no spare key" at the 19th: a Chinese draft cut short)
+#        K2 the keys left bound are the most recently typed characters, one each
+#        K3 a NEW connection on that display (a daemon restart) reclaims the keys
+#           the last one bound, instead of finding none spare
 #   L  LIVE, when this machine has Xvfb and Chrome (GitHub's ubuntu runner does):
 #      the real daemon, real plain Chrome, real XTEST input.
 #        L1 the page sees navigator.webdriver === false, and the daemon reports
@@ -51,6 +58,8 @@
 #        L7 shutdown takes Chrome with it
 #        L11 title_probe (DIVE-5388) reads a probe page's title in a tab of its own
 #           and closes only that tab; with a handoff open it does not navigate
+#        L12 a Chinese sentence with more distinct characters than the display
+#           has spare keys reaches the page whole (DIVE-5433)
 #        L10 a FRESH page driven the instant its title appears still gets the
 #           text: the daemon holds input until the page is quiet (the CI race)
 set -uo pipefail
@@ -94,6 +103,7 @@ arm() {  # arm <name> <expected> <got>
     gha "input harness FAIL: ${1:0:80}" "expected: $2"$'\n'"got: $3"; fi
 }
 yn() { if "$@"; then echo yes; else echo no; fi; }
+why() { local e; e=$(grep -v -i dbus "$1" 2>/dev/null | tail -1); [[ -n "$e" ]] && printf ' (%s)' "$e"; return 0; }
 # Where a red live arm's screen goes. CI sets it and uploads it on failure.
 ART="${INPUT_HARNESS_ARTIFACTS:-}"; [[ -n "$ART" ]] && mkdir -p "$ART"
 
@@ -535,6 +545,33 @@ arm 'R11m (control) ...and the commit it cut off never came' '' "$(r11_cookie)"
 export PATH="$OLDPATH"
 cd "$ROOT"
 
+# ---------------------------------------------------- K: spare keys, bare Xvfb
+if [[ -z "$REAL_XVFB" ]]; then
+  SKIP=$((SKIP+1)); printf 'SKIP: K spare-key arms — this machine has no Xvfb\n'
+else
+  unset FIVEDIVE_BROWSER_X11_DIR      # the R arms point it at a fake display dir
+  kdisp=""
+  for n in $(seq 600 639); do [[ -e "/tmp/.X11-unix/X$n" ]] || { kdisp=$n; break; }; done
+  # -noreset: Xvfb otherwise resets the keyboard map when its last client
+  # leaves, and each arm below is a client of its own.
+  "$REAL_XVFB" ":$kdisp" -screen 0 640x480x24 -nolisten tcp -noreset >/dev/null 2>&1 & KX=$!; _KILL+=("$KX")
+  for i in $(seq 1 100); do [[ -e "/tmp/.X11-unix/X$kdisp" ]] && break; sleep 0.05; done
+  kk() { DISPLAY=":$kdisp" FIVEDIVE_BROWSER_INPUT_FAST=1 node "$ROOT/tests/x11_keys.cjs" "$@"; }
+  M=$(kk spare 2>"$TMP/k0.err")
+  if [[ ! "$M" =~ ^[0-9]+$ ]] || (( M < 2 )); then
+    arm 'K0 the bare Xvfb came up with spare keys to type on' 'spare>=2' "spare=${M:-none}$(why "$TMP/k0.err")"
+  else
+    N=$((M + 25))
+    rc=$(kk type $((0x4e00)) "$N" 2>"$TMP/k1.err")
+    arm "K1 $N distinct characters type through on $M spare keys (keys are recycled, not used up)" 0 "${rc:-none}$(why "$TMP/k1.err")"
+    want=$(node -e 'const [f,n,m]=process.argv.slice(1).map(Number);console.log(Array.from({length:m},(_,i)=>(f+n-m+i).toString(16)).join(","))' $((0x4e00)) "$N" "$M")
+    arm "K2 the $M keys left bound carry the $M most recently typed characters, one each" "$want" "$(kk bound)"
+    rc=$(kk type $((0x5000)) "$N" 2>"$TMP/k3.err")
+    arm 'K3 a new connection on that display reclaims the bound keys and types on' "$M 0" "$(kk spare) ${rc:-none}$(why "$TMP/k3.err")"
+  fi
+  kill "$KX" 2>/dev/null; wait "$KX" 2>/dev/null
+fi
+
 # --------------------------------------------------------------- L: live
 if [[ -z "$REAL_XVFB" || -z "$REAL_CHROME" ]]; then
   SKIP=$((SKIP+1)); printf 'SKIP: L live arms — this machine has no Xvfb (%s) or no Chrome (%s)\n' "${REAL_XVFB:-none}" "${REAL_CHROME:-none}"
@@ -694,6 +731,20 @@ HTML
     arm 'L9 keyboard focus held by another window is moved back to the browser before typing' '0 yes' \
       "$rc $(yn grep -q 'héllo ✓!Q' <<<"$(jq -r .title "$TMP/l.fq" 2>/dev/null)")"
     kill "$FW" 2>/dev/null; wait "$FW" 2>/dev/null
+    # L12 (DIVE-5433) — the Chinese draft chill-gorge's Telegram cut after '服务器上':
+    # more distinct characters than the display has spare keys, so it only
+    # arrives whole if the spare keys are recycled. The instrument arm says so.
+    CJK='我们是5dive团队。你可以在自己的服务器上运行AI智能体团队，在Telegram里给负责人派活。我们想请「折腾啥」介绍一下5dive的自托管仓库。'
+    spare=$(DISPLAY=":$disp" node "$ROOT/tests/x11_keys.cjs" spare)
+    distinct=$(node -e 'console.log(new Set([...process.argv[1]].filter(c => c.codePointAt(0) > 0xff)).size)' "$CJK")
+    arm 'L12 the instrument: the sentence has more distinct non-keyboard characters than the display has spare keys' yes \
+      "$(yn test "$distinct" -gt "${spare:-999}")"
+    lc "{\"op\":\"input\",\"steps\":[{\"op\":\"type\",\"value\":\"$CJK\"}],\"settle\":300}" > "$TMP/l.cjk" 2>"$TMP/l.cjkerr"; rc=$?
+    t=$(jq -r .title "$TMP/l.cjk" 2>/dev/null)
+    (( rc == 0 )) && [[ "$t" != *"Q$CJK:"* ]] && t=$(see_title "$LP/s.sock" "typed:héllo ✓!Q$CJK:click=true:key=true")
+    got="$rc $(yn grep -qF "Q$CJK:" <<<"$t")"
+    [[ "$got" == '0 yes' ]] || got+=" title=$t$(why "$TMP/l.cjkerr")"
+    arm "L12 a Chinese sentence of $distinct distinct characters on $spare spare keys reaches the page whole" '0 yes' "$got"
     lc '{"op":"shutdown"}' >/dev/null 2>&1
     for i in $(seq 1 100); do kill -0 "$LD" 2>/dev/null || break; sleep 0.05; done
     chrome_up() { pgrep -f -- "--user-data-dir=$LP" >/dev/null; }
