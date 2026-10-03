@@ -130,6 +130,16 @@ export FIVEDIVE_BROWSER_WAKE_PRIV="$TMP/no-wake"
 # and probe-all re-measures adapters once a day. Both are graded in
 # tests/browser_reflex_propose_unit.sh; here they would race every probe arm.
 export FIVEDIVE_BROWSER_AUTO_PROPOSE=0 FIVEDIVE_BROWSER_DRIFT_ON_PROBE=0
+# NO ARM FILES AN ASK IN THE SEAT'S REAL APPROVAL STORE (DIVE-5429). With this
+# unset, `_approval_dir` finds the seat's home through `getent passwd` (not
+# $HOME), so an arm that stops a send without naming its own store files a real
+# ask in the owner's queue. T32h did: 101 `warmact.test` asks on one live box.
+# The arms that grade asks still pass their own store; the rest land here. T98
+# checks the real store gained nothing.
+export FIVEDIVE_BROWSER_APPROVAL_DIR="$TMP/approvals"
+_REAL_APPROVALS="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)/.5dive/browser-approvals"
+_real_approvals_ls() { ls -l --time-style=+%s "$_REAL_APPROVALS" 2>/dev/null | sed 1d; }
+_REAL_APPROVALS_BEFORE="$(_real_approvals_ls)"
 run() { local o="$TMP/.o" e="$TMP/.e"; "$@" >"$o" 2>"$e"; RC=$?; OUT=$(cat "$o"); ERR=$(cat "$e"); return 0; }
 
 SEAT="$(id -un)"
@@ -7887,6 +7897,11 @@ tc 'T48g ...CHALLENGE — the defect this row fixed'                     'CHALLE
 
 export FIVEDIVE_BROWSER_ADAPTER_DIR="$ADPOVERRIDE48"
 tc 'T48h CHANGES.md carries the entry' 'DIVE-5285' "$(cat "$ROOT/CHANGES.md")"
+
+# --- T98 no arm wrote to the seat's real approval store (DIVE-5429) -----------
+# Last on purpose: it grades every arm above. The listing carries size and mtime,
+# so a line appended to allowed.jsonl is caught as well as a new ask.
+t  'T98 the real approval store gained nothing from this run' "$_REAL_APPROVALS_BEFORE" "$(_real_approvals_ls)"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
