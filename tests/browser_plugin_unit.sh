@@ -106,6 +106,13 @@ PY
 TMP="$(mktemp -d)"
 OUT=""; ERR=""; RC=0
 
+# NO BASH_ENV IN HERE (DIVE-5429). A 5dive box sets BASH_ENV for every seat, and
+# its file runs `id -u`. Every stub below is a bash script, so with BASH_ENV set
+# each one sources that file at startup. The fake `id` (T2c8) then calls itself
+# before its first line runs, and it never stops: on poke-two that filled the
+# seat's 9255-process ceiling. A CI runner sets no BASH_ENV, so CI never saw it.
+unset BASH_ENV ENV
+
 # THE SESSION DAEMON IS OFF BY DEFAULT IN THIS SUITE, AND THE REASON IS NOT
 # CONVENIENCE (DIVE-4621). `serve` prefers a warm session whenever the pinned
 # playwright-core is resolvable, and whether it is resolvable HERE depends on
