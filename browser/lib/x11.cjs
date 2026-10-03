@@ -66,7 +66,6 @@ class X11 {
     this.setup = null;
     this.atoms = new Map();
     this.keymap = null;
-    this.scratch = new Map();     // keysym -> keycode we bound for it
   }
 
   connect() {
@@ -404,40 +403,54 @@ class X11 {
     const { minKeycode: min, maxKeycode: max } = this.setup;
     const b = Buffer.alloc(4); b[0] = min; b[1] = max - min + 1;
     const r = await this.req(OP.GetKeyboardMapping, 0, b, true);
-    const per = r[1], map = new Map(), free = [];
+    const per = r[1], map = new Map(), spare = [], held = new Map();
     for (let kc = min; kc <= max; kc++) {
       const base = 32 + (kc - min) * per * 4;
-      let any = false;
+      const on = new Set();
       for (let lvl = 0; lvl < per; lvl++) {
         const ks = r.readUInt32LE(base + lvl * 4);
         if (!ks) continue;
-        any = true;
+        on.add(ks);
         if (lvl < 2 && !map.has(ks)) map.set(ks, { kc, shift: lvl === 1 });
       }
-      if (!any && kc > min + 8) free.push(kc);
+      if (kc <= min + 8) continue;
+      // A key with nothing on it is spare. So is a key an earlier connection
+      // bound for one character (a single Unicode keysym, nothing else): this
+      // daemon after a restart, or xdotool. It keeps its character until the
+      // spare keys run out, and is then rebound like any other.
+      const [only] = on;
+      if (!on.size) spare.unshift(kc);
+      else if (on.size === 1 && isUnicodeKeysym(only)) { spare.push(kc); held.set(kc, only); }
     }
-    this.keymap = { map, free, per };
+    this.keymap = { map, spare, held, per };
     return this.keymap;
   }
 
   // keysym -> {kc, shift}. A keysym the keyboard has no key for (é, ü, an
-  // emoji) is bound to a spare keycode for the moment it is typed, the way
+  // emoji, 服) is bound to a spare keycode for the moment it is typed, the way
   // xdotool does it; the page receives the character, as from a real layout.
+  // The spare keys are RECYCLED, least recently used first: Xvfb's keymap has
+  // about 18 of them, and a Chinese message has more distinct characters than
+  // that (DIVE-5433: chill-gorge's Telegram draft stopped after '服务器上',
+  // the 18th). A key is rebound only after every other spare has been used
+  // since, so the page has long read the character it carried.
   async keyFor(ks) {
     const km = await this.loadKeymap();
     const hit = km.map.get(ks);
-    if (hit) return hit;
-    if (this.scratch.has(ks)) return { kc: this.scratch.get(ks), shift: false };
-    const kc = km.free.shift();
+    if (hit) { touch(km.spare, hit.kc); return hit; }
+    const kc = km.spare.shift();
     if (!kc) throw new Error(`no spare key to type keysym 0x${ks.toString(16)} with`);
+    const was = km.held.get(kc);
+    if (was !== undefined && km.map.get(was)?.kc === kc) km.map.delete(was);
     const body = Buffer.alloc(4 + km.per * 4);
     body[0] = kc; body[1] = km.per;
     for (let i = 0; i < km.per; i++) body.writeUInt32LE(i < 2 ? ks : 0, 4 + i * 4);
     this.req(OP.ChangeKeyboardMapping, 1, body, false);
     await this.sync();
     await sleep(40);   // clients re-read the map on MappingNotify; give them the moment
-    this.scratch.set(ks, kc);
-    return { kc, shift: false };
+    const k = { kc, shift: false };
+    km.map.set(ks, k); km.held.set(kc, ks); km.spare.push(kc);
+    return k;
   }
 
   async tapKeysym(ks, mods) {
@@ -566,6 +579,13 @@ function charKeysym(ch) {
   if (ch === '\t') return KEYSYM.Tab;
   const cp = ch.codePointAt(0);
   return cp >= 0x20 && cp <= 0x7e ? cp : cp >= 0xa0 && cp <= 0xff ? cp : 0x01000000 + cp;
+}
+// The keysym a character gets when it has none of its own: 0x01000000 + code point.
+function isUnicodeKeysym(ks) { return ks >= 0x01000100 && ks <= 0x0110ffff; }
+// Move a spare key to the most-recently-used end, if it is one.
+function touch(spare, kc) {
+  const i = spare.indexOf(kc);
+  if (i >= 0) { spare.splice(i, 1); spare.push(kc); }
 }
 function keysymOf(name) {
   const f = String(name).match(/^f([1-9]|1[0-2])$/i);
