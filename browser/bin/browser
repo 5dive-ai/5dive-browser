@@ -1109,6 +1109,48 @@ _reap_stale_probe() {
   return 0
 }
 
+# _reap_untracked_serve <profile-dir> — the profile is held by a SESSION DAEMON's
+# Chrome that no pidfile names: a serve whose pidfile a racing serve removed
+# (DIVE-5528, see cmd_serve's lock). Nothing can reach that browser — `served`
+# does not list it, a viewer cannot be minted onto it, `serve --stop` does not
+# know it — and it refuses every new serve of the site, so it is stopped the way
+# a stop would: the daemon first (it closes the context, which writes the profile
+# out), then its display. ONLY that shape is touched: a holder whose parent is
+# `session-daemon serve <this dir>`. A person's plain Chrome, a probe, and any
+# other seat's browser are left alone. Call it only when _serve_running is false
+# and the serve lock is held, so no serve of this site can be starting it.
+_reap_untracked_serve() {
+  local dir="${1%/}" pid ppid a disp="" xp
+  pid=$(_lock_owner "$dir") || return 0
+  [[ -d "/proc/$pid" ]] || return 0
+  ppid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null) || return 0
+  [[ "$ppid" =~ ^[0-9]+$ && -d "/proc/$ppid" ]] || return 0
+  local -a av=()
+  while IFS= read -r -d '' a; do av+=("$a"); done < "/proc/$ppid/cmdline" 2>/dev/null
+  local i daemon=0 sock=""
+  for (( i = 0; i + 2 < ${#av[@]}; i++ )); do
+    if [[ "${av[i]}" == *session-daemon && "${av[i+1]}" == serve && "${av[i+2]%/}" == "$dir" ]]; then
+      daemon=1; sock="${av[i+3]:-}"; break
+    fi
+  done
+  (( daemon )) || return 0
+  disp=$(tr '\0' '\n' < "/proc/$ppid/environ" 2>/dev/null | sed -n 's/^DISPLAY=:\([0-9][0-9]*\)$/\1/p' | head -1)
+  printf '%s: NOTE — a browser for this site was still running with nothing tracking it (session daemon pid %s); stopping it so the site can be served again.\n' "$PROG" "$ppid" >&2
+  kill -TERM "$ppid" 2>/dev/null
+  for (( i = 0; i < 50; i++ )); do [[ -d "/proc/$pid" || -d "/proc/$ppid" ]] || break; sleep 0.2; done
+  [[ -d "/proc/$ppid" ]] && kill -KILL "$ppid" 2>/dev/null
+  [[ -d "/proc/$pid" ]] && kill -KILL "$pid" 2>/dev/null
+  for (( i = 0; i < 10; i++ )); do [[ -d "/proc/$pid" ]] || break; sleep 0.2; done
+  if [[ -n "$disp" ]]; then
+    for xp in $(pgrep -u "$(id -u)" -x Xvfb 2>/dev/null); do
+      [[ "$(tr '\0' ' ' < "/proc/$xp/cmdline" 2>/dev/null)" == "Xvfb :$disp "* ]] && kill "$xp" 2>/dev/null
+    done
+  fi
+  _lock_clear_dead "$dir"
+  [[ -n "$sock" && -S "$sock" ]] && rm -f "$sock"
+  return 0
+}
+
 cmd_auth() {
   local site="" status=0
   while (($#)); do
@@ -4033,6 +4075,32 @@ cmd_serve() {
     printf 'stopped the %s browser. The profile is untouched — it is the durable half.\n' "$site"
     return 0
   fi
+
+  # ONE START AT A TIME PER SITE (DIVE-5528). Two serves of one site used to run
+  # side by side: a partner cabinet retried a Connect the API's proxy had cut at
+  # 30 s while the first was still starting. Both read "not running", both
+  # launched; the loser's daemon found the profile taken ("Opening in existing
+  # browser session"), its plain-Chrome fallback handed off and exited 0, and its
+  # failure path removed THE WINNER'S pidfile. The winner's browser kept the
+  # profile with nothing pointing at it, so `served` listed nothing, a stop had
+  # nothing to stop, and every later serve failed the same way (hale-hawk,
+  # 2026-10-04: avito.ru and ya.ru, until the box was touched by hand). The lock
+  # makes the second serve wait and then find the first's ("already serving").
+  # Children never keep it: _tmp_exec closes the fd before exec, or a daemon that
+  # lives for hours would hold every later serve of the site for the full wait.
+  # (The stop path above takes no lock: it runs inside this one, in a subshell.)
+  # A wait that runs out REFUSES: going on without the lock is the race itself,
+  # and the reap below would stop the other serve's daemon mid-start. With no
+  # flock at all there is no lock to hold, so nothing is reaped either.
+  local _serve_locked=0
+  if command -v flock >/dev/null 2>&1 && { exec {_SERVE_LOCK_FD}>>"$dir/.5dive-serve.lock"; } 2>/dev/null; then
+    if ! flock -w "${FIVEDIVE_BROWSER_SERVE_LOCK_WAIT:-120}" "$_SERVE_LOCK_FD"; then
+      printf '%s: another start of %s is still running; try again in a minute.\n' "$PROG" "$site" >&2
+      return "$E_UNAVAILABLE"
+    fi
+    _serve_locked=1
+  fi
+  if (( _serve_locked )) && ! _serve_running "$dir" >/dev/null; then _reap_untracked_serve "$dir"; fi
 
   # A LOGIN VIEW IS PLAIN CHROME (DIVE-5203). Google refuses a sign-in typed
   # into a browser under automation control, and the warm serve below IS one:
@@ -7478,7 +7546,12 @@ _tmp_release() {
   [[ -n "$_TMP_OWN" && "$BASHPID" == "$_TMP_OWN_PID" ]] || return 0
   rm -rf -- "$_TMP_OWN"
 }
-_tmp_exec() { _tmp_claim; exec "$@"; }   # `_tmp_exec <cmd…> &` — see DETACHED above
+_tmp_exec() {   # `_tmp_exec <cmd…> &` — see DETACHED above
+  _tmp_claim
+  # DIVE-5528: a detached child must not inherit serve's per-site lock.
+  [[ -n "${_SERVE_LOCK_FD:-}" ]] && exec {_SERVE_LOCK_FD}>&-
+  exec "$@"
+}
 trap() {
   if [[ $# -eq 2 && "$2" == EXIT && "$1" != - ]]; then set -- "$1"$'\n''_tmp_release' EXIT; fi
   if [[ $# -eq 2 && "$2" == EXIT && "$1" == - ]]; then set -- '_tmp_release' EXIT; fi

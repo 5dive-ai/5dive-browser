@@ -8,6 +8,31 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — two serves of one site no longer leave a browser nothing tracks (DIVE-5528), 1.32.2
+
+On hale-hawk (2026-10-04) an OINOA cabinet retried a Connect that the API's proxy had cut at 30 s
+while the first was still starting on the box. Both `serve`s read "not running" and launched. The
+loser's daemon found the profile taken ("Opening in existing browser session"), its plain-Chrome
+fallback handed off and exited 0, and its failure path removed the WINNER's pidfile. The winner's
+browser kept the profile with nothing pointing at it: `served` listed nothing, a stop had nothing to
+stop, and every later serve of avito.ru and ya.ru failed with "chrome exited immediately".
+
+- **One start at a time per site.** `serve` takes `<profile>/.5dive-serve.lock` (flock, 120 s,
+  `FIVEDIVE_BROWSER_SERVE_LOCK_WAIT`) before it reads "is it running", so the second serve waits and
+  then answers "already serving". `_tmp_exec` closes the lock fd before exec: a daemon that lives
+  for hours must not hold every later serve of its site.
+- **A session daemon no pidfile names is stopped.** Under the lock, with nothing running per the
+  pidfile, a profile whose SingletonLock holder is the child of `session-daemon serve <this dir>` is
+  the race's leftover. The daemon gets SIGTERM (it closes the context, which writes the profile
+  out), then its Xvfb goes, and the serve proceeds. Any other holder (a person's plain Chrome, a
+  probe) is never touched. This is what heals a box already stuck this way, on its next connect.
+- **A lock wait that runs out refuses** (exit 69, "another start of <site> is still running"). It
+  never goes on without the lock: that is the race itself, and the reap would stop the other serve's
+  daemon mid-start. With no `flock` on the box nothing is reaped.
+- `tests/browser_serve_race_unit.sh`: R1–R5, 16 arms pass; on 1.32.1, 6 fail (R1: the second serve
+  started its own daemon; R3: the untracked daemon blocks every serve), and on the first cut of this
+  fix R5's 3 fail (the timed-out serve went on and reaped the live daemon).
+
 ### Fixed — input mode types a whole Chinese (or any non-Latin) message, not the first 18 distinct characters (DIVE-5433), 1.32.1
 
 On chill-gorge (2026-10-03 03:21Z) Clicker typed a lodar-approved Chinese DM into Telegram Web in input

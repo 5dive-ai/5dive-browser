@@ -35,6 +35,10 @@ jobs:
       # frees the profile, and a stale one-shot headless holder is reaped.
       - name: browser probe timeout harness
         run: bash tests/browser_probe_timeout_unit.sh
+      # DIVE-5528: two serves of one site wait on one lock, and a session daemon
+      # no pidfile names is stopped so the site can be served again.
+      - name: serve race harness
+        run: bash tests/browser_serve_race_unit.sh
       # DIVE-5388: served sites checked through their own browser, a headless bot
       # check is `unverifiable` not "Needs you", and the generic header check.
       - name: served probe and generic check harness
