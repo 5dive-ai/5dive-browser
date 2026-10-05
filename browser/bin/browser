@@ -4084,7 +4084,7 @@ cmd_serve() {
   # failure path removed THE WINNER'S pidfile. The winner's browser kept the
   # profile with nothing pointing at it, so `served` listed nothing, a stop had
   # nothing to stop, and every later serve failed the same way (hale-hawk,
-  # 2026-10-04: avito.ru and ya.ru, until the box was touched by hand). The lock
+  # 2026-10-04: two sites, until the box was touched by hand). The lock
   # makes the second serve wait and then find the first's ("already serving").
   # Children never keep it: _tmp_exec closes the fd before exec, or a daemon that
   # lives for hours would hold every later serve of the site for the full wait.
