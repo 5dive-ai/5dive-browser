@@ -203,3 +203,4 @@ Lessons from browser jobs that went wrong on real sites (DIVE-5390). One line ea
 
 - **Each site's login is its own.** A Google sign-in on one site does not carry to another, so "Sign in with Google" on a new site still needs the owner to connect that site.
 - **Served is not signed in.** A running browser can hold an expired session. Check `5dive browser status <site>` reads authenticated before you hand off work that needs the login, and run the connect handover if it does not.
+- **`busy: held by … until <time>` is not signed out.** A person is at the viewer, or another job still holds the browser. Wait until that time and retry once; never join their session.

@@ -207,3 +207,11 @@ Lessons from browser jobs that went wrong on real sites (DIVE-5390). One line ea
 - **A form that only says "thanks"** (Tally and the like) leaves no record to read back: report "submitted, not live".
 - **Served is not signed in.** Before you hand off work that needs the login, check `5dive browser status <site>` reads authenticated.
 - **Input mode: Chrome's "Restore pages?" bubble can cover the header's sign-in link or avatar.** Close it and take a new `shot` before you judge signed in or out, and check the URL bar in the screenshot shows the page you meant.
+- **An `act` that opens a URL starts the page fresh.** A filled form, an open dialog or a code box from one act is gone in the next, so fill and submit in one act. When a later step needs the same page (a code that arrives after "Send code"), keep the browser served and act without a URL, and test that before you spend a press you only get once.
+- **A blank, unlabelled text box in a form is usually a honeypot.** Leave it empty.
+- **Files are not an `act` step**, on purpose. In input mode, click the upload control, type the full path into the file chooser, then click **Open**: Enter alone can close it with nothing attached. Check the file name shows on the form before you submit. If the form also takes an image URL, use that instead. Neither works for you? Stop and tell the owner.
+- **Input mode: check typed text in the screenshot before you press Enter.** A field can refuse focus or drop characters. After two misses on the same field, try one other way in, then stop. Never send a partial message.
+- **A certificate warning is a hard stop.** Never click through it. The same site with or without `www.` can have a valid certificate; try that once.
+- **A check that appears after you send means it was not delivered.** A chat or relay bot can let the first command through and hold the first real message behind a captcha. Report "not delivered".
+- **A site that fills the form by reading your URL writes text you were not given.** Clear every field you have no value for. If the form has no place for text you were given, stop and ask; never rewrite it to fit.
+- **An invite refused for a new account is usually an unverified email.** Verify the account's email, then retry the invite once.
