@@ -10,12 +10,12 @@ that file stays where it is.
 
 ### Fixed — two serves of one site no longer leave a browser nothing tracks (DIVE-5528), 1.32.2
 
-On hale-hawk (2026-10-04) an OINOA cabinet retried a Connect that the API's proxy had cut at 30 s
+On hale-hawk (2026-10-04) a partner cabinet retried a Connect that the API's proxy had cut at 30 s
 while the first was still starting on the box. Both `serve`s read "not running" and launched. The
 loser's daemon found the profile taken ("Opening in existing browser session"), its plain-Chrome
 fallback handed off and exited 0, and its failure path removed the WINNER's pidfile. The winner's
 browser kept the profile with nothing pointing at it: `served` listed nothing, a stop had nothing to
-stop, and every later serve of avito.ru and ya.ru failed with "chrome exited immediately".
+stop, and every later serve of two sites failed with "chrome exited immediately".
 
 - **One start at a time per site.** `serve` takes `<profile>/.5dive-serve.lock` (flock, 120 s,
   `FIVEDIVE_BROWSER_SERVE_LOCK_WAIT`) before it reads "is it running", so the second serve waits and

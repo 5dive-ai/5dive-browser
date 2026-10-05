@@ -6,7 +6,7 @@
 # "not running" and launched; the loser's daemon found the profile taken, its
 # plain-Chrome fallback exited, and its failure path removed the WINNER's
 # pidfile. The winner's browser then held the profile with nothing pointing at
-# it: `served` listed nothing, and every later serve of avito.ru and ya.ru failed
+# it: `served` listed nothing, and every later serve of either site failed
 # with "chrome exited immediately" until the box was touched by hand.
 #
 # Driven through the real bin/browser with a FAKE session daemon and a FAKE
