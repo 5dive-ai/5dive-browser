@@ -8,6 +8,27 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a connected site serves on every seat, whatever its name or its ~/.config (DIVE-5638), 1.32.3
+
+On crystal-grove (2026-10-05) an owner connected instagram.com and every serve of the box seat's
+profile then died `chrome exited immediately (status 133)` — `chrome_crashpad_handler: --database is
+required` — while on seat `agent-diveteam-marcus` every launch died `Socket path too long`. The hired
+agent could not use the site and told the client to export by hand.
+
+- **Chrome's crash dir is the launch's own.** Each launch's private TMPDIR (DIVE-5190) is now also
+  its `XDG_CONFIG_HOME`, so crashpad never depends on `$HOME/.config` — which can be root's
+  (DIVE-5199) or hold a `google-chrome` another seat created while the variable was shared. The
+  session daemon and the driver keep that value (it is named twice, so they can tell it from the
+  shared one, which they still drop). With no private dir the DIVE-4587 behaviour stands.
+- **The per-launch root moved to `/tmp/.5dive-browser-<uid>`.** Under `$HOME/.cache` Chrome's
+  `SingletonSocket` path passed the 107-character unix limit for a long seat name; the new root
+  keeps it under ~105 for any uid, pid and start time. A root too long for the socket is not used.
+  Dirs an older version left under `$HOME/.cache/5dive-browser/tmp` are still reaped.
+- **Done reports the site's verdict.** `_connect done` took `status`'s last line, which on a broken
+  box is a reproducer command, so the agent's channel got `google-chrome --headless …` instead of
+  `BROKEN (… why)`. It now takes the site's own line.
+- Harness: `tests/browser_launch_env_unit.sh` (29 arms, 16 red at 1.32.2) and connect-request D7.
+
 ### Fixed — two serves of one site no longer leave a browser nothing tracks (DIVE-5528), 1.32.2
 
 On hale-hawk (2026-10-04) a partner cabinet retried a Connect that the API's proxy had cut at 30 s

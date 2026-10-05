@@ -59,7 +59,12 @@ const totp = require(path.join(__dirname, '..', 'lib', 'totp.cjs'));
 // launch CHECK-fails (rc 133, no output). bin/browser unsets it too; this is the
 // same belt-and-braces the driver keeps, for the same reason — the parent is not
 // a process this file controls.
-delete process.env.XDG_CONFIG_HOME;
+// DIVE-5638: bin/browser now hands Chrome a crash dir of its own (a per-launch
+// 0700 dir, named twice so it can be told from the shared value). Keep that one.
+if (!process.env.FIVEDIVE_BROWSER_CHROME_CONFIG ||
+    process.env.XDG_CONFIG_HOME !== process.env.FIVEDIVE_BROWSER_CHROME_CONFIG) {
+  delete process.env.XDG_CONFIG_HOME;
+}
 
 const PROG = '5dive browser daemon';
 const E_NOTHING_RAN = 70, E_FAILED = 1, E_UNAVAILABLE = 69, E_PERM = 77;

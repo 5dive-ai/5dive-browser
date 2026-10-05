@@ -48,6 +48,12 @@ set -uo pipefail
 #
 # The general form of the same defect ("a shared config dir where a tool creates
 # a 0700 subdir") is not solved here and is not solvable here.
+#
+# DIVE-5638: "its own crash dir under its own home" was not true of every home —
+# a root-owned ~/.config, or a ~/.config/google-chrome another seat created —
+# so every launch now points XDG_CONFIG_HOME at its own per-launch directory
+# (_tmp_claim, the DIVE-5190 block near the end). This unset is what is left
+# when no such directory can be had, and it scrubs the shared value first.
 unset XDG_CONFIG_HOME
 
 PROG="5dive browser"
@@ -7355,7 +7361,14 @@ _connect_done() {  # <caller> <code> <sender>
     _connect_as_box serve "$site" --stop >/dev/null 2>&1 || true
   fi
   rc=0; out=$(_connect_as_box status "$site" 2>&1) || rc=$?
-  printf 'site=%s\nstatus_rc=%s\nstatus=%s\n' "$site" "$rc" "$(printf '%s\n' "$out" | grep -v '^$' | tail -1)"
+  # THE VERDICT IS THE SITE'S OWN LINE, not the last line (DIVE-5638). A broken
+  # launch ends `status` with a reproducer COMMAND, and the agent's channel got
+  # that command string in place of "BROKEN (… why)". The last line stays the
+  # fallback for an output with no site line (a refusal, a die).
+  local verdict
+  verdict=$(printf '%s\n' "$out" | awk -v s="$site" '$1 == s { sub(/^[ \t]+/, ""); sub(/[ \t]+/, " "); print; exit }')
+  [[ -n "$verdict" ]] || verdict=$(printf '%s\n' "$out" | grep -v '^$' | tail -1)
+  printf 'site=%s\nstatus_rc=%s\nstatus=%s\n' "$site" "$rc" "$verdict"
 }
 
 # `_connect` — the privileged half. It is in the root-kept verb list at the
@@ -7490,9 +7503,9 @@ fi
 # the daemon's pid (exec keeps both pid and starttime) and the reap keys on the
 # right process. It is removed by the first launch after that process dies.
 #
-# WHERE, AND WHY NOT $XDG_CACHE_HOME. Under the seat's own $HOME, only when this
-# uid owns $HOME: a root caller with a seat's HOME would otherwise plant
-# root-owned 0700 directories the seat can never clean. Not $XDG_CACHE_HOME
+# WHERE, AND WHY NOT $XDG_CACHE_HOME. (DIVE-5190 put it under the seat's own
+# $HOME, only when this uid owns $HOME; DIVE-5638 below moved it to a per-uid
+# root under /tmp, for the socket length.) Not $XDG_CACHE_HOME
 # because boxes export SHARED XDG_* dirs across seats (the DIVE-4587 comment at
 # the top of this file), and a shared parent is the first-seat-owns-it failure
 # all over again. Never /tmp itself. When no private root can be had, TMPDIR is
@@ -7505,23 +7518,45 @@ fi
 # appends `_tmp_release` to any EXIT trap and turns `trap - EXIT` back into ours.
 # _tmp_release acts only in the process that claimed the directory, so a
 # subshell's own EXIT trap can never delete its parent's TMPDIR mid-run.
+#
+# DIVE-5638 MOVED THE ROOT OUT OF $HOME, because $HOME's length is not ours.
+# Chrome puts its SingletonSocket in a dir it makes under TMPDIR
+# (<TMPDIR>/.com.google.Chrome.XXXXXX/SingletonSocket — 42 more characters, 46
+# for Chromium), and a unix socket path stops at 107. Under
+# /home/agent-diveteam-marcus/.cache/5dive-browser/tmp/<pid>.<start> that came
+# to ~119 and EVERY launch on that seat died "Socket path too long" (crystal-
+# grove, 2026-10-05); /home/agent-dev was at ~107, one character from it. So the
+# root is /tmp/.5dive-browser-<uid> — at most ~65 characters to the socket dir
+# whatever the user name. Keyed on the uid, so a root caller gets its own and
+# never plants a directory a seat cannot clean (the reason this was under $HOME
+# only when -O). /tmp is sticky: nobody but us can rename or remove our root
+# once we own it, and a name squatted before we made it fails the -O / -L check
+# and falls back to the caller's TMPDIR — the old behaviour, never a refused
+# launch. The DIVE-5190 root under $HOME is still REAPED (_TMP_LEGACY), so dirs
+# an older version left there go away with their owners.
+# A root too long for the socket (an override) is not used at all.
+_TMP_SOCK_MAX=61
 if [[ -n "${FIVEDIVE_BROWSER_TMP_ROOT:-}" ]]; then _TMP_ROOT="$FIVEDIVE_BROWSER_TMP_ROOT"
-elif [[ -n "${HOME:-}" && -O "$HOME" ]]; then _TMP_ROOT="$HOME/.cache/5dive-browser/tmp"
-else _TMP_ROOT=""; fi
+else _TMP_ROOT="/tmp/.5dive-browser-$EUID"; fi
+_TMP_LEGACY=""
+[[ -z "${FIVEDIVE_BROWSER_TMP_ROOT:-}" && -n "${HOME:-}" && -O "$HOME" ]] && _TMP_LEGACY="$HOME/.cache/5dive-browser/tmp"
 # What this process was started with — minus a per-launch dir inherited from a
-# parent invocation (a `setsid "$0" propose`), which that parent deletes.
+# parent invocation (a `setsid "$0" propose`, or root's `runuser` into the box
+# seat), which that parent deletes and which may be another uid's 0700 dir.
 _TMP_INHERITED="${TMPDIR-}"; _TMP_INHERITED_SET="${TMPDIR+1}"
-if [[ -n "$_TMP_ROOT" && "$_TMP_INHERITED" == "$_TMP_ROOT"/* ]]; then _TMP_INHERITED=""; _TMP_INHERITED_SET=""; fi
+if [[ ( -n "$_TMP_ROOT" && "$_TMP_INHERITED" == "$_TMP_ROOT"/* ) || "$_TMP_INHERITED" == /tmp/.5dive-browser-*/* \
+      || "$_TMP_INHERITED" == */.cache/5dive-browser/tmp/* ]]; then _TMP_INHERITED=""; _TMP_INHERITED_SET=""; fi
 _TMP_OWN=""; _TMP_OWN_PID=""
 _tmp_starttime() {  # <pid> -> starttime; read after the LAST ')' (comm may hold both)
   local s; { read -r s < "/proc/$1/stat"; } 2>/dev/null || return 1
   s="${s##*) }"; local -a f; read -ra f <<<"$s"
   [[ -n "${f[19]:-}" ]] && printf '%s\n' "${f[19]}"
 }
-_tmp_reap() {
-  [[ -n "$_TMP_ROOT" && -d "$_TMP_ROOT" && -O "$_TMP_ROOT" ]] || return 0
+_tmp_reap() {  # [<root>] — the live root by default
+  local r="${1-$_TMP_ROOT}"
+  [[ -n "$r" && -d "$r" && -O "$r" && ! -L "$r" ]] || return 0
   local d n p
-  for d in "$_TMP_ROOT"/*.*; do
+  for d in "$r"/*.*; do
     [[ -d "$d" && ! -L "$d" ]] || continue
     n="${d##*/}"; p="${n%%.*}"
     [[ "$p" =~ ^[0-9]+$ && "${n#*.}" =~ ^[0-9]+$ ]] || continue
@@ -7535,11 +7570,27 @@ _tmp_claim() {  # give THIS process (BASHPID, so a background subshell too) its 
   if [[ -n "$_TMP_ROOT" ]] && st=$(_tmp_starttime "$p") \
      && ( umask 077; mkdir -p -- "$_TMP_ROOT" ) 2>/dev/null && [[ -O "$_TMP_ROOT" && ! -L "$_TMP_ROOT" ]]; then
     d="$_TMP_ROOT/$p.$st"
-    if mkdir -m 700 -- "$d" 2>/dev/null || [[ -d "$d" && -O "$d" && ! -L "$d" ]]; then
-      _TMP_OWN="$d"; _TMP_OWN_PID="$p"; export TMPDIR="$d"; return 0
+    if (( ${#d} <= _TMP_SOCK_MAX )) && { mkdir -m 700 -- "$d" 2>/dev/null || [[ -d "$d" && -O "$d" && ! -L "$d" ]]; }; then
+      _TMP_OWN="$d"; _TMP_OWN_PID="$p"; export TMPDIR="$d"
+      # DIVE-5638: CHROME'S CRASH DIR IS THIS DIRECTORY TOO. Chrome keeps its
+      # crashpad database under $XDG_CONFIG_HOME/google-chrome whatever
+      # --user-data-dir says, and if it cannot create it there the launch is a
+      # CHECK trap (rc 133, `--database is required`). Unsetting the variable
+      # (DIVE-4587, top of file) only moved that to $HOME/.config — which can be
+      # root's (DIVE-5199), or already hold a google-chrome another seat made
+      # back when XDG_CONFIG_HOME was shared, so the box seat's served profile
+      # trapped on every launch after a Connect. A directory this process just
+      # made, 0700 and its own, is the one place that cannot be true of. Crash
+      # reports die with the launch, which is what we want of them anyway. The
+      # node launchers keep it only when the marker matches (they delete a
+      # shared value they did not get from us).
+      export XDG_CONFIG_HOME="$d" FIVEDIVE_BROWSER_CHROME_CONFIG="$d"
+      return 0
     fi
   fi
   if [[ -n "$_TMP_INHERITED_SET" ]]; then export TMPDIR="$_TMP_INHERITED"; else unset TMPDIR; fi
+  # No private dir: the DIVE-4587 behaviour, Chrome's crash dir under $HOME.
+  unset XDG_CONFIG_HOME FIVEDIVE_BROWSER_CHROME_CONFIG
   return 1
 }
 _tmp_release() {
@@ -7558,6 +7609,7 @@ trap() {
   builtin trap "$@"
 }
 _tmp_reap
+[[ -n "$_TMP_LEGACY" ]] && _tmp_reap "$_TMP_LEGACY"
 _tmp_claim
 builtin trap '_tmp_release' EXIT
 # <<< DIVE-5190

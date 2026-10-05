@@ -72,7 +72,15 @@ case "$1" in
     [[ -f "$FAKE_CTL.badpath" ]] && { echo "not-a-path"; echo "one-time, expires 2099-01-01T00:00:00Z, bound to session x." >&2; exit 0; }
     printf '/browser/viewer/%s/%s\n' "$2" "$(printf 'a%.0s' $(seq 64))"
     echo "one-time, expires 2099-01-01T00:00:00Z, bound to session ${3#--bind=}. Redeeming it consumes it." >&2 ;;
-  status) echo "$2: authenticated"; ;;
+  status)
+    # DIVE-5638: the real shape of a BROKEN status — the site's verdict line,
+    # then a paragraph that ends in a reproducer command, rc 69.
+    if [[ -f "$FAKE_CTL.broken" ]]; then
+      printf '  %-20s %s\n' "$2" "BROKEN (this box cannot start a browser as claude: it exited 133 — chrome_crashpad_handler: --database is required)"
+      printf '\nThis box cannot start a browser as this seat, so the session states above were\nnot read. Reproduce it directly to see the\nreason:\n  google-chrome --headless --no-sandbox --disable-gpu --user-data-dir=$(mktemp -d) --dump-dom about:blank\n' >&2
+      exit 69
+    fi
+    echo "$2: authenticated"; ;;
 esac
 exit 0
 SH
@@ -98,7 +106,7 @@ export FIVEDIVE_BROWSER_CONNECT_PRIV="$BROWSER"
 export FAKE_LOG="$TMP/fake.log" FAKE_CTL="$TMP/ctl"
 
 priv() { printf '%s\0' "$@" | "$BROWSER" _connect; }
-reset() { : >"$TMP/stub.log"; : >"$FAKE_LOG"; rm -f "$TMP"/ctl.{noprofile,authed,bind500,tgfail,badpath,servefail}; }
+reset() { : >"$TMP/stub.log"; : >"$FAKE_LOG"; rm -f "$TMP"/ctl.{noprofile,authed,bind500,tgfail,badpath,servefail,broken}; }
 binds() { grep -c '"/shell/browser-viewer-bind"' "$TMP/stub.log" 2>/dev/null || true; }
 last_code() { jq -r 'select(.path|test("sendMessage")) | .form.reply_markup' "$TMP/stub.log" | tail -1 | jq -r '.inline_keyboard[0][0].callback_data' | sed 's/^bconn://'; }
 
@@ -180,6 +188,20 @@ t  "D4 revoke -> stop -> probe, in that order" "viewer-revoke booking.com|serve 
 tc "D5 the verdict comes back" "status=booking.com: authenticated" "$out"
 out=$(priv done "$DONE" "$OWNER" 2>&1); rc=$?
 t  "D6 Done is one-shot too" 77 "$rc"
+
+# D7 (DIVE-5638): a box that cannot launch Chrome answers Done with the site's
+# VERDICT, not the reproducer command that ends `status`'s broken paragraph —
+# crystal-grove's agent channel got the raw `google-chrome --headless …` line.
+reset
+out=$("$BROWSER" connect-request booking.com --reason="d7" 2>&1)
+out=$(priv tap "$(last_code)" "$OWNER" 2>&1); D7=$(sed -n 's/^done=//p' <<<"$out")
+: >"$TMP/ctl.broken"
+out=$(priv done "$D7" "$OWNER" 2>&1); rc=$?
+t  "D7 Done on a broken box still completes" 0 "$rc"
+tc "D7 ... and carries status_rc=69" "status_rc=69" "$out"
+tc "D7 the status line is the site's verdict" "status=booking.com BROKEN (this box cannot start a browser as claude" "$out"
+tn "D7 ... never the reproducer command" "status=google-chrome" "$out"
+rm -f "$TMP/ctl.broken"
 
 # ---- E: failure paths never hand over a link --------------------------------------
 reset

@@ -31,6 +31,10 @@ jobs:
       # kill — graded through the real bin/browser with a fake Chrome.
       - name: browser tmpdir harness
         run: bash tests/browser_tmpdir_unit.sh
+      # DIVE-5638: a launch does not depend on the seat's $HOME — a long seat
+      # name (socket path) or an unwritable ~/.config (crashpad, rc 133).
+      - name: browser launch environment harness
+        run: bash tests/browser_launch_env_unit.sh
       # DIVE-5375: a probe's Chrome that never exits is stopped at budget + slack,
       # frees the profile, and a stale one-shot headless holder is reaped.
       - name: browser probe timeout harness
