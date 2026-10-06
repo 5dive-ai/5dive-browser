@@ -68,7 +68,12 @@ const totp = require(path.join(__dirname, '..', 'lib', 'totp.cjs'));
 // variable (FIVEDIVE_BROWSER_DRIVER), so "my parent did it" is an assumption
 // about a process we do not control. The cost of the second unset is nothing;
 // the cost of being wrong about the parent is a browser that cannot launch.
-delete process.env.XDG_CONFIG_HOME;
+// DIVE-5638: bin/browser now hands Chrome a crash dir of its own (a per-launch
+// 0700 dir, named twice so it can be told from the shared value). Keep that one.
+if (!process.env.FIVEDIVE_BROWSER_CHROME_CONFIG ||
+    process.env.XDG_CONFIG_HOME !== process.env.FIVEDIVE_BROWSER_CHROME_CONFIG) {
+  delete process.env.XDG_CONFIG_HOME;
+}
 
 const PROG = '5dive browser run';
 // THE EXIT CODE IS A CONTRACT, and 70 is the load-bearing one.
