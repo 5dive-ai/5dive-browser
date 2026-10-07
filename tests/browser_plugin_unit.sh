@@ -546,6 +546,12 @@ run env -u FIVEDIVE_BROWSER_AGENT_GROUP PATH="$SETUPBIN:$PATH" FIVEDIVE_BROWSER_
     FIVEDIVE_BROWSER_SYSTEMCTL=systemctl SYSTEMCTL_LOG="$SYSTEMCTL_LOG" SYSTEMCTL_RC=0 "$BROWSER" setup
 if [[ "$(id -gn "$SEAT")" == root ]]; then
   printf 'SKIP: T2c8g — this seat is in group root, the arm cannot tell the groups apart\n'
+elif ! id -Gn | tr ' ' '\n' | grep -qx "$(id -gn "$SEAT")"; then
+  # A sandboxed shell can run under another gid than the seat's own primary
+  # group (an agent seat on the API host: gid claude, passwd group agent-dev).
+  # setup then cannot chown the rendezvous to that group and writes no grant at
+  # all, so there is nothing for this arm to read. CI runs it.
+  printf 'SKIP: T2c8g — this shell is not in the seat'"'"'s own group %s, so setup makes no rendezvous to grant\n' "$(id -gn "$SEAT")"
 else
   t  'T2c8g a seat'"'"'s setup grants the BOX seat'"'"'s group, not its own' \
      "%root ALL=(root) NOPASSWD: /usr/local/bin/5dive browser _serve-offered" \
