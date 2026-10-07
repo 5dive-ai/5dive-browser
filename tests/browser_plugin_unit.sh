@@ -137,6 +137,10 @@ export FIVEDIVE_BROWSER_WAKE_PRIV="$TMP/no-wake"
 # and probe-all re-measures adapters once a day. Both are graded in
 # tests/browser_reflex_propose_unit.sh; here they would race every probe arm.
 export FIVEDIVE_BROWSER_AUTO_PROPOSE=0 FIVEDIVE_BROWSER_DRIFT_ON_PROBE=0
+# DIVE-5817: an act on the public profile starts a served browser for it where a
+# daemon can run. The public-page arms here grade the one-off executor, so they keep
+# it off; T50 turns it on and grades the served half.
+export FIVEDIVE_BROWSER_PUBLIC_KEEP=0
 # NO ARM FILES AN ASK IN THE SEAT'S REAL APPROVAL STORE (DIVE-5429). With this
 # unset, `_approval_dir` finds the seat's home through `getent passwd` (not
 # $HOME), so an arm that stops a send without naming its own store files a real
@@ -6548,7 +6552,9 @@ dserve warm38.test DPWSUGGEST="$SUG38"
 t  'T38a (precondition) a warm session is up' 0 "$RC"
 w38() {  # w38 <site> <steps> — act on the served browser; N38 marks where its tape starts
   N38=$(wc -l < "$DREC")
-  dwarm "$BROWSER" act "$1" "https://$1/hotels" --steps="$2" --out="$TMP/t38/warm"
+  # A fresh URL per act: these arms grade each step on a page that just loaded, and
+  # since DIVE-5817 an act on the URL the served page is already on does not reload it.
+  dwarm "$BROWSER" act "$1" "https://$1/hotels?n=$N38" --steps="$2" --out="$TMP/t38/warm"
 }
 wtape38() { tail -n +$((N38+1)) "$DREC" | jq -rs "$1"; }
 w38 warm38.test "$TYPE38"
@@ -7996,6 +8002,136 @@ dwarm "$BROWSER" act warmdl.test --steps='[{"op":"click","selector":"#download"}
 t  'T49c (control) a served click that downloads nothing: rc 0, no downloaded line' '0 no' \
    "$RC $([[ "$OUT" == *downloaded:* ]] && echo yes || echo no)"
 env PATH="$SPATH" "$BROWSER" serve warmdl.test --stop >/dev/null 2>&1
+
+# --- T50 a public page keeps its page between acts (DIVE-5817) --------------------------------
+# chill-gorge: "on public pages each action reloads the page" — agentsindex opened a 6-digit
+# code box, and the next act (the one typing the code) opened the page from scratch. Two causes,
+# one arm each: with no served browser every act is a one-off Chrome, and in a served one the
+# goto `act <url>` puts in front of the steps reloaded the page it was already on.
+#   T50a  the first act on the public profile starts a served browser for it, on the act's page
+#   T50b  a second act on the same URL lands in it and does not reload: no goto, the code typed
+#         into the page the first act left, no second launch
+#   T50c  a goto the steps name themselves still reloads
+#   T50d  MUTANT: the daemon's stay check removed — T50b's act reloads
+#   T50e  MUTANT: the act no longer serves the public profile — nothing is served after it
+#   T50f  FIVEDIVE_BROWSER_PUBLIC_KEEP=0 turns it off
+#   T50h  a served public profile is never offered as a box login (at base: _public.offered)
+PUB50="$FIVEDIVE_BROWSER_PROFILE_ROOT/$SEAT/_public"
+U50="https://code50.test/verify"
+pub50() { run env PATH="$SPATH" DISPLAY= NODE_PATH="$DSTUB/node_modules" PWREC="$DREC" DPWDOM="$DPWDOM" \
+              FIVEDIVE_BROWSER_PUBLIC_KEEP=1 "$@"; }
+pub50stop() { env PATH="$SPATH" FIVEDIVE_BROWSER_SESSION_DAEMON="${2:-$DAEMONBIN}" "${1:-$BROWSER}" serve _public --stop >/dev/null 2>&1; }
+pub50live() { kill -0 "$(dkv "$PUB50/.5dive-serve" daemon_pid)" 2>/dev/null && echo yes || echo no; }
+gotos50() { tail -n +$(( $1 + 1 )) "$DREC" | jq -rs --arg u "$U50" '[.[]|select(.call=="goto" and .url==$u)]|length'; }
+pub50stop
+t  'T50 (precondition) no public browser is served' no "$(pub50live)"
+
+# --- T50a the first act serves the public profile, on the act's page ---
+N50=$(wc -l < "$DREC"); L50="$(launches)"
+pub50 "$BROWSER" act "$U50" --steps='[{"op":"click","selector":"#send-code"}]' --out="$TMP/t50a"
+t  'T50a the first act on a public page exits 0' 0 "$RC"
+tc 'T50a ...and says it started a served browser for the public profile' 'started a served browser for the public profile' "$ERR"
+t  'T50a ...a session daemon now holds the public profile' yes "$(pub50live)"
+t  'T50a ...opened on the act'"'"'s page, which loaded once' 1 "$(gotos50 "$N50")"
+t  'T50h ...and it is not offered to other seats as a box login (no _public.offered)' no \
+   "$(ls "$TMP/browser-sessions/$SEAT"/_public.offered >/dev/null 2>&1 && echo yes || echo no)"
+
+# --- T50b the next act on the same page does not reload it ---
+N50=$(wc -l < "$DREC")
+pub50 "$BROWSER" act "$U50" --steps='[{"op":"fill","selector":"#code","value":"123456"}]' --out="$TMP/t50b"
+t  'T50b a second act on the same page exits 0' 0 "$RC"
+t  'T50b ...and did NOT reload it: no goto' 0 "$(gotos50 "$N50")"
+tc 'T50b ...and says so' 'not reloaded' "$ERR"
+t  'T50b ...the code went into the page the first act left' 1 \
+   "$(tail -n +$((N50+1)) "$DREC" | jq -rs '[.[]|select(.call=="fill" and .val=="123456")]|length')"
+t  'T50b ...one launch for both acts' "$((L50 + 1))" "$(launches)"
+
+# --- T50c a goto of the caller's own still reloads ---
+N50=$(wc -l < "$DREC")
+pub50 "$BROWSER" act "$U50" --steps="[{\"op\":\"goto\",\"url\":\"$U50\"}]" --out="$TMP/t50c"
+t  'T50c a goto step the caller names reloads the page (one goto, not two)' '0 1' "$RC $(gotos50 "$N50")"
+pub50stop
+
+# --- T50d MUTANT: the stay check removed from the daemon ---
+MUT50="$TMP/t50-mutant"; rm -rf "$MUT50"; cp -r "$ROOT/browser" "$MUT50"
+perl -pi -e 's/req\.stay === true/false \/* MUTANT (DIVE-5817) *\//' "$MUT50/bin/session-daemon"
+t  'T50d (anchor) the mutation landed in the copy' 1 "$(grep -c 'MUTANT (DIVE-5817)' "$MUT50/bin/session-daemon")"
+pub50 env FIVEDIVE_BROWSER_SESSION_DAEMON="$MUT50/bin/session-daemon" "$MUT50/bin/browser" act "$U50" \
+    --steps='[{"op":"click","selector":"#send-code"}]' --out="$TMP/t50d"
+N50=$(wc -l < "$DREC")
+pub50 env FIVEDIVE_BROWSER_SESSION_DAEMON="$MUT50/bin/session-daemon" "$MUT50/bin/browser" act "$U50" \
+    --steps='[{"op":"fill","selector":"#code","value":"123456"}]' --out="$TMP/t50d2"
+t  'T50d MUTANT (no stay): the second act reloads the page — T50b is red' 1 "$(gotos50 "$N50")"
+pub50stop "$MUT50/bin/browser" "$MUT50/bin/session-daemon"
+
+# --- T50e MUTANT: the act does not serve the public profile ---
+MUTK50="$TMP/t50-keep-mutant"; rm -rf "$MUTK50"; cp -r "$ROOT/browser" "$MUTK50"
+perl -pi -e 's/^(\s*)_act_keep_public "\$site" "\$url"$/$1: MUTANT (DIVE-5817)/' "$MUTK50/bin/browser"
+t  'T50e (anchor) the mutation landed in the copy' 1 "$(grep -c ': MUTANT (DIVE-5817)' "$MUTK50/bin/browser")"
+pub50 "$MUTK50/bin/browser" act "$U50" --steps='[{"op":"click","selector":"#send-code"}]' --out="$TMP/t50e"
+t  'T50e MUTANT (no serve): nothing holds the public page after the act — T50a is red' no "$(pub50live)"
+pub50stop "$MUTK50/bin/browser"
+
+# --- T50h an explicit serve of the public profile offers it to nobody ---
+rm -f "$TMP/browser-sessions/$SEAT/_public.offered"
+run env PATH="$SPATH" DISPLAY= NODE_PATH="$DSTUB/node_modules" PWREC="$DREC" DPWDOM="$DPWDOM" "$BROWSER" serve _public --url="$U50"
+t  'T50h `serve _public` serves it' '0 yes' "$RC $(pub50live)"
+t  'T50h ...and writes no box offer for it (before 1.33.2 it did, and every seat read _public as a login for any host)' no \
+   "$(ls "$TMP/browser-sessions/$SEAT"/_public.offered >/dev/null 2>&1 && echo yes || echo no)"
+t  'T50h (anchor) the rendezvous dir it would have gone in exists and is writable' yes \
+   "$([[ -d "$TMP/browser-sessions/$SEAT" && -w "$TMP/browser-sessions/$SEAT" ]] && echo yes || echo no)"
+pub50stop
+
+# --- T50f the knob ---
+pub50 env FIVEDIVE_BROWSER_PUBLIC_KEEP=0 "$BROWSER" act "$U50" --steps='[{"op":"click","selector":"#send-code"}]' --out="$TMP/t50f"
+t  'T50f FIVEDIVE_BROWSER_PUBLIC_KEEP=0: no served browser after the act' no "$(pub50live)"
+tn 'T50f ...and no claim that one started' 'started a served browser' "$ERR"
+pub50stop
+tc 'T50g CHANGES.md carries the DIVE-5817 entry' 'DIVE-5817' "$(cat "$ROOT/CHANGES.md")"
+
+# --- T51 a site named for one of its public pages opens in the public profile (DIVE-5817) ---
+# chill-gorge, clicker 2026-10-06: `act blogflock.com https://blogflock.com/register` was
+# refused "no profile for blogflock.com — 5dive browser auth blogflock.com", a login sent for
+# on a page that needs none. The URL alone picks the public profile (T32a); naming the site
+# with no login for it now lands there too, and says so.
+#   T51a  the named site with no login: rc 0, in the public profile, with the note
+#   T51b  a labelled name (one ACCOUNT) is still refused: a named account is never guessed
+#   T51c  a URL that is not a page of the named site is still refused, nothing launched
+#   T51d  a seat that HAS the login keeps using it: no note, not the public profile
+#   T51e  MUTANT: the routing removed — the clicker refusal is back
+: > "$PWREC"
+run actenv "$BROWSER" act blogflock.test "https://blogflock.test/register" --steps="$STAR" --out="$TMP/t51a"
+t  'T51a act <site> <url> with no login for the site exits 0' 0 "$RC"
+t  'T51a ...it ran in the public profile' "$P31/$SEAT/_public" \
+   "$(jq -rs '[.[]|select(.call=="launch")|.profile]|first' "$PWREC")"
+tc 'T51a ...and says so, with the way to a login' 'opens in the public profile (not logged in). If the page needs a login: 5dive browser auth blogflock.test' "$ERR"
+tn 'T51a ...not the old refusal' 'no profile for blogflock.test' "$ERR"
+rm -f "$TMP/r51-argv"
+run actenv env PATH="$READPATH" READARGV="$TMP/r51-argv" READ_HTML="$READHTML" "$BROWSER" \
+    read blogflock.test "https://blogflock.test/article/1" --out="$TMP/t51a2"
+t  'T51a read <site> <url> lands in the public profile too' '0 yes' \
+   "$RC $(grep -qF -- "$P31/$SEAT/_public" "$TMP/r51-argv" 2>/dev/null && echo yes || echo no)"
+: > "$PWREC"
+run actenv "$BROWSER" act blogflock.test_work "https://blogflock.test/register" --steps="$STAR"
+t  'T51b a named ACCOUNT with no profile is still refused' 1 "$([[ $RC -ne 0 ]] && echo 1 || echo 0)"
+tc 'T51b ...as a missing login' 'no profile for blogflock.test_work' "$ERR"
+: > "$PWREC"
+run actenv "$BROWSER" act blogflock.test "https://elsewhere.test/register" --steps="$STAR"
+t  'T51c a URL that is not a page of the named site is refused, nothing launched' '1 0' \
+   "$([[ $RC -ne 0 ]] && echo 1 || echo 0) $(jq -rs '[.[]|select(.call=="launch")]|length' "$PWREC")"
+tn 'T51c ...and nothing claims the public profile' 'opens in the public profile' "$ERR"
+mkdir -p "$P31/$SEAT/haslogin.test"; chmod 700 "$P31/$SEAT/haslogin.test"
+: > "$PWREC"
+run actenv "$BROWSER" act haslogin.test "https://haslogin.test/settings" --steps="$STAR"
+tn 'T51d a seat with the login is not sent to the public profile' 'opens in the public profile' "$ERR"
+t  'T51d ...nothing launched in the public profile' 0 \
+   "$(jq -rs --arg p "$P31/$SEAT/_public" '[.[]|select(.call=="launch" and .profile==$p)]|length' "$PWREC")"
+rm -rf "$P31/$SEAT/haslogin.test"
+MUTA51="$TMP/t51-mutant"; rm -rf "$MUTA51"; cp -r "$ROOT/browser" "$MUTA51"
+perl -pi -e 's/(&& _public_for_named "\$2" "\$3"; then)/&& false; then # MUTANT (DIVE-5817)/' "$MUTA51/bin/browser"
+t  'T51e (anchor) the mutation landed in the copy' 1 "$(grep -c 'MUTANT (DIVE-5817)' "$MUTA51/bin/browser")"
+run actenv "$MUTA51/bin/browser" act blogflock.test "https://blogflock.test/register" --steps="$STAR"
+tc 'T51e MUTANT (no routing): the clicker refusal is back — T51a is red' 'no profile for blogflock.test — 5dive browser auth blogflock.test' "$ERR"
 
 # --- T98 no arm wrote to the seat's real approval store (DIVE-5429) -----------
 # Last on purpose: it grades every arm above. The listing carries size and mtime,

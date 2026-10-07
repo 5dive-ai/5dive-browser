@@ -8,6 +8,28 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — public pages: a named site with no login opens them, and an act keeps the page for the next one (DIVE-5817), 1.33.2
+
+From the chill-gorge pass (DIVE-5733, part 3).
+
+- **Acts on the public profile no longer start the page over.** With no served browser every
+  act ran in a one-off Chrome, so a page an act left (agentsindex's 6-digit code box) was gone
+  before the next act could type into it. The first act on the public profile now starts a
+  served browser for it, on the act's page, and later acts land in that browser. It is this
+  seat's own and holds no login; the idle sweep stops it like any served browser.
+  `FIVEDIVE_BROWSER_PUBLIC_KEEP=0` turns it off. Where no session daemon can run, the act runs
+  as before and says the page will not survive it.
+- **A site named for one of its public pages opens in the public profile.** `act blogflock.com
+  https://blogflock.com/register` on a seat with no blogflock.com login was refused "no profile
+  for blogflock.com — 5dive browser auth blogflock.com" (clicker), sending for a login on a page
+  that needs none. When the seat has no login for the named site, the box offers none, the name
+  carries no account label and the URL is a page of that site, `read`, `shot`, `snapshot`,
+  `tree`, `links` and `act` now open it in the public profile, as the URL alone would, and say
+  so with the way to a login. A named account (`site_label`) is still never guessed.
+- **A served browser already on the act's URL is not reloaded.** The goto `act <url>` puts in
+  front of the steps is skipped when the page is exactly that URL, for any site. A goto step of
+  the caller's own still reloads.
+
 ### Fixed — uploads in input mode, and worker seats can start the box's browsers again (DIVE-5740), 1.33.1
 
 From the same chill-gorge pass (DIVE-5733, part 2).

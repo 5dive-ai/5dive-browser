@@ -774,6 +774,12 @@ async function snapshotRequest(ctx, req, send, end) {
   }
 }
 
+// The same page, as a browser normalises it (`https://a.test` is `https://a.test/`).
+// The fragment counts: a hash-routed app's `#/inbox` and `#/drafts` are two pages.
+function sameUrl(a, b) {
+  try { return new URL(a).href === new URL(b).href; } catch (e) { return false; }
+}
+
 async function planRequest(ctx, req, send, end) {
   const steps = Array.isArray(req.steps) ? req.steps : null;
   if (!steps || !steps.length) { send({ t: 'err', msg: 'the plan carries no steps' }); return end(E_NOTHING_RAN); }
@@ -870,6 +876,16 @@ async function planRequest(ctx, req, send, end) {
       });
       switch (s.op) {
         case 'goto': {
+          // THE ACT'S OWN URL DOES NOT RELOAD THE PAGE IT IS ALREADY ON (DIVE-5817).
+          // `act <url>` puts a goto in front of the steps; in a served browser
+          // that sat on <url> since the last act, the reload threw away what the
+          // page held (a 6-digit code box a site had just opened). Only that
+          // first, caller-less goto, and only on an exact URL match: a goto the
+          // steps name themselves still navigates, which is how to ask for a reload.
+          if (i === 0 && req.stay === true && sameUrl(page.url(), s.url)) {
+            send({ t: 'log', line: `  ${where}: already on ${s.url}; not reloaded, so the page keeps what it holds` });
+            break;
+          }
           await page.goto(s.url, { waitUntil: 'domcontentloaded' });
           const ms = settleOf(req, RUN_SETTLE_MS);
           if (ms > 0) await page.waitForTimeout(ms);

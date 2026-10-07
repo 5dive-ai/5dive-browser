@@ -463,6 +463,11 @@ _rv_offer() { echo "$SESSION_ROOT/$1/$2.offered"; }
 # root was never created (an older install that has not re-run setup) must keep
 # working exactly as it did, just without brokering.
 _rv_offer_write() {  # _rv_offer_write <seat> <site> [input]
+  # THE PUBLIC PROFILE IS NO LOGIN TO OFFER (DIVE-5817). Its offer made every
+  # other seat count `_public` as a connected account for EVERY host (it renders
+  # any site), so `ls` listed it as a box login and a URL with one real login
+  # behind it was refused as "2 connected accounts". An act now serves it often.
+  _is_public "$2" && return 0
   local d; d="$(_rv_dir "$1")"
   [[ -d "$d" && -w "$d" ]] || return 0
   # drive=input (DIVE-5287) is how a brokered seat learns the box serves this
@@ -1867,6 +1872,7 @@ _ls_box_offers() {
   for f in "$(_rv_dir "$BOX_SEAT")"/*.offered; do
     [[ -f "$f" ]] || continue
     site="$(basename "$f" .offered)"
+    _is_public "$site" && continue   # not a login (DIVE-5817)
     [[ -d "$PROFILE_ROOT/$me/$site" ]] && continue
     (( shown )) || printf '\n  the box login (owned by %s — you use it, you do not log in again):\n' "$BOX_SEAT"
     shown=1
@@ -5809,6 +5815,33 @@ _policy_log() {  # <site> <stderr-file> <page> <screenshot>
   done < <(grep -o '5dive-owner-allowed: {.*}' "$errf" | sed 's/^5dive-owner-allowed: //')
 }
 
+# A PUBLIC PAGE KEEPS ITS PAGE BETWEEN ACTS (DIVE-5817). With no served browser an
+# act runs in a one-off Chrome that closes when it returns, so the next act opened
+# the page from scratch: a code box a site had just shown was gone before the code
+# could be typed (agentsindex, chill-gorge). The public profile holds no login, so
+# a served browser for it is this seat's own and needs nobody's say: the first act
+# starts one ON the act's page, and every later act lands in it (warm path, and the
+# daemon does not reload the page it is already on). The idle sweep stops it like
+# any served browser. Best effort: where no daemon can run, the act runs cold as
+# before and says the page will not survive it. FIVEDIVE_BROWSER_PUBLIC_KEEP=0 off.
+_act_keep_public() {  # <site> <url>; runs with the lease held, before _page_open
+  _is_public "$1" || return 0
+  [[ "${FIVEDIVE_BROWSER_PUBLIC_KEEP:-1}" == 1 ]] || return 0
+  _daemon_live "$_SITE_DIR" && return 0
+  _retry_possible || return 0
+  local why
+  # A SUBSHELL, because cmd_serve reports failure by dying (see _retry_serve).
+  why=$( ( cmd_serve "$1" --url="$2" >/dev/null ) 2>&1 ) || true
+  if _daemon_live "$_SITE_DIR"; then
+    printf '%s: started a served browser for the public profile, so the next act on this page continues where this one stops. It stops after %ss unused, or: 5dive browser serve %s --stop\n' \
+      "$PROG" "${FIVEDIVE_BROWSER_IDLE_S:-$EVICT_IDLE_DEFAULT}" "$1" >&2
+    return 0
+  fi
+  why="$(printf '%s\n' "$why" | grep -v '^$' | tail -n1 | sed "s/^$PROG: //" | cut -c1-300)"
+  printf '%s: no served browser for the public profile (%s), so this act runs in a one-off browser and the next act opens the page again.\n' \
+    "$PROG" "${why:-it gave no reason}" >&2
+}
+
 cmd_act() {
   local site="" url="" steps="" expect="" approved="" out="" json=0 wait="no" settle="" shot=1
   local wait_for="" interactive=0 expect_wait="${FIVEDIVE_BROWSER_EXPECT_WAIT_MS:-$ACT_EXPECT_WAIT_DEFAULT}" record=""
@@ -5831,7 +5864,9 @@ cmd_act() {
       -h|--help)
         printf '%s act [<site>] <url> --steps=<json> [--expect=<regex>] [--expect-wait=<ms>] [--wait-for=<selector|ref=…|text=…>] [--interactive] [--approved=<id>] [--out=<dir>] [--json] [--record=<routine>]\n' "$PROG"
         printf '  --record=<routine> saves these steps (never the values typed) for `5dive browser replay`.\n'
-        printf '  <url> may be omitted to continue on the page a served browser is already on.\n'
+        printf '  <url> may be omitted to continue on the page a served browser is already on. A served browser\n'
+        printf '  already ON <url> is not reloaded (a goto step of your own does reload). An act on the public\n'
+        printf '  profile starts a served browser for it, so its page survives to the next act.\n'
         printf '  --expect is re-read for up to --expect-wait ms (default %s) before NOT VERIFIED.\n' "$ACT_EXPECT_WAIT_DEFAULT"
         return 0 ;;
       -*) die "$E_USAGE" "unknown flag: $1" ;;
@@ -5858,6 +5893,7 @@ cmd_act() {
   local orig_steps="$steps"
   if [[ -n "$url" ]]; then
     steps=$(jq -c --arg u "$url" '[{op:"goto", url:$u}] + .' <<<"$steps")
+    _ACT_STAY=1
   fi
   # Every page a goto opens must be one this profile may render — the same scoping
   # rule as `shot`, so a login cannot be walked to another site's page by a step.
@@ -5889,6 +5925,7 @@ cmd_act() {
   if [[ -n "$url" ]]; then
     _lease_take "$site" "$_SITE_DIR" "act" "$wait"
     trap '_lease_and_serve_release' EXIT
+    _act_keep_public "$site" "$url"
     _page_open "$site" "$url"
   else
     _daemon_live "$_SITE_DIR" || die "$E_USAGE" "no URL, and no served $site browser holding a page to continue on. Give act the URL to start from."
@@ -6068,13 +6105,16 @@ cmd_act() {
 # `act` through the warm session: the plan over the socket, the re-read back inline
 # into <stage>. Stderr is APPENDED to <errf>, so a served retry (DIVE-4991) keeps
 # the cold run's goto and redirect lines above its own.
+# 1 when the plan's first step is the goto `act <url>` put there itself: the served
+# browser skips it when it is already on that page (DIVE-5817; session-daemon).
+_ACT_STAY=0
 _act_session() {  # <site> <steps> <approved> <shot> <settle> <report> <allow-kinds> <stage> <errf>
   local site="$1" steps="$2" is_approved="$3" shot="$4" settle="$5" report="$6" allow_kinds="$7" stage="$8" errf="$9"
   local plan rc=0 rep payload="$stage/daemon.out"
   plan=$(jq -nc --argjson s "$steps" --argjson a "$is_approved" --argjson sh "$shot" \
       --argjson l "$(_daemon_lease_json)" --argjson st "$(_settle_json "$settle")" --argjson r "$report" \
-      --argjson ak "$allow_kinds" --argjson lj "$(_landing_json "$site" 0)" \
-      '{op:"plan", steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak,
+      --argjson ak "$allow_kinds" --argjson lj "$(_landing_json "$site" 0)" --argjson stay "$_ACT_STAY" \
+      '{op:"plan", steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak, stay:($stay==1),
         report:({shot:($sh==1), tree:true, downloads:true} + $r)} + $st + $l + $lj')
   # To a FILE, not a variable: a download comes back in this payload (DIVE-5751).
   _daemon_call "$_PG_DIR" "$plan" >"$payload" 2>>"$errf" || rc=$?
@@ -6551,6 +6591,7 @@ _route_site() {  # _route_site <url> -> the profile name
   for o in "$(_rv_dir "$BOX_SEAT")"/*.offered; do
     [[ -f "$o" ]] || continue
     s="$(basename "$o" .offered)"
+    _is_public "$s" && continue   # an offer an older serve left (DIVE-5817)
     [[ " ${hits[*]-} " == *" $s "* ]] && continue
     _shot_host_ok "$s" "$host" && hits+=("$s")
   done
@@ -8175,6 +8216,41 @@ case "${1:-}" in
       _v="$1"; _u="$2"; shift 2
       _r="$(_route_site "$_u")" || exit $?
       set -- "$_v" "$_r" "$_u" "$@"
+    fi ;;
+esac
+
+# A SITE NAMED FOR ONE OF ITS PUBLIC PAGES (DIVE-5817). `act blogflock.com
+# https://blogflock.com/register` on a seat with no blogflock.com login was refused
+# "no profile for blogflock.com — 5dive browser auth blogflock.com" (clicker,
+# chill-gorge): a login sent for, for a register page that needs none, and the
+# head had to open it and re-dispatch. The URL alone would have picked the public
+# profile, so naming the site now lands in the same place when naming it cannot
+# mean a login: this seat has none for it, the box offers none, the name carries
+# no account label, the URL is a page of that site, the site is not one an adapter
+# keeps in input mode, nothing else connected answers for the host, and the seat
+# has a store of its own to keep a public profile in. Said
+# every time, with the way to a login, so a page that needed one is not mistaken
+# for the logged-in view.
+_public_for_named() {  # _public_for_named <site> <url> -> 0 to open it in the public profile
+  local site="$1" url="$2" host
+  _valid_site "$site" && ! _is_public "$site" && [[ "$site" != *_* ]] || return 1
+  # The public profile lives in this seat's own store: a seat with none (one that
+  # only uses the box's logins) keeps the refusal it had, not a second one.
+  [[ -d "$(_seat_dir)" ]] || return 1
+  [[ -d "$PROFILE_ROOT/$(_seat)/$site" ]] && return 1
+  [[ -f "$(_rv_offer "$BOX_SEAT" "$site")" ]] && return 1
+  [[ "$(_site_drive_adapter "$site")" == input ]] && return 1
+  host="${url#*://}"; host="${host%%/*}"; host="${host%%\?*}"; host="${host%%#*}"; host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
+  _shot_host_ok "$site" "$host" || return 1
+  [[ "$(_route_site "$url" 2>/dev/null)" == "$PUBLIC_SITE" ]]
+}
+case "${1:-}" in
+  read|links|shot|snapshot|tree|act)
+    if [[ -n "${2:-}" && "${2:-}" != -* && "${3:-}" =~ ^https?:// ]] && _public_for_named "$2" "$3"; then
+      printf '%s: no %s login on this seat or this box, so %s opens in the public profile (not logged in). If the page needs a login: 5dive browser auth %s\n' \
+        "$PROG" "$2" "$3" "$2" >&2
+      _v="$1"; _u="$3"; shift 3
+      set -- "$_v" "$PUBLIC_SITE" "$_u" "$@"
     fi ;;
 esac
 
