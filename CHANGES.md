@@ -8,6 +8,29 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — uploads in input mode, and worker seats can start the box's browsers again (DIVE-5740), 1.32.5
+
+From the same chill-gorge pass (DIVE-5733, part 2).
+
+- **A click that opens the browser's file chooser is no longer called lost.** With no window
+  manager the focus fell to the root window (`0x21f` on Xvfb), so the step failed with "keyboard
+  focus is not on the browser" (luna, 20 times), and the next keys were moved back to the PAGE,
+  typing a file path into an ad draft. While the chooser is up it gets the keys; when it closes,
+  the page gets them back.
+- **New input step `upload{x,y,path}`**: clicks the upload control, types the absolute path into
+  the chooser, presses Return and checks the chooser closed. It fails by name if no chooser opens
+  or the path is not taken. The path must be a regular file the calling seat can read, checked as
+  that seat, and it goes on the audit log. The DOM `act` still has no upload step.
+- **Worker seats keep the on-demand serve grant.** `setup` wrote the box-wide grant for the
+  group of whichever seat ran it, and agent create runs setup for every new seat, so each new
+  worker took the grant from the others ("no grant to start the box's browsers", luna 8,
+  clicker 8). It now names the box seat's group (`claude`), unless
+  `FIVEDIVE_BROWSER_AGENT_GROUP` says otherwise.
+- **`press` takes a bare modifier** (`ctrl`, `shift`, `alt`, `meta`), which was refused as an
+  unknown key.
+- The input harness's K arms (bare Xvfb, no Chrome) now run under `INPUT_DRIVE_SKIP_LIVE=1`;
+  only the L arms need Chrome.
+
 ### Fixed — a browser seat that waits really waits, and a screenshot lands where the seat can write (DIVE-5733), 1.32.4
 
 On the distribution box (chill-gorge, 2026-10-03 to 10-07) the Codex seat lost 23 turns to "busy:

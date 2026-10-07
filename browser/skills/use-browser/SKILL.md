@@ -87,7 +87,8 @@ site is in input mode: `read`, `tree` or `run` refused "INPUT mode" means use th
 2. **Act in small steps**: `click{x,y[,button,count]}`, `move{x,y}`, `type{value}` (into
    whatever has focus), `press{key}` (`Enter`, `Tab`, `Escape`, `PageDown`, `ctrl+l`, …),
    `scroll{dy}` (wheel notches, + is down), `goto{url}` (typed into the address bar),
-   `wait{ms}`. Then read the `page.png` it wrote before the next act. A click that opens a new
+   `wait{ms}`, `upload{x,y,path}` (clicks the upload control at x,y, types the file's absolute
+   path into the browser's file chooser and checks it closed). Then read the `page.png` it wrote before the next act. A click that opens a new
    page ends that act: type into the new page in the next one, after you have seen it. A click
    on a spot another window covers, or keys that cannot reach the browser, fail the step (exit
    1) with nothing sent past it. Read the error and the screenshot; do not repeat the same step
@@ -209,7 +210,7 @@ Lessons from browser jobs that went wrong on real sites (DIVE-5390). One line ea
 - **Input mode: Chrome's "Restore pages?" bubble can cover the header's sign-in link or avatar.** Close it and take a new `shot` before you judge signed in or out, and check the URL bar in the screenshot shows the page you meant.
 - **An `act` that opens a URL starts the page fresh.** A filled form, an open dialog or a code box from one act is gone in the next, so fill and submit in one act. When a later step needs the same page (a code that arrives after "Send code"), keep the browser served and act without a URL, and test that before you spend a press you only get once.
 - **A blank, unlabelled text box in a form is usually a honeypot.** Leave it empty.
-- **Files are not an `act` step**, on purpose. In input mode, click the upload control, type the full path into the file chooser, then click **Open**: Enter alone can close it with nothing attached. Check the file name shows on the form before you submit. If the form also takes an image URL, use that instead. Neither works for you? Stop and tell the owner.
+- **Files are not a DOM `act` step**, on purpose. In input mode use one `upload{x,y,path}` step on the upload control: the file must be one this seat can read, by absolute path. It fails by name when no chooser opens or the chooser does not take the path. Check the file name shows on the form before you submit. If the form also takes an image URL, use that instead. Neither works for you? Stop and tell the owner.
 - **Input mode: check typed text in the screenshot before you press Enter.** A field can refuse focus or drop characters. After two misses on the same field, try one other way in, then stop. Never send a partial message.
 - **A certificate warning is a hard stop.** Never click through it. The same site with or without `www.` can have a valid certificate; try that once.
 - **A check that appears after you send means it was not delivered.** A chat or relay bot can let the first command through and hold the first real message behind a captcha. Report "not delivered".

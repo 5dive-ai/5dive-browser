@@ -286,6 +286,39 @@ class X11 {
     return /chrom/i.test(await this.prop(win, 'WM_CLASS', 'STRING'));
   }
 
+  async attrs(win) {
+    const b = Buffer.alloc(4); b.writeUInt32LE(win, 0);
+    try { const r = await this.req(OP.GetWindowAttributes, 0, b, true); return { viewable: r[26] === 2, override: r[27] === 1 }; }
+    catch (e) { return { viewable: false, override: false }; }
+  }
+
+  // ---- the browser's own dialog (DIVE-5740) -------------------------------
+  // A page's upload control opens Chrome's GTK file chooser: a second top-level
+  // window of the browser, small, named "Open File" or similar, transient for
+  // the main window. With no window manager nothing gives it the keyboard, and
+  // on chill-gorge the focus fell to the root window (0x21f on Xvfb), so the
+  // click that opened it was reported as lost and the next keys were sent to
+  // the PAGE behind it (a corrupted ad draft). While it is up, it is where keys
+  // belong. Menus and popups are override-redirect and do not count.
+  async browserDialog(pid) {
+    const main = (await this.windowTitle()).id;
+    const kids = await this.children(this.root);
+    for (let i = kids.length - 1; i >= 0; i--) {      // topmost first
+      const w = kids[i];
+      if (w === main) continue;
+      const a = await this.attrs(w);
+      if (!a.viewable || a.override) continue;
+      if (!(await this.isBrowserWindow(w, pid))) continue;
+      const name = (await this.prop(w, '_NET_WM_NAME', 'UTF8_STRING')) || (await this.prop(w, 'WM_NAME', 'STRING'));
+      const transient = await this.prop32(w, 'WM_TRANSIENT_FOR');
+      if (/ [-–—] (Google Chrome|Chromium)/.test(name || '')) continue;   // another browser window, not a dialog
+      if ((transient && transient !== this.root) || /^(open|save|select|upload|choose)\b|file/i.test(name || '')) {
+        return { id: w, name: name || '' };
+      }
+    }
+    return null;
+  }
+
   // The window and its ancestors up to (not including) the root: with a window
   // manager the browser's window sits inside a frame, and the frame is not it.
   async lineage(win) {
@@ -341,6 +374,9 @@ class X11 {
   // when a window maps or is clicked — and CONFIRM it with the server. Throws
   // when it cannot be made true: input sent anyway would be dropped silently.
   async ensureBrowserFocus(pid, waitMs) {
+    // An open dialog of the browser takes the keys, not the page behind it.
+    const dlg = await this.browserDialog(pid);
+    if (dlg) return this.focusOn(dlg.id, waitMs, `the browser's "${dlg.name || 'dialog'}" window`);
     let t = await this.keyboardTarget(pid);
     if (t.browser) return t.browser;
     const main = (await this.windowTitle()).id;
@@ -356,6 +392,21 @@ class X11 {
       await sleep(50);
     }
     throw new Error(`the keyboard focus is not on the browser window (it is on ${t.focus === 0 ? 'no window' : t.focus === 1 ? 'the window under the pointer' : '0x' + t.focus.toString(16)}) and could not be moved there`);
+  }
+
+  // Put the keyboard on exactly <win> (or a window inside it), confirmed.
+  async focusOn(win, waitMs, what) {
+    const until = Date.now() + (waitMs || 2000);
+    let f = 0;
+    for (;;) {
+      const r = await this.req(OP.GetInputFocus, 0, null, true);
+      f = r.readUInt32LE(8);
+      if (f > 1 && (await this.lineage(f)).includes(win)) return win;
+      if (Date.now() >= until) break;
+      try { await this.setFocus(win); } catch (e) { /* not viewable yet: retried */ }
+      await sleep(50);
+    }
+    throw new Error(`the keyboard focus could not be put on ${what} (it is on 0x${f.toString(16)})`);
   }
 
   // ---- input --------------------------------------------------------------
@@ -592,6 +643,8 @@ function keysymOf(name) {
   if (f) return 0xffbd + Number(f[1]);
   const canon = ALIASES[String(name).toLowerCase()] || name;
   if (KEYSYM[canon] !== undefined) return KEYSYM[canon];
+  // A modifier on its own is a key too (DIVE-5740: 'ctrl' was "not a key").
+  if (MODS[String(name).toLowerCase()] !== undefined) return MODS[String(name).toLowerCase()];
   if ([...String(name)].length === 1) return charKeysym(String(name));
   return null;
 }

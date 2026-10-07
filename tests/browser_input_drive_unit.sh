@@ -26,6 +26,8 @@
 #           and a refusal names the holder as THIS seat when it is its own call
 #        R13 (DIVE-5733) a shot with no --out from an unwritable cwd lands in the
 #           seat's artifacts; an unwritable --out is refused as a permission problem
+#        R14 (DIVE-5740) an upload{x,y,path} step reaches the daemon only with an
+#           absolute path to a regular file the CALLER can read, and is audited
 #        R11 a person's sign-in survives Done on a daemon-held browser (DIVE-5374):
 #           the stop waits for the cookie commit when a viewer was redeemed on this
 #           serve — input or warm CDP — within 60 s of the person leaving, and not
@@ -37,6 +39,9 @@
 #        K2 the keys left bound are the most recently typed characters, one each
 #        K3 a NEW connection on that display (a daemon restart) reclaims the keys
 #           the last one bound, instead of finding none spare
+#        K4 (DIVE-5740) with the browser's file chooser up and the focus fallen
+#           to the root window (chill-gorge's 0x21f), keys are sent to the CHOOSER,
+#           not the page behind it; with it closed, to the page; a popup is not one
 #   L  LIVE, when this machine has Xvfb and Chrome (GitHub's ubuntu runner does):
 #      the real daemon, real plain Chrome, real XTEST input.
 #        L1 the page sees navigator.webdriver === false, and the daemon reports
@@ -64,6 +69,8 @@
 #           and closes only that tab; with a handoff open it does not navigate
 #        L12 a Chinese sentence with more distinct characters than the display
 #           has spare keys reaches the page whole (DIVE-5433)
+#        L13 (DIVE-5740) an upload step on a real <input type=file> attaches the
+#           file through Chrome's own file chooser, and the plan goes on typing
 #        L10 a FRESH page driven the instant its title appears still gets the
 #           text: the daemon holds input until the page is quiet (the CI race)
 set -uo pipefail
@@ -75,9 +82,10 @@ REAL_DAEMON="$ROOT/browser/bin/session-daemon"
 X11LIB="$ROOT/browser/lib/x11.cjs"
 REAL_XVFB="$(command -v Xvfb || true)"
 REAL_CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
-# INPUT_DRIVE_SKIP_LIVE=1: the R arms only, on a host where real Chrome must not run
-# (the production API host). CI leaves it unset and runs the L arms.
-[[ -n "${INPUT_DRIVE_SKIP_LIVE:-}" ]] && REAL_XVFB=""
+# INPUT_DRIVE_SKIP_LIVE=1: no real Chrome, on a host where it must not run (the
+# production API host). CI leaves it unset and runs the L arms. The K arms need
+# only a bare Xvfb, and since DIVE-5740 they still run when one is installed.
+[[ -n "${INPUT_DRIVE_SKIP_LIVE:-}" ]] && REAL_CHROME=""
 
 # SHORT PATHS. A unix socket path is capped at 108 bytes; a long mktemp root
 # makes the daemon bind a truncated name and every arm below read "not live".
@@ -129,13 +137,14 @@ while (o < png.length) {
 console.log([sig, w, h, crcOk, zlib.inflateSync(idat).toString("hex"),
   x.keysymOf("Enter").toString(16), x.keysymOf("pagedown").toString(16), x.keysymOf("F5").toString(16),
   x.keysymOf("a").toString(16), x.charKeysym("é").toString(16), x.charKeysym("✓").toString(16),
-  String(x.keysymOf("nosuchkey"))].join(" "));
+  String(x.keysymOf("nosuchkey")), x.keysymOf("ctrl").toString(16), x.keysymOf("Shift").toString(16)].join(" "));
 ' "$X11LIB" 2>&1)
 arm 'U1 the PNG has the signature, the size and valid CRCs' '89504e470d0a1a0a 2 1 true' "$(cut -d' ' -f1-4 <<<"$out")"
 arm 'U2 the PNG rows are the given pixels as RGB (BGRX in, filter 0 + RGB out)' '00ff00000000ff' "$(cut -d' ' -f5 <<<"$out")"
 arm 'U3 key names map to X keysyms (Enter, PageDown, F5, a)' 'ff0d ff56 ffc2 61' "$(cut -d' ' -f6-9 <<<"$out")"
 arm 'U4 Latin-1 is its own keysym, anything else is 0x01000000+codepoint' 'e9 1002713' "$(cut -d' ' -f10-11 <<<"$out")"
 arm 'U5 an unknown key name is refused, not guessed' 'null' "$(cut -d' ' -f12 <<<"$out")"
+arm 'U6 a modifier on its own is a key (DIVE-5740: "ctrl" was refused as unknown)' 'ffe3 ffe1' "$(cut -d' ' -f13-14 <<<"$out")"
 
 # ------------------------------------------------------ R: routing, fake daemon
 export FIVEDIVE_BROWSER_PROFILE_ROOT="$TMP/pr"
@@ -333,6 +342,27 @@ echo 75 > "$TMP/fake.rc"
 o=$("$BROWSER" act tiktok.com --steps='[{"op":"press","key":"Enter"}]' --out="$TMP/act2" 2>&1); rc=$?
 rm -f "$TMP/fake.rc"
 arm 'R5 a challenge from the daemon is E_COLD (75) with the handoff advice' '75 yes' "$rc $(yn grep -q 'browser handoff tiktok.com' <<<"$o")"
+
+# R14 (DIVE-5740) — the upload step. The chooser types as the BROWSER's user, so
+# the path is checked as the caller before anything is sent.
+n0=$(reqs input)
+o=$("$BROWSER" act tiktok.com --steps='[{"op":"upload","x":10,"y":10,"path":"logo.png"}]' 2>&1); rc=$?
+arm 'R14 an upload with a relative path is refused (64)' '64 yes' "$rc $(yn grep -q 'absolute path' <<<"$o")"
+UPNO="$TMP/up-unreadable.png"; : > "$UPNO"; chmod 000 "$UPNO"
+if [[ -r "$UPNO" ]]; then
+  SKIP=$((SKIP+1)); printf 'SKIP: R14 unreadable-file arm — this runner reads mode-000 files (root)\n'
+else
+  o=$("$BROWSER" act tiktok.com --steps="[{\"op\":\"upload\",\"x\":10,\"y\":10,\"path\":\"$UPNO\"}]" 2>&1); rc=$?
+  arm 'R14 an upload of a file the caller cannot read is refused (64)' '64 yes' "$rc $(yn grep -q 'this seat can read' <<<"$o")"
+fi
+o=$("$BROWSER" act tiktok.com --steps="[{\"op\":\"upload\",\"x\":10,\"y\":10,\"path\":\"$TMP\"}]" 2>&1); rc=$?
+arm 'R14 an upload of a directory is refused (64)' 64 "$rc"
+arm 'R14 ...and none of the refused uploads reached the browser' "$n0" "$(reqs input)"
+UPOK="$TMP/up-logo.png"; printf 'png' > "$UPOK"
+o=$("$BROWSER" act tiktok.com --steps="[{\"op\":\"upload\",\"x\":10,\"y\":10,\"path\":\"$UPOK\"}]" --out="$TMP/act3" 2>&1); rc=$?
+arm 'R14 an upload of a readable file goes to the daemon as an upload step' "0 \"$UPOK\"" \
+  "$rc $(last input | jq -c '.steps[0] | select(.op=="upload") | .path')"
+arm 'R14 ...and the path is on the audit log' yes "$(yn grep -q 'input-upload' "$TMP/pr/$SEAT/tiktok.com/.5dive-audit.jsonl")"
 
 : > "$FAKE_CONNECT_REC"
 o=$("$BROWSER" handoff tiktok.com --reason="solve the puzzle" 2>&1); rc=$?
@@ -619,6 +649,12 @@ else
     rc=$(kk type $((0x5000)) "$N" 2>"$TMP/k3.err")
     arm 'K3 a new connection on that display reclaims the bound keys and types on' "$M 0" "$(kk spare) ${rc:-none}$(why "$TMP/k3.err")"
   fi
+  # K4 (DIVE-5740) — the file chooser. A fresh connection per scene: its windows
+  # go when it does.
+  kd() { DISPLAY=":$kdisp" node "$ROOT/tests/x11_dialog.cjs" "$1" 2>&1; }
+  arm 'K4 with the chooser up and the focus on the root window, keys go to the CHOOSER, not the page' 'focus=dialog' "$(kd chooser)"
+  arm 'K4 ...with it closed, keys go back to the page' 'focus=main' "$(kd closed)"
+  arm 'K4 ...and a popup (override-redirect) is not taken for a dialog' 'focus=main' "$(kd popup)"
   kill "$KX" 2>/dev/null; wait "$KX" 2>/dev/null
 fi
 
@@ -840,6 +876,38 @@ HTML
       "$rc $t"
     "$REAL_DAEMON" call "$LP2/s.sock" <<<'{"op":"shutdown"}' >/dev/null 2>&1
     for i in $(seq 1 100); do kill -0 "$LD2" 2>/dev/null || break; sleep 0.05; done
+
+    # L13 (DIVE-5740) — a real upload: Chrome's own file chooser opens on a click
+    # on <input type=file>, the step types the path into it, the page sees the
+    # file, and the NEXT step's keys reach the page again (chill-gorge: the click
+    # was called lost, focus 0x21f, and the path was typed into an ad draft).
+    UPF="$TMP/l13-logo.txt"; printf 'logo\n' > "$UPF"
+    PAGE3="$TMP/page3.html"
+    cat > "$PAGE3" <<'HTML'
+<html><head><title>up:none</title></head><body style="margin:0">
+<input id=f type=file style="position:fixed;left:0;top:0;width:100vw;height:50vh;font-size:40px">
+<textarea id=t style="position:fixed;left:0;top:50vh;width:100vw;height:50vh;font-size:30px"></textarea>
+<script>
+const f = document.getElementById('f'), t = document.getElementById('t'); let name = 'none';
+f.addEventListener('change', () => { name = f.files[0] ? f.files[0].name : 'none'; document.title = 'up:' + name; });
+t.addEventListener('input', () => { document.title = 'up:' + name + ':typed:' + t.value; });
+</script></body></html>
+HTML
+    LP3="$TMP/lp3"; mkdir -m 700 "$LP3"
+    DISPLAY=":$disp" FIVEDIVE_BROWSER_CHROME="$REAL_CHROME" FIVEDIVE_BROWSER_CHROME_ARGS="file://$PAGE3" \
+      FIVEDIVE_BROWSER_INPUT_FAST=1 "$REAL_DAEMON" serve "$LP3" "$LP3/s.sock" --input > "$TMP/l3.ready" 2> "$TMP/l13.err" &
+    LD3=$!; _KILL+=("$LD3")
+    for i in $(seq 1 600); do grep -q '^ready' "$TMP/l3.ready" 2>/dev/null && break; kill -0 "$LD3" 2>/dev/null || break; sleep 0.05; done
+    see_title "$LP3/s.sock" 'up:none' >/dev/null
+    "$REAL_DAEMON" call "$LP3/s.sock" <<<"{\"op\":\"input\",\"steps\":[{\"op\":\"upload\",\"x\":640,\"y\":200,\"path\":\"$UPF\"},{\"op\":\"click\",\"x\":640,\"y\":600},{\"op\":\"type\",\"value\":\"ok\"}],\"settle\":300}" \
+      > "$TMP/l13.out" 2> "$TMP/l13.log"; rc=$?
+    t=$(jq -r .title "$TMP/l13.out" 2>/dev/null)
+    (( rc == 0 )) && [[ "$t" != 'up:l13-logo.txt:typed:ok' ]] && t=$(see_title "$LP3/s.sock" 'up:l13-logo.txt:typed:ok')
+    arm 'L13 an upload step attaches the file through the real file chooser, and the next keys reach the page' \
+      '0 up:l13-logo.txt:typed:ok' "$rc $t$( (( rc == 0 )) || why "$TMP/l13.log")"
+    arm 'L13 ...and it says the chooser took the path' yes "$(yn grep -q 'the file chooser took' "$TMP/l13.log")"
+    "$REAL_DAEMON" call "$LP3/s.sock" <<<'{"op":"shutdown"}' >/dev/null 2>&1
+    for i in $(seq 1 100); do kill -0 "$LD3" 2>/dev/null || break; sleep 0.05; done
   fi
 fi
 

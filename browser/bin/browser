@@ -314,7 +314,7 @@ usage() {
   5dive browser shot <site> [<url>]   # a PNG of the live window + the page title
   5dive browser act <site> [<url>] --steps='[{"op":"click","x":640,"y":400},{"op":"type","value":"hi"}]'
                                       # click{x,y} move{x,y} type{value} press{key} scroll{dy}
-                                      # goto{url} wait{ms}; "kind":"pay|publish|send|delete"
+                                      # goto{url} wait{ms} upload{x,y,path}; "kind":"pay|publish|send|delete"
                                       # on a step that does one, and the owner's policy applies
   5dive browser handoff <site> [--reason=<what for>]
                                       # hand the SAME live window to the owner (Connect button);
@@ -999,8 +999,17 @@ cmd_setup() {
   fi
 
   _install_probe_timer "$seat"
+  # THE SERVE GRANT IS BOX-WIDE, so its group is the BOX's, not this seat's
+  # (DIVE-5740). It lets a seat start what $BOX_SEAT offers, whoever ran setup.
+  # It used to take $agroup, the running seat's primary group, and agent create
+  # runs setup for every new seat (DIVE-5478): on chill-gorge each new worker's
+  # setup rewrote the one drop-in to its own group, so every OTHER worker lost
+  # the grant ("no grant to start the box's browsers") and the head had to open
+  # each site for them. The box seat's primary group is the agent group.
+  local wgroup="${FIVEDIVE_BROWSER_AGENT_GROUP:-$(id -gn "$BOX_SEAT" 2>/dev/null)}"
+  [[ -n "$wgroup" ]] || wgroup="$agroup"
   local wake_ok=0
-  (( rv_ok )) && _install_wake_grant "$agroup" && wake_ok=1
+  (( rv_ok )) && _install_wake_grant "$wgroup" && wake_ok=1
   printf 'profile store ready\n  %s  (root, 0711 — traverse, not list)\n  %s  (%s, 0700)\n  liveness probe: every ~6h (a served site is checked through its own browser)\n' \
     "$PROFILE_ROOT" "$PROFILE_ROOT/$seat" "$seat"
   if (( rv_ok )); then
@@ -1008,7 +1017,7 @@ cmd_setup() {
       "$SESSION_ROOT/$seat" "$seat" "$agroup" "$agroup"
     if (( wake_ok )); then
       printf '  %s  (root, 0440 — a seat in %s that finds one of these logins unserved starts it as %s, on demand, above a %s MB memory floor)\n' \
-        "$WAKE_SUDOERS_DIR/5dive-browser" "$agroup" "$seat" "$SERVE_MEM_FLOOR_MB"
+        "$WAKE_SUDOERS_DIR/5dive-browser" "$wgroup" "$seat" "$SERVE_MEM_FLOOR_MB"
     else
       printf '  no on-demand serve grant in %s — a seat that finds one of these logins unserved is told to ask for it to be started.\n' "$WAKE_SUDOERS_DIR" >&2
     fi
@@ -7865,7 +7874,7 @@ cmd_input_verb() {  # <verb> <site> [<url>] [flags]
       --record=*) die "$E_USAGE" "a routine replays DOM steps by ref, and an input-mode site has no DOM: there is nothing to record. Act on the screen each time." ;;
       -h|--help)
         printf '%s %s <site> [<url>] — input mode: the screen of the live window, and real keyboard/mouse input.\n' "$PROG" "$verb"
-        printf '  act steps: click{x,y[,button,count]} move{x,y} type{value} press{key} scroll{dy[,dx,x,y]} goto{url} wait{ms}\n'
+        printf '  act steps: click{x,y[,button,count]} move{x,y} type{value} press{key} scroll{dy[,dx,x,y]} goto{url} wait{ms} upload{x,y,path}\n'
         printf '  a step that pays, publishes, sends or deletes says so with "kind", and the owner'"'"'s policy applies.\n'
         return 0 ;;
       -*) die "$E_USAGE" "unknown flag: $1" ;;
@@ -7936,6 +7945,17 @@ _input_act() {  # <site> <url> <steps> <out> <json> <lease-wait> <settle>
     host="${g#*://}"; host="${host%%/*}"; host="${host%%\?*}"; host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
     _shot_host_ok "$site" "$host" || die "$E_USAGE" "$g is not a page of '$site' (its host is $host) — a login is scoped to its own site."
   done < <(jq -r '.[] | select(.op=="goto") | .url // ""' <<<"$steps")
+  # DIVE-5740: an upload step types a path into the browser's file chooser. The
+  # chooser runs as the browser's user, which may read files this seat cannot,
+  # so the path is checked HERE, as the caller: a file this seat could attach by
+  # hand, and nothing more. It is the route the use-browser skill already gave
+  # (click, type the path, Open), made one step that fails by name.
+  local up
+  while IFS= read -r up; do
+    [[ -n "$up" ]] || continue
+    [[ "$up" == /* ]] || die "$E_USAGE" "an upload step takes the file's absolute path; got: $up. Nothing ran."
+    [[ -f "$up" && -r "$up" ]] || die "$E_USAGE" "an upload step's file must be a regular file this seat can read; $up is not. Nothing ran."
+  done < <(jq -r '.[] | select(.op=="upload") | .path // ""' <<<"$steps")
 
   # THE OWNER'S POLICY, ON WHAT THE AGENT DECLARES. The DOM path classifies a
   # click by reading the button it lands on; here there is no button to read,
@@ -7963,6 +7983,8 @@ _input_act() {  # <site> <url> <steps> <out> <json> <lease-wait> <settle>
   local ans rc=0; ans=$(_daemon_call "$_SITE_DIR" "$(_input_req "$site" "$req")") || rc=$?
   _lease_release; trap - EXIT
   for k in $kinds; do _audit_row "$_SITE_DIR" "input-$k" "$(jq -c '[.[] | select(.kind != null)]' <<<"$steps" | cut -c1-300)" 2>/dev/null || true; done
+  jq -e 'any(.[]; .op == "upload")' <<<"$steps" >/dev/null 2>&1 \
+    && { _audit_row "$_SITE_DIR" "input-upload" "$(jq -c '[.[] | select(.op == "upload") | .path]' <<<"$steps" | cut -c1-300)" 2>/dev/null || true; }
   if [[ -n "$ans" ]] && jq -e '.act_report' <<<"$ans" >/dev/null 2>&1; then
     out="$(_read_output_dir "$site" "$out" "$_SITE_DIR")"
     _input_write "$ans" "$out/page.png" "$out/page.meta.json" || true
