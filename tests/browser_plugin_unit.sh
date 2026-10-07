@@ -2380,7 +2380,24 @@ let keydowns = 0;
 let lastGoto = '';
 const landed = () => (process.env.PWLAND && (!process.env.PWLAND_FROM || lastGoto === process.env.PWLAND_FROM)
   ? process.env.PWLAND : lastGoto);
+// DIVE-5751: A CLICK THAT DOWNLOADS. PWDOWNLOAD is a JSON list of downloads each
+// click hands to the page's 'download' listeners, the way Playwright fires the
+// event: {name, body} or {name, file} saves those bytes, {name, fail} is a
+// download the browser reports failed. Unset, a click downloads nothing.
+const listeners = {};
+const fakeDownload = (d) => ({
+  suggestedFilename: () => d.name,
+  saveAs: async (p) => { rec({ call: 'saveAs', name: d.name, path: p });
+    if (d.fail) throw new Error('download.saveAs: Download failed: ' + d.fail);
+    fs.writeFileSync(p, d.file ? fs.readFileSync(d.file) : (d.body || '')); },
+  failure: async () => d.fail || null,
+  cancel: async () => rec({ call: 'cancelDownload', name: d.name }),
+});
+const fireDownloads = (json) => { if (!json) return;
+  for (const d of JSON.parse(json)) for (const fn of (listeners.download || [])) fn(fakeDownload(d)); };
 const page = {
+  on: (ev, fn) => { (listeners[ev] = listeners[ev] || []).push(fn); },
+  off: (ev, fn) => { listeners[ev] = (listeners[ev] || []).filter((f) => f !== fn); },
   setDefaultTimeout: (t) => rec({ call: 'setDefaultTimeout', t }),
   goto: async (url, o) => { clock = 0; keydowns = 0; lastGoto = url; rec({ call: 'goto', url }); },
   fill: async (sel, val) => {
@@ -2397,6 +2414,7 @@ const page = {
   click: async (sel) => {
     clock = 0;
     rec({ call: 'click', sel });
+    fireDownloads(process.env.PWDOWNLOAD);
     if (process.env.PWFAIL) throw new Error('stub: the step failed');
   },
   waitForSelector: async (sel) => {
@@ -3565,9 +3583,25 @@ let markWalks = 0;   // DIVE-4674, see the driver stub
 // DPWSUGGEST: the driver stub's keystroke-driven search box (PWSUGGEST), per tab.
 // DIVE-4991: a tab lands where its goto asked, unless the FILE DPWLAND names
 // where it lands instead (a redirect in the served browser).
+// DIVE-5751: the driver stub's downloading click (PWDOWNLOAD), from a FILE read
+// per click (DPWDOWNLOAD) — the env is fixed at `serve`, the download is the arm's.
+const fakeDownload = (d) => ({
+  suggestedFilename: () => d.name,
+  saveAs: async (p) => { rec({ call: 'saveAs', name: d.name, path: p });
+    if (d.fail) throw new Error('download.saveAs: Download failed: ' + d.fail);
+    fs.writeFileSync(p, d.file ? fs.readFileSync(d.file) : (d.body || '')); },
+  failure: async () => d.fail || null,
+  cancel: async () => rec({ call: 'cancelDownload', name: d.name }),
+});
 const mkpage = (kind) => { let clock = 0, keydowns = 0, lastGoto = '';
   const late = () => !!process.env.DPWLATE_MS && clock >= Number(process.env.DPWLATE_MS);
+  const listeners = {};
+  const fireDownloads = () => { let list = [];
+    try { list = JSON.parse(fs.readFileSync(process.env.DPWDOWNLOAD, 'utf8')); } catch (e) { return; }
+    for (const d of list) for (const fn of (listeners.download || [])) fn(fakeDownload(d)); };
   return {
+  on: (ev, fn) => { (listeners[ev] = listeners[ev] || []).push(fn); },
+  off: (ev, fn) => { listeners[ev] = (listeners[ev] || []).filter((f) => f !== fn); },
   setDefaultTimeout: (t) => rec({ call: 'setDefaultTimeout', t, kind }),
   // DPWGOTO_MS: a page that takes real time to load, so two requests can
   // overlap in the daemon (DIVE-4927, T27m). Unset, a goto is instant as before.
@@ -3582,7 +3616,7 @@ const mkpage = (kind) => { let clock = 0, keydowns = 0, lastGoto = '';
         'token=belongs-to-the-person-at-the-viewer\nholder=someone\nholder_pid=1\nkind=human\n');
     }
   },
-  click: async (sel) => { clock = 0; rec({ call: 'click', sel, kind }); if (process.env.PWFAIL) throw new Error('stub: the step failed'); },
+  click: async (sel) => { clock = 0; rec({ call: 'click', sel, kind }); fireDownloads(); if (process.env.PWFAIL) throw new Error('stub: the step failed'); },
   waitForSelector: async (sel) => {
     rec({ call: 'waitForSelector', sel, kind });
     if (process.env.DPWSUGGEST && sel === `text=${process.env.DPWSUGGEST}` && !keydowns) {
@@ -7906,6 +7940,40 @@ tc 'T48g ...CHALLENGE — the defect this row fixed'                     'CHALLE
 
 export FIVEDIVE_BROWSER_ADAPTER_DIR="$ADPOVERRIDE48"
 tc 'T48h CHANGES.md carries the entry' 'DIVE-5285' "$(cat "$ROOT/CHANGES.md")"
+
+# ============ T49 DIVE-5751: a file an act downloads reaches the seat, served path
+# The served browser runs as the profile's OWNER, so it cannot write into the
+# caller's directory: it sends the bytes back over the socket in base64 chunks and
+# the caller writes them. A 2 MB binary spans three chunk lines, so a chunk
+# boundary that drops or doubles a byte is caught by the hash. The cold half is
+# tests/browser_act_download_unit.sh.
+mkprofile warmdl.test "$LIVE_DOM" >/dev/null
+DPWDOWNLOAD="$TMP/dpw.download"; : > "$DPWDOWNLOAD"
+dserve warmdl.test DPWDOWNLOAD="$DPWDOWNLOAD"
+t  'T49 a warm session is up for the download arms' 0 "$RC"
+head -c 2000000 /dev/urandom > "$TMP/t49.bin"
+printf '[{"name":"episode 12.m4a","file":"%s"}]' "$TMP/t49.bin" > "$DPWDOWNLOAD"
+LB49="$(launches)"
+dwarm "$BROWSER" act warmdl.test "https://warmdl.test/library" --steps='[{"op":"click","selector":"#download"}]' --out="$TMP/act49a"
+t  'T49a a click that downloads, in the served browser: act exits 0' 0 "$RC"
+tc 'T49a ...prints downloaded: <path> (<name>, <bytes> bytes)' \
+   "downloaded: $TMP/act49a/downloads/episode 12.m4a (episode 12.m4a, 2000000 bytes)" "$OUT"
+t  'T49a ...the bytes that crossed the socket are the bytes the page sent' "$(sha256sum < "$TMP/t49.bin")" \
+   "$(sha256sum < "$TMP/act49a/downloads/episode 12.m4a" 2>/dev/null)"
+t  'T49a ...0600, written by the calling seat' "600 $SEAT" \
+   "$(stat -c '%a %U' "$TMP/act49a/downloads/episode 12.m4a" 2>/dev/null)"
+t  'T49a ...in the browser that was already up (no launch)' "$LB49" "$(launches)"
+t  'T49a ...and the daemon kept no copy in its own temp dir' 0 \
+   "$(find "${FIVEDIVE_BROWSER_TMP_ROOT:-/nonexistent}" /tmp -maxdepth 3 -name '5dive-act-dl-*' -user "$SEAT" 2>/dev/null | wc -l)"
+printf '[{"name":"gone.csv","fail":"net::ERR_ABORTED"}]' > "$DPWDOWNLOAD"
+dwarm "$BROWSER" act warmdl.test --steps='[{"op":"click","selector":"#download"}]' --out="$TMP/act49b" --json
+t  'T49b a failed download in the served browser: --json names it with the reason, nothing saved' 'gone.csv yes no' \
+   "$(jq -r '.downloads[0].name' <<<"$OUT" 2>/dev/null) $(jq -r '.downloads[0].error' <<<"$OUT" 2>/dev/null | grep -q ERR_ABORTED && echo yes || echo no) $([[ -e "$TMP/act49b/downloads/gone.csv" ]] && echo yes || echo no)"
+: > "$DPWDOWNLOAD"
+dwarm "$BROWSER" act warmdl.test --steps='[{"op":"click","selector":"#download"}]' --out="$TMP/act49c"
+t  'T49c (control) a served click that downloads nothing: rc 0, no downloaded line' '0 no' \
+   "$RC $([[ "$OUT" == *downloaded:* ]] && echo yes || echo no)"
+env PATH="$SPATH" "$BROWSER" serve warmdl.test --stop >/dev/null 2>&1
 
 # --- T98 no arm wrote to the seat's real approval store (DIVE-5429) -----------
 # Last on purpose: it grades every arm above. The listing carries size and mtime,
