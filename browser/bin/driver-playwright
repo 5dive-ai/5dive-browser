@@ -52,6 +52,7 @@ const aria = require(path.join(__dirname, '..', 'lib', 'aria.cjs'));
 // DIVE-4951: the seat's own proxy, parsed in ONE place for both launch sites.
 const proxy = require(path.join(__dirname, '..', 'lib', 'proxy.cjs'));
 const totp = require(path.join(__dirname, '..', 'lib', 'totp.cjs'));
+const downloads = require(path.join(__dirname, '..', 'lib', 'downloads.cjs'));
 
 // DO NOT DELETE THIS. It is not dead code — it is the fix for DIVE-4587, and the
 // full mechanism is written out at the top of bin/browser. In one paragraph:
@@ -456,6 +457,21 @@ async function writeReport(page, report) {
   }
 }
 
+// The downloads the act started (DIVE-5751), saved into report.downloads with a
+// .manifest.json bin/browser reads. Never fatal: the steps already ran.
+async function saveDownloads(dl, report) {
+  if (!dl) return;
+  dl.stop();
+  if (!dl.list.length) return;
+  try {
+    const entries = await downloads.save(dl, report.downloads);
+    fs.writeFileSync(path.join(report.downloads, '.manifest.json'),
+      JSON.stringify(entries.map(({ name, bytes, error }) => ({ name, bytes, error }))), { mode: 0o600 });
+  } catch (e) {
+    process.stderr.write(`${PROG}: the act started a download that could not be saved: ${e.message}\n`);
+  }
+}
+
 async function main() {
   const raw = fs.readFileSync(0, 'utf8');
   let plan;
@@ -542,10 +558,14 @@ async function main() {
   // where a second caller cannot get a laxer one.
   const ctx = await openProfile(profile);
 
-  let rc = 0, needsOwner = null, page = null, retry = null, acted = false, redirected = false, at = -1;
+  let rc = 0, needsOwner = null, page = null, retry = null, acted = false, redirected = false, at = -1, dl = null;
   try {
     page = ctx.pages()[0] || await ctx.newPage();
     page.setDefaultTimeout(STEP_TIMEOUT);
+    // A FILE A CLICK DOWNLOADS (DIVE-5751): watched from before step one, saved
+    // after the re-read into the caller's own staging directory (this process IS
+    // the caller), before the context closes and Playwright deletes it.
+    if (plan.report && typeof plan.report.downloads === 'string') dl = downloads.watch(ctx, page);
     for (let i = 0; i < resolved.length; i++) {
       const s = resolved[i];
       const where = `step ${i + 1} (${s.op})`;
@@ -628,6 +648,7 @@ async function main() {
       rc = aria.E_NEEDS_OWNER;
     }
     if (plan.report && (stepsRun || needsOwner)) await writeReport(page, plan.report);
+    await saveDownloads(dl, plan.report);
   } catch (e) {
     // A STEP FAILURE IS NOT A VERDICT AND MUST NOT BE DRESSED AS ONE. bin/browser
     // re-reads the artifact by a different path whatever this exits, because
@@ -644,6 +665,9 @@ async function main() {
         `published and there is nothing to re-read.\n`);
     } else if (plan.report && page) {
       await writeReport(page, plan.report);
+      // A step that failed after a click may still have started a download, and
+      // that file is as real as the click was.
+      await saveDownloads(dl, plan.report);
     }
   } finally {
     try { await ctx.close(); } catch (e) { /* the verdict is the re-read, not this */ }

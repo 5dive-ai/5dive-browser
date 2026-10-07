@@ -52,6 +52,7 @@ const aria = require(path.join(__dirname, '..', 'lib', 'aria.cjs'));
 // served browser and a cold run cannot leave through two different routes.
 const proxy = require(path.join(__dirname, '..', 'lib', 'proxy.cjs'));
 const totp = require(path.join(__dirname, '..', 'lib', 'totp.cjs'));
+const downloads = require(path.join(__dirname, '..', 'lib', 'downloads.cjs'));
 
 // DIVE-4587: Chrome keeps its crashpad DB under $XDG_CONFIG_HOME whatever
 // --user-data-dir says, and 5dive boxes share one XDG_CONFIG_HOME across every
@@ -828,6 +829,9 @@ async function planRequest(ctx, req, send, end) {
     send({ t: 'err', msg: 'not one step ran, so nothing was published and there is nothing to re-read.' });
     return end(E_NOTHING_RAN);
   }
+  // A FILE A CLICK DOWNLOADS (DIVE-5751), watched from before step one and handed
+  // back after the re-read — lib/downloads.cjs, shared with the one-shot loop.
+  const dl = (req.report && req.report.downloads) ? downloads.watch(ctx, page) : null;
   try {
     for (let i = 0; i < resolved.length; i++) {
       const s = resolved[i];
@@ -897,15 +901,18 @@ async function planRequest(ctx, req, send, end) {
     // Which step (DIVE-4990), exactly as the one-shot driver says it.
     if (at >= 0) send({ t: 'err', msg: aria.STEP_FAILED_PREFIX.trim() + ' ' + JSON.stringify(aria.failedStep(at + 1, resolved[at], e)) });
     if (!stepsRun) {
+      if (dl) dl.stop();
       send({ t: 'err', msg: 'the session was open but not one step ran, so nothing was published and ' +
         'there is nothing to re-read.' });
       return end(E_NOTHING_RAN);
     }
     await sendReport(page, req, send);
+    await sendDownloads(dl, send);
     return end(E_FAILED);
   }
   if (needsOwner) send({ t: 'err', msg: aria.NEEDS_OWNER_PREFIX.trim() + ' ' + JSON.stringify(needsOwner) });
   await sendReport(page, req, send);
+  await sendDownloads(dl, send);
   // THE SESSION STAYS WARM AND THE PAGE STAYS WHERE IT IS. Closing the context
   // here would give back exactly the launch this daemon exists to stop paying.
   end(needsOwner ? aria.E_NEEDS_OWNER : 0);
@@ -935,6 +942,27 @@ async function sendReport(page, req, send) {
       wait_for: after.wait_for, expect_polled_ms: after.expect_polled_ms, scope: after.scope }) + '\n' });
   } catch (e) {
     send({ t: 'err', msg: `the steps ran but the page could not be re-read afterwards: ${e.message}` });
+  }
+}
+
+// The downloads an act started (DIVE-5751), sent back INLINE for the reason the
+// re-read is: this process is the profile's owner, the caller may be another
+// seat, and the owner writing a caller-chosen path is the DIVE-4662 hole. Saved
+// into a directory of this process's own (its TMPDIR is private, DIVE-5190),
+// streamed as chunk lines, and removed. Never fatal: the steps already ran.
+async function sendDownloads(dl, send) {
+  if (!dl) return;
+  dl.stop();
+  if (!dl.list.length) return;
+  let dir = null;
+  try {
+    dir = fs.mkdtempSync(path.join(require('os').tmpdir(), '5dive-act-dl-'));
+    const entries = await downloads.save(dl, dir);
+    downloads.stream(entries, (line) => send({ t: 'out', data: line }));
+  } catch (e) {
+    send({ t: 'err', msg: `the act started a download that could not be handed back: ${e.message}` });
+  } finally {
+    if (dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { /* its TMPDIR is reaped */ } }
   }
 }
 

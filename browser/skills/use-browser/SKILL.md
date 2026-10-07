@@ -34,6 +34,10 @@ repo — and that is the `connect-site` skill, not this one.
 3. **Verify.** `--expect=<regex>` grades the page as the steps left it, re-read for up to 5 s so
    a toast counts. Without it, `act` only says the steps ran — open the `page.png` it wrote
    before you tell anyone it worked.
+4. **A click that downloads a file** (an Export or Download button) hands you the file: `act`
+   prints `downloaded: <path> (<name>, <bytes> bytes)`, and the file is in the act's artifact
+   directory under `downloads/`, readable by your seat (`--json`: `downloads`). A file over
+   100 MB, or still downloading after 2 minutes, is named on stderr and not saved.
 
 `read`, `links` and `shot` take a URL the same way when you only need the text, the links or a
 picture of a page.
