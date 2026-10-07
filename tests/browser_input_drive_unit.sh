@@ -906,6 +906,23 @@ HTML
     arm 'L13 an upload step attaches the file through the real file chooser, and the next keys reach the page' \
       '0 up:l13-logo.txt:typed:ok' "$rc $t$( (( rc == 0 )) || why "$TMP/l13.log")"
     arm 'L13 ...and it says the chooser took the path' yes "$(yn grep -q 'the file chooser took' "$TMP/l13.log")"
+    # A red L13 replays the upload one stage at a time on the same page, with the
+    # top-level windows and the screen after each (CI keeps them as an artifact),
+    # so the next run says what the chooser did with the path.
+    if [[ "$rc $t" != '0 up:l13-logo.txt:typed:ok' ]]; then
+      cpid=$(pgrep -f -- "--user-data-dir=$LP3" | head -1)
+      l13d() {  # l13d <stage> <steps-json>
+        "$REAL_DAEMON" call "$LP3/s.sock" <<<"{\"op\":\"input\",\"steps\":$2,\"settle\":300}" > "$TMP/l13d.$1.out" 2>&1
+        sleep 1
+        DISPLAY=":$disp" node "$ROOT/tests/x11_stack.cjs" "l13d-$1" 640 200 "${cpid:-0}" ${ART:+"$ART/l13d-$1.png"} > "$TMP/l13d.$1.stack" 2>&1
+        { echo "== l13d $1: $2"; grep -v -i dbus "$TMP/l13d.$1.out" | tail -4; cat "$TMP/l13d.$1.stack"; } | sed 's/^/   /' | tee -a "$TMP/l13d.all"
+      }
+      l13d 1-click '[{"op":"click","x":640,"y":200}]'
+      l13d 2-typed "[{\"op\":\"press\",\"key\":\"ctrl+l\"},{\"op\":\"wait\",\"ms\":300},{\"op\":\"type\",\"value\":\"$UPF\"},{\"op\":\"wait\",\"ms\":600}]"
+      l13d 3-return '[{"op":"press","key":"Return"},{"op":"wait","ms":1500}]'
+      echo "   l13d title after: $(see_title "$LP3/s.sock" 'up:l13-logo.txt')" | tee -a "$TMP/l13d.all"
+      gha "input harness: L13 replayed by stage" "$(cat "$TMP/l13d.all")"
+    fi
     "$REAL_DAEMON" call "$LP3/s.sock" <<<'{"op":"shutdown"}' >/dev/null 2>&1
     for i in $(seq 1 100); do kill -0 "$LD3" 2>/dev/null || break; sleep 0.05; done
   fi

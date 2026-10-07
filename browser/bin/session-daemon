@@ -1213,11 +1213,14 @@ async function uploadByChooser(be, s) {
   let dlg = r && r.dialog ? await be.x.browserDialog(pid) : null;
   for (let i = 0; !dlg && i < 50; i++) { await sleepMs(100); dlg = await be.x.browserDialog(pid); }
   if (!dlg) throw new Error(`no file chooser opened after the click at ${s.x},${s.y}: point the upload step at the page's upload button (take a shot first)`);
-  const fast = process.env.FIVEDIVE_BROWSER_INPUT_FAST === '1';
+  // Paced the same with FIVEDIVE_BROWSER_INPUT_FAST: the waits are not a
+  // person's, they are GTK's. Its location field completes the path from a
+  // folder it reads in the background, and keys that outrun that read come out
+  // of the field in a different order than they went in.
   await be.x.focusOn(dlg.id, 2000, `the "${dlg.name}" window`);
-  await be.x.press('ctrl+l'); await sleepMs(fast ? 50 : 250);
-  await be.x.type(s.path, fast ? 0 : 12);
-  await sleepMs(fast ? 50 : 300);
+  await be.x.press('ctrl+l'); await sleepMs(300);
+  await be.x.type(s.path, 20);
+  await sleepMs(600);
   await be.x.press('Return');
   for (let i = 0; i < 50; i++) {
     await sleepMs(100);
