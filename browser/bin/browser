@@ -2011,6 +2011,20 @@ _lease_reap() {  # _lease_reap <profile-dir>
   return 0
 }
 
+# WHEN THE HOLDER IS THE CALLER ITSELF (DIVE-5733). A caller that stops waiting
+# on a browser call (a harness tool timeout at ~10s while the call is still
+# typing) does not stop the call: its process runs on, holds the lease, and the
+# seat's NEXT call is refused "busy: held by <owner> on behalf of <this seat>".
+# Read cold, that names a stranger. Say it is this seat's own earlier call, and
+# that --wait queues behind it — luna slept 290s on 23 of these at a time.
+_lease_own_note() {  # _lease_own_note <describe-line>
+  local me; me="$(_seat)"
+  case "$1" in
+    *"held by $me ("*|*"on behalf of $me ("*)
+      printf '\nThat holder is THIS seat (%s): an earlier browser call of yours is still running, usually one\nwhose caller stopped waiting while it was still typing. It frees the moment that call ends.\nQueue behind it instead of retrying: add --wait (or --wait=<seconds> on act).' "$me" ;;
+  esac
+}
+
 _lease_describe() {  # _lease_describe <profile-dir> -> the line a refused caller reads
   local m; m="$(_lease_meta "${1:?}")"
   local who purpose exp kind until
@@ -2167,7 +2181,7 @@ _lease_take_brokered() {  # <site> <dir> <purpose> <wait> <ttl>
   done
   if [[ -z "$token" ]]; then
     local who; who=$(_daemon_call "$d" '{"op":"lease","act":"status"}' 2>/dev/null)
-    die "$E_UNAVAILABLE" "${who:-busy: somebody else holds it}
+    die "$E_UNAVAILABLE" "${who:-busy: somebody else holds it}$(_lease_own_note "$who")
 Another caller holds the $site browser on this box. Refusing rather than joining them in it: two callers in
 one logged-in profile overwrite each other's drafts and read as site flakiness, not as a collision.
 Wait for it with --wait, or see who has it: 5dive browser lease $site --status"
@@ -2186,7 +2200,8 @@ _lease_take() {  # _lease_take <site> <profile-dir> <purpose> [<wait-seconds>|no
     _LEASE_DIR="$d"; _LEASE_TOKEN="$token"; _serve_touch "$d"; _audit_row "$d" lease-acquire "$purpose"; return 0
   fi
   if [[ "$wait" == no ]]; then
-    die "$E_UNAVAILABLE" "$(_lease_describe "$d")
+    local _desc; _desc="$(_lease_describe "$d")"
+    die "$E_UNAVAILABLE" "${_desc}$(_lease_own_note "$_desc")
 Another caller holds the $site browser. Refusing rather than joining them in it: two callers in one
 logged-in profile overwrite each other's drafts and read as site flakiness, not as a collision.
 Wait for it with --wait, or see who has it: 5dive browser lease $site --status"
@@ -4869,9 +4884,10 @@ cmd_shot() {
   local dir="$_PG_DIR" chrome="$_PG_CHROME"
 
   local stamp; stamp=$(date -u +%Y%m%dT%H%M%SZ)
-  [[ -n "$out" ]] || out="$PWD/${site}-${stamp}.png"
+  [[ -n "$out" ]] || out="$(_shot_default_out "$site" "$stamp")"
   local odir; odir=$(dirname "$out")
   [[ -d "$odir" ]] || die "$E_USAGE" "no directory $odir to write the PNG into"
+  _shot_out_writable "$out"
 
   # --out AND --dom AT THE SAME PATH IS A REFUSAL (DIVE-4488 precision note).
   # The DOM is a SECOND load, and it runs AFTER the PNG has been written and
@@ -4969,6 +4985,28 @@ _read_cleanup() {
   case "$d" in /tmp/5dive-browser-read.*) rm -rf -- "$d" ;; esac
   _shot_restore
   _lease_release
+}
+
+# WHERE A SCREENSHOT GOES WHEN NO --out WAS GIVEN (DIVE-5733). The working
+# directory, as before, when this seat can write it; otherwise the seat's own
+# artifact root, beside the read artifacts. A seat dispatched in a shared
+# project directory it cannot write had every default shot fail "Permission
+# denied" and then report "answered without an image" — a writer's failure
+# blamed on the browser.
+_shot_default_out() {  # _shot_default_out <site> <stamp>
+  if [[ -w "$PWD" ]]; then printf '%s/%s-%s.png\n' "$PWD" "$1" "$2"; return 0; fi
+  local base; base="$(_seat_dir)/.read-artifacts"
+  if [[ ! -d "$base" ]]; then
+    (umask 077; mkdir -p -- "$base") || die "$E_UNAVAILABLE" "$PWD is not writable and neither is $base — pass --out=<a png path you can write>"
+    chmod 00700 "$base"
+  fi
+  (umask 077; mkdir -p -- "$base/shots") || die "$E_UNAVAILABLE" "$PWD is not writable and neither is $base/shots — pass --out=<a png path you can write>"
+  printf '%s: %s is not writable by %s; the screenshot goes to %s/shots\n' "$PROG" "$PWD" "$(_seat)" "$base" >&2
+  printf '%s/shots/%s-%s.png\n' "$base" "$1" "$2"
+}
+_shot_out_writable() {  # _shot_out_writable <png-path>
+  local d; d="$(dirname "$1")"
+  [[ -w "$d" ]] || die "$E_USAGE" "cannot write into $d (permission denied for $(_seat)), so no screenshot can be saved there. Pass --out=<a png path you can write>."
 }
 
 _read_output_dir() { # _read_output_dir <site> <explicit-or-empty> <profile-dir>
@@ -7818,6 +7856,9 @@ cmd_input_verb() {  # <verb> <site> [<url>] [flags]
       --settle=*) settle="${1#*=}" ;;
       --wait)    wait="$LEASE_WAIT_DEFAULT" ;;
       --wait=*)  if [[ "$verb" == act ]]; then wait="${1#*=}"; else swait="${1#*=}"; fi ;;
+      # The lease wait in seconds on every input verb (on shot/snapshot --wait=<n>
+      # is the settle in ms, kept for the DOM verbs' habit).
+      --lease-wait=*) wait="${1#*=}" ;;
       # Flags of the DOM verbs that mean nothing here are accepted and ignored
       # rather than refused, so an agent's habitual call still gets its screen.
       --interactive|--full|--size=*|--dom=*|--wait-for=*|--expect=*|--expect-wait=*|--no-shot|--delta) ;;
@@ -7835,6 +7876,7 @@ cmd_input_verb() {  # <verb> <site> [<url>] [flags]
   case "$verb" in tree|read|links|run) _input_refuse_dom "$verb" "$site" ;; esac
   [[ -z "$settle" || "$settle" =~ ^[0-9]{1,5}$ ]] || die "$E_USAGE" "--settle takes milliseconds; got: $settle"
   [[ -z "$swait" || "$swait" =~ ^[0-9]{1,5}$ ]] || die "$E_USAGE" "--wait takes milliseconds; got: $swait"
+  [[ "$wait" == no || "$wait" =~ ^[0-9]{1,5}$ ]] || die "$E_USAGE" "the lease wait takes seconds; got: $wait"
   if [[ -n "$url" ]]; then
     [[ "$url" =~ ^https?://[^/]+ ]] || die "$E_USAGE" "input mode opens only http(s) pages; got: $url"
     local host="${url#*://}"; host="${host%%/*}"; host="${host%%\?*}"; host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
@@ -7846,7 +7888,10 @@ cmd_input_verb() {  # <verb> <site> [<url>] [flags]
   fi
 
   # shot / snapshot: the screen, after typing <url> into the address bar if given.
-  _input_open "$site" "input:$verb" no
+  # DIVE-5733: the lease wait the caller asked for. This passed `no` whatever the
+  # flags said, so `shot --wait` was refused at once by the refusal that tells
+  # the caller to "Wait for it with --wait".
+  _input_open "$site" "input:$verb" "$wait"
   local req; req=$(jq -nc --arg u "$url" --arg w "$swait" \
       '{op:"screen"} + (if $u == "" then {} else {url:$u} end) + (if $w == "" then {} else {wait:($w|tonumber)} end)')
   local ans rc=0; ans=$(_daemon_call "$_SITE_DIR" "$(_input_req "$site" "$req")") || rc=$?
@@ -7855,8 +7900,9 @@ cmd_input_verb() {  # <verb> <site> [<url>] [flags]
   local title; title=$(jq -r '.title // ""' <<<"$ans")
   local stamp; stamp=$(date -u +%Y%m%dT%H%M%SZ)
   if [[ "$verb" == shot ]]; then
-    [[ -n "$out" ]] || out="$PWD/${site}-${stamp}.png"
+    [[ -n "$out" ]] || out="$(_shot_default_out "$site" "$stamp")"
     [[ -d "$(dirname "$out")" ]] || die "$E_USAGE" "no directory $(dirname "$out") to write the PNG into"
+    _shot_out_writable "$out"
     rm -f "$out"
     _input_write "$ans" "$out" || die "$E_UNAVAILABLE" "the $site browser answered without an image. Nothing was written."
     printf 'screen of %s (input mode: the live window, %sx%s)\n  %s\n  title: %s\n' \

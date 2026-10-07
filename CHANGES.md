@@ -8,6 +8,27 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a browser seat that waits really waits, and a screenshot lands where the seat can write (DIVE-5733), 1.32.4
+
+On the distribution box (chill-gorge, 2026-10-03 to 10-07) the Codex seat lost 23 turns to "busy:
+held by claude on behalf of agent-luna" and 9 screenshots to "answered without an image".
+
+- **`shot` / `snapshot` on an input-mode site honour `--wait`.** They passed "do not wait" to the
+  lease whatever the flags said, so the refusal that says "Wait for it with --wait" was refused
+  again at once. `--lease-wait=<seconds>` now sets the wait on every input verb (on these two,
+  `--wait=<n>` stays the settle in ms).
+- **A refusal says when the holder is the caller's own seat**: an earlier call whose caller stopped
+  waiting while it was still typing, which frees when it ends. Add `--wait` to queue behind it.
+- **A screenshot with no `--out` no longer fails in a directory the seat cannot write.** It goes to
+  the seat's `.read-artifacts/shots/` and says so; an explicit `--out` there is refused as the
+  permission problem it is, never "answered without an image".
+
+Not in this release (DIVE-5733's other findings, filed on): the keyboard focus lost when a site
+opens the OS file picker in input mode, worker seats that cannot open a site themselves, and the
+blank screenshots on a freshly set-up seat.
+
+Harness: `tests/browser_input_drive_unit.sh` R12/R13, 10 arms. 8 are red at base. The other 2 hold at base too: a busy shot is refused (69), and so is a non-numeric wait (64).
+
 ### Fixed — a connected site serves on every seat, whatever its name or its ~/.config (DIVE-5638), 1.32.3
 
 On crystal-grove (2026-10-05) an owner connected instagram.com and every serve of the box seat's

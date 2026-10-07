@@ -22,6 +22,10 @@
 #           site as input; an adapter's "drive": "cdp" still wins; a proxied seat
 #           falls back to the automated browser with a note, not a refusal; the
 #           setting is root's; `auto` is the shipped default again
+#        R12 (DIVE-5733) an input shot honours --wait / --lease-wait for the lease,
+#           and a refusal names the holder as THIS seat when it is its own call
+#        R13 (DIVE-5733) a shot with no --out from an unwritable cwd lands in the
+#           seat's artifacts; an unwritable --out is refused as a permission problem
 #        R11 a person's sign-in survives Done on a daemon-held browser (DIVE-5374):
 #           the stop waits for the cookie commit when a viewer was redeemed on this
 #           serve — input or warm CDP — within 60 s of the person leaving, and not
@@ -256,6 +260,52 @@ arm 'R3 snapshot writes page.png + page.meta.json saying there is no DOM' '0 yes
   "$rc $(yn test -s "$TMP/snap/page.png") $(yn grep -q '"dom": "none' "$TMP/snap/page.meta.json")"
 arm 'R3 shot with a foreign url is refused before anything is sent' 64 \
   "$("$BROWSER" shot tiktok.com https://evil.example/ >/dev/null 2>&1; echo $?)"
+
+# R12 (DIVE-5733, chill-gorge): the lease WAIT on an input shot, and who holds it.
+# luna's call was abandoned by its caller while still typing, kept the lease, and
+# the seat's next call was refused; asking that call to wait returned at once.
+pdir="$TMP/pr/$SEAT/tiktok.com"
+hold_lease() {  # hold_lease <seconds>: this seat's own earlier call, still running
+  sleep "$1" & _HOLDER=$!
+  mkdir -p "$pdir/.5dive-lease"
+  printf 'token=%s\nholder=%s\non_behalf_of=%s\nholder_pid=%s\nkind=agent\npurpose=input:act\nacquired_at=%s\nexpires_at=%s\n' \
+    0123456789abcdef0123456789abcdef "$SEAT" "$SEAT" "$_HOLDER" "$(date -u +%s)" "$(( $(date -u +%s) + 600 ))" > "$pdir/.5dive-lease/meta"
+}
+hold_lease 30
+o=$("$BROWSER" shot tiktok.com --out="$TMP/busy.png" 2>&1); rc=$?
+arm 'R12 shot while this seat'"'"'s own earlier call holds the browser is refused (69)' '69 no' "$rc $(yn test -s "$TMP/busy.png")"
+arm 'R12 ...and the refusal says the holder is THIS seat and to queue with --wait' yes \
+  "$(yn grep -q "That holder is THIS seat ($SEAT)" <<<"$o")"
+kill "$_HOLDER" 2>/dev/null; wait "$_HOLDER" 2>/dev/null
+hold_lease 3
+t0=$(date +%s)
+o=$("$BROWSER" shot tiktok.com --wait --out="$TMP/waited.png" 2>&1); rc=$?
+dt=$(( $(date +%s) - t0 ))
+arm 'R12 shot --wait queues behind the holder and gets the screen once it ends' '0 yes' "$rc $(yn test -s "$TMP/waited.png")"
+arm 'R12 ...having actually waited for it (>=2s, not refused at once)' yes "$( (( dt >= 2 )) && echo yes || echo no)"
+wait "$_HOLDER" 2>/dev/null
+hold_lease 3
+o=$("$BROWSER" snapshot tiktok.com --lease-wait=20 --out="$TMP/snapw" 2>&1); rc=$?
+arm 'R12 snapshot --lease-wait=<s> waits too' '0 yes' "$rc $(yn test -s "$TMP/snapw/page.png")"
+wait "$_HOLDER" 2>/dev/null
+arm 'R12 a lease wait that is not seconds is refused (64)' 64 \
+  "$("$BROWSER" shot tiktok.com --lease-wait=soon >/dev/null 2>&1; echo $?)"
+
+# R13 (DIVE-5733): a shot with no --out from a directory this seat cannot write.
+# It used to fail "Permission denied" and report "answered without an image".
+mkdir -p "$TMP/ro"; chmod 555 "$TMP/ro"
+if [[ -w "$TMP/ro" ]]; then
+  echo "SKIP: R13 — running as a uid that can write a 0555 directory (root)"
+else
+  o=$(cd "$TMP/ro" && "$BROWSER" shot tiktok.com 2>&1); rc=$?
+  png=$(grep -o "$TMP/pr/$SEAT/.read-artifacts/shots/tiktok.com-[0-9TZ]*\.png" <<<"$o" | head -1)
+  arm 'R13 shot from an unwritable cwd exits 0 and writes the PNG under the seat'"'"'s artifacts' '0 yes' "$rc $(yn test -s "${png:-/nonexistent}")"
+  arm 'R13 ...and says why it is not in the cwd' yes "$(yn grep -q 'is not writable' <<<"$o")"
+  arm 'R13 ...never "answered without an image"' no "$(yn grep -q 'without an image' <<<"$o")"
+  o=$("$BROWSER" shot tiktok.com --out="$TMP/ro/x.png" 2>&1); rc=$?
+  arm 'R13 an explicit --out in an unwritable dir is refused (64) as a permission problem' '64 yes' "$rc $(yn grep -q 'cannot write into' <<<"$o")"
+fi
+chmod 755 "$TMP/ro"
 
 n0=$(wc -l < "$DREC")
 for v in tree read links; do
