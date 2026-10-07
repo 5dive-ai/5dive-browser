@@ -1178,13 +1178,65 @@ async function clickInBrowser(be, s) {
     steps: 0, from: { x: s.x, y: s.y } });
   let k;
   for (let i = 0; i < 20; i++) {
+    // DIVE-5740: a click on an upload control opens the browser's file chooser,
+    // and the focus falls to the root window. That is the click WORKING: give
+    // the chooser the keyboard and say so, instead of calling the click lost.
+    const dlg = await be.x.browserDialog(be.child.pid);
+    if (dlg) {
+      await be.x.focusOn(dlg.id, 2000, `the browser's "${dlg.name || 'dialog'}" window`);
+      return { dialog: dlg.name || 'dialog' };
+    }
     k = await be.x.keyboardTarget(be.child.pid);
     if (k.browser) return;
+    // ...and a click that CLOSED one (its Open or Cancel) drops the focus to
+    // the root window the same way. The click landed on the browser (checked
+    // above), so hand the keyboard back to it, as a window manager would.
+    if (k.focus === be.x.root) {
+      try { await be.x.ensureBrowserFocus(be.child.pid, 1000); return; } catch (e) { /* reported below */ }
+    }
     await sleepMs(50);
   }
   throw new Error(`the click at ${s.x},${s.y} was sent, but afterwards the keyboard focus is not on the browser ` +
     `(${k.focus === 0 ? 'no window' : k.focus === 1 ? 'the window under the pointer' : '0x' + k.focus.toString(16)}), ` +
     `so it may not have reached the page; stopping rather than typing into nothing`);
+}
+
+// DIVE-5740: an upload as a person does it. Click the page's upload control,
+// let the browser's file chooser open, type the absolute path into it (ctrl+l
+// opens its location field), Open (alt+o), and confirm the chooser CLOSED. A chooser
+// still up means the path was not taken (no such file, a folder): Escape, and
+// fail by name, so nothing goes on to type into a dialog or a page by mistake.
+async function uploadByChooser(be, s) {
+  const pid = be.child.pid;
+  if (await be.x.browserDialog(pid)) throw new Error('a file chooser is already open; finish or close it (press Escape) first');
+  const r = await clickInBrowser(be, s);
+  let dlg = r && r.dialog ? await be.x.browserDialog(pid) : null;
+  for (let i = 0; !dlg && i < 50; i++) { await sleepMs(100); dlg = await be.x.browserDialog(pid); }
+  if (!dlg) throw new Error(`no file chooser opened after the click at ${s.x},${s.y}: point the upload step at the page's upload button (take a shot first)`);
+  // Paced the same with FIVEDIVE_BROWSER_INPUT_FAST: the waits are not a
+  // person's, they are GTK's. Its location field completes the path from a
+  // folder it reads in the background, and keys that outrun that read come out
+  // of the field in a different order than they went in.
+  await be.x.focusOn(dlg.id, 2000, `the "${dlg.name}" window`);
+  await be.x.press('ctrl+l'); await sleepMs(300);
+  await be.x.type(s.path, 20);
+  await sleepMs(600);
+  // OPEN, NOT RETURN. CI at f1a440c showed the path typed exactly right and
+  // Return closing the chooser with "No file chosen". The field reports said
+  // the same ("click Open: Return alone can close it with nothing attached").
+  // alt+o is the chooser's own mnemonic for its Open button, so it is that
+  // click without needing the button's position: with no window manager the
+  // chooser can be taller than the screen, and Open is then cut off.
+  await be.x.press('alt+o');
+  for (let i = 0; i < 50; i++) {
+    await sleepMs(100);
+    if (!(await be.x.browserDialog(pid))) {
+      try { await be.x.ensureBrowserFocus(pid, 1000); } catch (e) { /* the next key step says so */ }
+      return `the file chooser took ${s.path} and closed (check the shot: the page should now name the file)`;
+    }
+  }
+  try { await be.x.focusOn(dlg.id, 1000, 'the file chooser'); await be.x.press('Escape'); } catch (e) { /* reported below */ }
+  throw new Error(`the file chooser did not take ${s.path} (still open after Open: no such file, or a folder); it was closed with Escape and nothing was attached`);
 }
 
 async function gotoByKeys(be, url) {
@@ -1217,9 +1269,10 @@ const INPUT_STEPS = {
                  && (s.dy !== undefined || s.dx !== undefined),
   goto:   (s) => typeof s.url === 'string' && /^https?:\/\/[^\s]+$/.test(s.url) && s.url.length <= 2000,
   wait:   (s) => Number.isInteger(s.ms) && s.ms >= 0 && s.ms <= INPUT_MAX_WAIT_MS,
+  upload: (s) => num(s.x) && num(s.y) && typeof s.path === 'string' && /^\/[^\n\r\0]{1,4095}$/.test(s.path),
 };
 function num(v) { return Number.isInteger(v) && v >= 0 && v < 10000; }
-const INPUT_VOCAB = 'click{x,y[,button,count]} move{x,y} type{value} press{key} scroll{dy[,dx,x,y]} goto{url} wait{ms}';
+const INPUT_VOCAB = 'click{x,y[,button,count]} move{x,y} type{value} press{key} scroll{dy[,dx,x,y]} goto{url} wait{ms} upload{x,y,path}';
 
 async function inputRequest(be, profile, req, send, end, behalf) {
   const site = path.basename(profile);
@@ -1327,7 +1380,7 @@ async function inputRequest(be, profile, req, send, end, behalf) {
           `Input mode takes: ${INPUT_VOCAB} — coordinates are pixels of the ${be.x.width}x${be.x.height} screenshot. Nothing ran.` });
         return end(E_NOTHING_RAN);
       }
-      if ((s.op === 'click' || s.op === 'move' || (s.op === 'scroll' && s.x !== undefined)) &&
+      if ((s.op === 'click' || s.op === 'upload' || s.op === 'move' || (s.op === 'scroll' && s.x !== undefined)) &&
           ((s.x !== undefined && s.x >= be.x.width) || (s.y !== undefined && s.y >= be.x.height))) {
         send({ t: 'err', msg: `step ${i + 1} (${s.op}) points at ${s.x},${s.y}, outside the ${be.x.width}x${be.x.height} screen. Nothing ran.` });
         return end(E_NOTHING_RAN);
@@ -1346,7 +1399,12 @@ async function inputRequest(be, profile, req, send, end, behalf) {
         ran++;
         try {
           switch (s.op) {
-            case 'click': await clickInBrowser(be, s); break;
+            case 'click': {
+              const r = await clickInBrowser(be, s);
+              if (r && r.dialog) send({ t: 'log', line: `  ${where}: the browser opened its "${r.dialog}" window, which now has the keyboard (a file chooser: type the file's absolute path and press alt+o (Open; Return can close it with nothing attached), or use an upload{x,y,path} step)` });
+              break;
+            }
+            case 'upload': send({ t: 'log', line: `  ${where}: ${await uploadByChooser(be, s)}` }); break;
             case 'move': await be.x.move(s.x, s.y); break;
             case 'type': await keysReachBrowser(be); await be.x.type(s.value); break;
             case 'press': await keysReachBrowser(be); await be.x.press(s.key); break;

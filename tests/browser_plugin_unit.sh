@@ -535,6 +535,28 @@ t  'T2c8w ...and no wildcard anywhere in it' 'no' "$(grep -v '^#' "$SUDOD/5dive-
 tc 'T2c8w ...visudo checked the staged file before it went in' '-cqf' "$(cat "$VISUDO_LOG")"
 t  'T2c8w ...no staged file is left behind' '0' "$(find "$SUDOD" -name '.5dive-browser.*' | wc -l)"
 tc 'T2c8w ...and setup says what it installed' "starts it as $SEAT, on demand" "$OUT"
+# DIVE-5740: the grant is box-wide, so it names the BOX seat's group, not the
+# group of whichever seat ran setup. Agent create runs setup for each new seat,
+# and on chill-gorge each worker's setup rewrote the drop-in to its own group:
+# every other worker lost the grant ("no grant to start the box's browsers").
+# Here the box seat is root (group root), and nothing overrides the group.
+rm -f "$SUDOD/5dive-browser"
+run env -u FIVEDIVE_BROWSER_AGENT_GROUP PATH="$SETUPBIN:$PATH" FIVEDIVE_BROWSER_BOX_SEAT=root \
+    FIVEDIVE_BROWSER_PROFILE_ROOT="$TMP/setup-store" FIVEDIVE_BROWSER_SYSTEMD_DIR="$SDIR" \
+    FIVEDIVE_BROWSER_SYSTEMCTL=systemctl SYSTEMCTL_LOG="$SYSTEMCTL_LOG" SYSTEMCTL_RC=0 "$BROWSER" setup
+if [[ "$(id -gn "$SEAT")" == root ]]; then
+  printf 'SKIP: T2c8g — this seat is in group root, the arm cannot tell the groups apart\n'
+elif ! id -Gn | tr ' ' '\n' | grep -qx "$(id -gn "$SEAT")"; then
+  # A sandboxed shell can run under another gid than the seat's own primary
+  # group (an agent seat on the API host: gid claude, passwd group agent-dev).
+  # setup then cannot chown the rendezvous to that group and writes no grant at
+  # all, so there is nothing for this arm to read. CI runs it.
+  printf 'SKIP: T2c8g — this shell is not in the seat'"'"'s own group %s, so setup makes no rendezvous to grant\n' "$(id -gn "$SEAT")"
+else
+  t  'T2c8g a seat'"'"'s setup grants the BOX seat'"'"'s group, not its own' \
+     "%root ALL=(root) NOPASSWD: /usr/local/bin/5dive browser _serve-offered" \
+     "$(grep -v '^#' "$SUDOD/5dive-browser" 2>/dev/null)"
+fi
 rm -f "$SUDOD/5dive-browser"
 VISUDO_RC=1 setup_run
 t  'T2c8w a grant visudo rejects is not installed' 'no' "$([[ -f "$SUDOD/5dive-browser" ]] && echo yes || echo no)"
