@@ -8,6 +8,29 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — a file an act downloads reaches the seat that asked (DIVE-5751), 1.33.0
+
+A click on an export button (a report, audio, a CSV) used to end in "done: every step ran" and
+nothing else. The file existed only as a nameless Playwright temp file in the browser owner's 0700
+cache, and it was deleted when the browser closed. Found on 2026-10-06 only through `sudo find`
+(a 24.6 MB m4a). A seat without sudo could not reach it at all.
+
+- **`act` saves every download its steps start** into its artifact directory as
+  `downloads/<name>` (0600) and prints `downloaded: <path> (<name>, <bytes> bytes)` after the
+  verdict (`--json`: `downloads`). A file a step downloaded before a later step failed is saved
+  too.
+- **Both step loops** (the one-shot driver and the served browser) use one new file,
+  `lib/downloads.cjs`. The served browser runs as the profile's owner, so it sends the bytes back
+  over the socket in base64 chunks and the calling seat writes them, the way `snapshot` already
+  works.
+- **The site's suggested name is untrusted**: only the last path segment is kept, with no control
+  characters and no leading dot, and a repeated name gets `-2`. A file over 100 MB
+  (`FIVEDIVE_BROWSER_DOWNLOAD_MAX_MB`) or still downloading after 2 minutes
+  (`FIVEDIVE_BROWSER_DOWNLOAD_WAIT_MS`) is named on stderr with the reason and not saved.
+
+Harness: `tests/browser_act_download_unit.sh` (lib arms, cold and served `act` through the real
+`bin/browser`, and a live arm against a local page in real Chrome on CI).
+
 ### Fixed — a browser seat that waits really waits, and a screenshot lands where the seat can write (DIVE-5733), 1.32.4
 
 On the distribution box (chill-gorge, 2026-10-03 to 10-07) the Codex seat lost 23 turns to "busy:

@@ -74,6 +74,10 @@ jobs:
         run: npm install --prefix browser --no-audit --no-fund
       - name: totp harness
         run: bash tests/browser_totp_unit.sh
+      # DIVE-5751: a file an act downloads reaches the seat. lib arms, cold `act`
+      # with the recording stub, and a live arm in real Chrome against a local page.
+      - name: act download harness
+        run: bash tests/browser_act_download_unit.sh
       # A manifest or marketplace file that does not parse breaks `5dive plugin
       # add` at install time, where nobody is watching. Cheap, so it is its own
       # named check rather than an assertion buried in the suite.

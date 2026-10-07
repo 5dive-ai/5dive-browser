@@ -46,7 +46,16 @@ connected site); a refusal naming the accounts when there are several (`github.c
 `act` runs agent-written steps in the fixed vocabulary (`goto fill type click wait_for select press`)
 through the same executors, lease and login gate as `run`, and grades `--expect` against the page
 as the steps left it; a step that fails fails the run, whatever --expect matched, and the failure
-names the step (`--json`: `failed_step`). **Publishing, sending and deleting run and are logged by default, while paying stops
+names the step (`--json`: `failed_step`). **A file a step downloads reaches the seat (DIVE-5751):**
+both step loops watch the act's tabs for Playwright's `download` event and save each file after the
+re-read (`lib/downloads.cjs`), under the site's suggested name made safe (last path segment, no
+leading dot, `-2` on a repeat). `act` moves it into its artifact directory as `downloads/<name>`
+(0600) and prints `downloaded: <path> (<name>, <bytes> bytes)` after the verdict, whatever the
+verdict (`--json`: `downloads`). The served browser runs as the profile's owner, so it sends the
+bytes back over the socket in base64 chunks and the caller writes them, as `snapshot` does. A
+download over `FIVEDIVE_BROWSER_DOWNLOAD_MAX_MB` (100) or unfinished after
+`FIVEDIVE_BROWSER_DOWNLOAD_WAIT_MS` (120000) is cancelled or dropped, and named on stderr with the
+reason. **Publishing, sending and deleting run and are logged by default, while paying stops
 for the owner's approval (standard, DIVE-5148); under the owner's `careful` all four stop
 before the step** (exit 73): the executor
 reads the live element's label (`lib/aria.cjs` `stepRisk`, shared by both step loops), and a kind

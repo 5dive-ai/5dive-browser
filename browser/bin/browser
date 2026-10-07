@@ -5892,6 +5892,9 @@ cmd_act() {
   out="$(_read_output_dir "$site" "$out" "$_PG_DIR")" || exit $?
   local stage; stage="$(mktemp -d /tmp/5dive-browser-read.XXXXXXXX)" || die "$E_UNAVAILABLE" "cannot stage the act's re-read"
   _READ_STAGE="$stage"; trap '_read_cleanup' EXIT
+  # WHERE A FILE THE STEPS DOWNLOAD LANDS FIRST (DIVE-5751): this seat's own 0700
+  # stage, beside the re-read. _act_downloads_publish moves it into the artifacts.
+  (umask 077; mkdir -- "$stage/downloads") || die "$E_UNAVAILABLE" "cannot stage the act's downloads"
   local errf="$stage/exec.err" drc=0 plan report allow_kinds
   # The kinds the owner lets through without asking, read once, before a step.
   allow_kinds="$(_policy_allowed)"
@@ -5912,9 +5915,9 @@ cmd_act() {
     plan=$(jq -nc --arg p "$_PG_DIR" --argjson s "$steps" --argjson a "$is_approved" \
         --arg h "$stage/page.html" --arg m "$stage/after.json" --arg sh "$png" \
         --arg t "$stage/tree.json" --argjson r "$report" --argjson ak "$allow_kinds" \
-        --argjson lj "$(_landing_json "$site" "$may")" \
+        --argjson lj "$(_landing_json "$site" "$may")" --arg dl "$stage/downloads" \
         '{profile:$p, steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak,
-          report:({html:$h, meta:$m, tree:$t, shot:(if $sh=="" then null else $sh end)} + $r)} + $lj')
+          report:({html:$h, meta:$m, tree:$t, shot:(if $sh=="" then null else $sh end), downloads:$dl} + $r)} + $lj')
     FIVEDIVE_BROWSER_PROFILE="$_PG_DIR" FIVEDIVE_BROWSER_CHROME="$chrome" \
       FIVEDIVE_BROWSER_RUN_SETTLE_MS="${settle:-${FIVEDIVE_BROWSER_RUN_SETTLE_MS:-$SNAP_SETTLE_DEFAULT}}" \
       FIVEDIVE_BROWSER_LEASE="$(_lease_meta "$_LEASE_DIR")" \
@@ -5948,6 +5951,9 @@ cmd_act() {
   for f in page.html page.png after.json tree.json; do
     [[ -s "$stage/$f" ]] && install -m 00600 "$stage/$f" "$out/$f"
   done
+  # Whatever the verdict below: a file the steps downloaded is as real as the click.
+  _act_downloads_publish "$stage/downloads" "$out"
+  local dls="$_ACT_DLS"
   local final title
   final=$(jq -r '.url // ""' "$stage/after.json" 2>/dev/null)
   title=$(jq -r '.title // ""' "$stage/after.json" 2>/dev/null)
@@ -5957,7 +5963,11 @@ cmd_act() {
     if (( json )); then
       jq -nc --arg id "$_ASK_ID" --arg cls "$_ASK_CLS" --arg label "$_ASK_LABEL" --arg step "$_ASK_STEP" --arg page "$final" --arg o "$out" \
         --argjson pl "$_ASK_PAYLOAD" \
-        '{verdict:"needs_owner", approval:$id, class:$cls, label:$label, payload:$pl, step:($step|tonumber? // $step), page:$page, artifacts:$o}'
+        --argjson dl "$dls" \
+        '{verdict:"needs_owner", approval:$id, class:$cls, label:$label, payload:$pl, step:($step|tonumber? // $step), page:$page, artifacts:$o}
+         + (if ($dl|length) > 0 then {downloads:$dl} else {} end)'
+    else
+      _act_downloads_say
     fi
     exit "$E_NEEDS_OWNER"
   fi
@@ -6024,7 +6034,9 @@ cmd_act() {
   if (( json )); then
     jq -nc --arg v "$verdict" --arg u "$final" --arg t "$title" --arg o "$out" --argjson d "$drc" --argjson x "$extra" \
       --argjson fs "$([[ "$verdict" == step_failed && -n "$fstep" ]] && echo "$fstep" || echo null)" \
-      '{verdict:$v, url:$u, title:$t, executor_rc:$d, failed_step:$fs, artifacts:$o} + $x'
+      --argjson dl "$dls" \
+      '{verdict:$v, url:$u, title:$t, executor_rc:$d, failed_step:$fs, artifacts:$o} + $x
+       + (if ($dl|length) > 0 then {downloads:$dl} else {} end)'
     return "$rc"
   fi
   printf '%s\n  %s\n  %s\n' "$title" "$final" "$out"
@@ -6040,6 +6052,7 @@ cmd_act() {
       printf '%s: %s. Some steps may have run; look at %s/page.png before retrying.\n' "$PROG" "$why" "$out" >&2 ;;
     not_ready)    printf '%s: NOT READY — every step ran, but the page they left is not ready (the reason is above). Look at %s/page.png; wait for the page, do not re-run the steps.\n' "$PROG" "$out" >&2 ;;
   esac
+  _act_downloads_say
   return "$rc"
 }
 
@@ -6048,14 +6061,16 @@ cmd_act() {
 # the cold run's goto and redirect lines above its own.
 _act_session() {  # <site> <steps> <approved> <shot> <settle> <report> <allow-kinds> <stage> <errf>
   local site="$1" steps="$2" is_approved="$3" shot="$4" settle="$5" report="$6" allow_kinds="$7" stage="$8" errf="$9"
-  local plan payload rc=0 rep
+  local plan rc=0 rep payload="$stage/daemon.out"
   plan=$(jq -nc --argjson s "$steps" --argjson a "$is_approved" --argjson sh "$shot" \
       --argjson l "$(_daemon_lease_json)" --argjson st "$(_settle_json "$settle")" --argjson r "$report" \
       --argjson ak "$allow_kinds" --argjson lj "$(_landing_json "$site" 0)" \
       '{op:"plan", steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak,
-        report:({shot:($sh==1), tree:true} + $r)} + $st + $l + $lj')
-  payload=$(_daemon_call "$_PG_DIR" "$plan" 2>>"$errf") || rc=$?
-  rep=$(grep -F '"act_report":true' <<<"$payload" | tail -1)
+        report:({shot:($sh==1), tree:true, downloads:true} + $r)} + $st + $l + $lj')
+  # To a FILE, not a variable: a download comes back in this payload (DIVE-5751).
+  _daemon_call "$_PG_DIR" "$plan" >"$payload" 2>>"$errf" || rc=$?
+  _act_downloads_unpack "$payload" "$stage/downloads"
+  rep=$(grep -F '"act_report":true' "$payload" | tail -1)
   if [[ -n "$rep" ]]; then
     jq -r '.html_inline // ""' <<<"$rep" > "$stage/page.html"
     jq -c '{url, title, text, wait_for, expect_polled_ms}' <<<"$rep" > "$stage/after.json"
@@ -6063,6 +6078,73 @@ _act_session() {  # <site> <steps> <approved> <shot> <settle> <report> <allow-ki
     if (( shot )); then jq -r '.png_b64 // ""' <<<"$rep" | base64 -d > "$stage/page.png" 2>/dev/null || :; fi
   fi
   return "$rc"
+}
+
+# ====================================================== downloads (DIVE-5751)
+#
+# A FILE A STEP DOWNLOADS REACHES THE SEAT THAT ASKED. Before this, an export
+# button's file lived only as a nameless Playwright temp file in the browser
+# owner's 0700 cache, deleted when the browser closed, and act said nothing about
+# it. Now both executors save it (lib/downloads.cjs) into <stage>/downloads with a
+# .manifest.json, and the act moves it into its own artifact directory, the one
+# this seat already reads page.png from, and prints where.
+
+# The served browser's half: the daemon sent each download back as one metadata
+# line and its bytes as base64 chunk lines. Rebuild them into <dir>, and write the
+# manifest the one-shot driver would have written.
+_act_downloads_unpack() {  # <daemon-payload-file> <dir>
+  local pf="$1" dir="$2" i name bytes got
+  [[ -s "$pf" ]] && grep -qF '"act_download":true' "$pf" || return 0
+  jq -c 'select(type=="object" and .act_download==true) | {i, name, bytes, error}' "$pf" 2>/dev/null > "$dir/.meta.jsonl" || return 0
+  while IFS=$'\t' read -r i name bytes; do
+    [[ "$i" =~ ^[0-9]+$ ]] && _act_download_name_ok "$name" || continue
+    jq -r --argjson i "$i" 'select(type=="object" and .act_download_chunk==true and .i==$i) | .b64' "$pf" 2>/dev/null \
+      | base64 -d > "$dir/$name" 2>/dev/null
+    got=$(stat -c %s "$dir/$name" 2>/dev/null || echo 0)
+    if [[ "$got" != "$bytes" ]]; then
+      rm -f -- "$dir/$name"
+      jq -c --argjson i "$i" --arg w "it arrived cut: $got of $bytes bytes" \
+        'if .i==$i then .error=$w else . end' "$dir/.meta.jsonl" > "$dir/.meta.tmp" && mv -f -- "$dir/.meta.tmp" "$dir/.meta.jsonl"
+    fi
+  done < <(jq -r 'select(.error == null) | [.i, .name, (.bytes // 0)] | @tsv' "$dir/.meta.jsonl" 2>/dev/null)
+  jq -sc 'map({name, bytes, error})' "$dir/.meta.jsonl" > "$dir/.manifest.json" 2>/dev/null
+  rm -f -- "$dir/.meta.jsonl"
+}
+
+# The name came from the site. lib/downloads.cjs made it safe; this is the same
+# rule again on the side that writes into the seat's own directory.
+_act_download_name_ok() { [[ -n "$1" && "$1" != .* && "$1" != */* && "$1" != *$'\n'* && ${#1} -le 200 ]]; }
+
+# Move each saved download into <out>/downloads/ (0700, files 0600). A file that
+# was not saved is said at once, on stderr, with the reason. Leaves the JSON array
+# --json carries in _ACT_DLS ([] when there were none); _act_downloads_say prints
+# the saved ones after the verdict:
+#   downloaded: <path> (<name>, <bytes> bytes)
+_ACT_DLS='[]'
+_act_downloads_publish() {  # <stage-downloads-dir> <out-dir>
+  local dir="$1" out="$2" name bytes err dest stem ext k arr="[]"
+  _ACT_DLS='[]'
+  [[ -s "$dir/.manifest.json" ]] || return 0
+  while IFS=$'\t' read -r name bytes err; do
+    if ! _act_download_name_ok "$name"; then continue; fi
+    if [[ -n "$err" || ! -f "$dir/$name" ]]; then
+      printf '%s: a step downloaded %s, and it was NOT saved: %s\n' "$PROG" "$name" "${err:-the file is missing}" >&2
+      arr=$(jq -c --arg n "$name" --arg e "${err:-the file is missing}" '. + [{name:$n, error:$e}]' <<<"$arr")
+      continue
+    fi
+    if [[ ! -d "$out/downloads" ]]; then
+      (umask 077; mkdir -p -- "$out/downloads") || { printf '%s: cannot create %s/downloads; %s was not saved\n' "$PROG" "$out" "$name" >&2; continue; }
+    fi
+    dest="$out/downloads/$name"; k=2
+    stem="${name%.*}"; ext=""; [[ "$name" == *.* ]] && ext=".${name##*.}"
+    while [[ -e "$dest" ]]; do dest="$out/downloads/$stem-$k$ext"; k=$((k+1)); done
+    install -m 00600 -- "$dir/$name" "$dest" || continue
+    arr=$(jq -c --arg p "$dest" --arg n "$name" --argjson b "$bytes" '. + [{path:$p, name:$n, bytes:$b}]' <<<"$arr")
+  done < <(jq -r '.[] | [.name, (.bytes // 0 | tostring), (.error // "")] | @tsv' "$dir/.manifest.json" 2>/dev/null)
+  _ACT_DLS="$arr"
+}
+_act_downloads_say() {
+  jq -r '.[] | select(.path) | "downloaded: \(.path) (\(.name), \(.bytes) bytes)"' <<<"$_ACT_DLS" 2>/dev/null
 }
 
 # ======================================================= routines (DIVE-5335)
