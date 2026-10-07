@@ -18,11 +18,10 @@ From the same chill-gorge pass (DIVE-5733, part 2).
   typing a file path into an ad draft. While the chooser is up it gets the keys; when it closes,
   the page gets them back.
 - **New input step `upload{x,y,path}`**: clicks the upload control, types the absolute path into
-  the chooser, presses Return and checks the chooser closed. It fails by name if no chooser opens
+  the chooser, presses the chooser's Open (alt+o) and checks the chooser closed. Not Return: in CI the
+  path was typed exactly right and Return closed the chooser with no file attached. It fails by name if no chooser opens
   or the path is not taken. The path must be a regular file the calling seat can read, checked as
-  that seat, and it goes on the audit log. The DOM `act` still has no upload step. The path is
-  typed at a fixed pace, waits included: the chooser completes the path from a folder it reads in
-  the background, and keys that outrun it can leave a different path in the field.
+  that seat, and it goes on the audit log. The DOM `act` still has no upload step.
 - **Worker seats keep the on-demand serve grant.** `setup` wrote the box-wide grant for the
   group of whichever seat ran it, and agent create runs setup for every new seat, so each new
   worker took the grant from the others ("no grant to start the box's browsers", luna 8,

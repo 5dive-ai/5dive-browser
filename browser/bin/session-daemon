@@ -1203,7 +1203,7 @@ async function clickInBrowser(be, s) {
 
 // DIVE-5740: an upload as a person does it. Click the page's upload control,
 // let the browser's file chooser open, type the absolute path into it (ctrl+l
-// opens its location field), Return, and confirm the chooser CLOSED. A chooser
+// opens its location field), Open (alt+o), and confirm the chooser CLOSED. A chooser
 // still up means the path was not taken (no such file, a folder): Escape, and
 // fail by name, so nothing goes on to type into a dialog or a page by mistake.
 async function uploadByChooser(be, s) {
@@ -1221,21 +1221,22 @@ async function uploadByChooser(be, s) {
   await be.x.press('ctrl+l'); await sleepMs(300);
   await be.x.type(s.path, 20);
   await sleepMs(600);
-  await be.x.press('Return');
+  // OPEN, NOT RETURN. CI at f1a440c showed the path typed exactly right and
+  // Return closing the chooser with "No file chosen". The field reports said
+  // the same ("click Open: Return alone can close it with nothing attached").
+  // alt+o is the chooser's own mnemonic for its Open button, so it is that
+  // click without needing the button's position: with no window manager the
+  // chooser can be taller than the screen, and Open is then cut off.
+  await be.x.press('alt+o');
   for (let i = 0; i < 50; i++) {
     await sleepMs(100);
-    // A completion list under the location field takes the first Return; the
-    // second one is the chooser's Open.
-    if (i === 15 && (await be.x.browserDialog(pid))) {
-      try { await be.x.focusOn(dlg.id, 500, 'the file chooser'); await be.x.press('Return'); } catch (e) { /* closed meanwhile */ }
-    }
     if (!(await be.x.browserDialog(pid))) {
       try { await be.x.ensureBrowserFocus(pid, 1000); } catch (e) { /* the next key step says so */ }
       return `the file chooser took ${s.path} and closed (check the shot: the page should now name the file)`;
     }
   }
   try { await be.x.focusOn(dlg.id, 1000, 'the file chooser'); await be.x.press('Escape'); } catch (e) { /* reported below */ }
-  throw new Error(`the file chooser did not take ${s.path} (still open after Return: no such file, or a folder); it was closed with Escape and nothing was attached`);
+  throw new Error(`the file chooser did not take ${s.path} (still open after Open: no such file, or a folder); it was closed with Escape and nothing was attached`);
 }
 
 async function gotoByKeys(be, url) {
@@ -1400,7 +1401,7 @@ async function inputRequest(be, profile, req, send, end, behalf) {
           switch (s.op) {
             case 'click': {
               const r = await clickInBrowser(be, s);
-              if (r && r.dialog) send({ t: 'log', line: `  ${where}: the browser opened its "${r.dialog}" window, which now has the keyboard (a file chooser: type the file's absolute path and press Return, or use an upload{x,y,path} step)` });
+              if (r && r.dialog) send({ t: 'log', line: `  ${where}: the browser opened its "${r.dialog}" window, which now has the keyboard (a file chooser: type the file's absolute path and press alt+o (Open; Return can close it with nothing attached), or use an upload{x,y,path} step)` });
               break;
             }
             case 'upload': send({ t: 'log', line: `  ${where}: ${await uploadByChooser(be, s)}` }); break;

@@ -919,8 +919,17 @@ HTML
       }
       l13d 1-click '[{"op":"click","x":640,"y":200}]'
       l13d 2-typed "[{\"op\":\"press\",\"key\":\"ctrl+l\"},{\"op\":\"wait\",\"ms\":300},{\"op\":\"type\",\"value\":\"$UPF\"},{\"op\":\"wait\",\"ms\":600}]"
-      l13d 3-return '[{"op":"press","key":"Return"},{"op":"wait","ms":1500}]'
-      echo "   l13d title after: $(see_title "$LP3/s.sock" 'up:l13-logo.txt')" | tee -a "$TMP/l13d.all"
+      l13d 3-alt-o '[{"op":"press","key":"alt+o"},{"op":"wait","ms":1500}]'
+      echo "   l13d title after alt+o: $(see_title "$LP3/s.sock" 'up:l13-logo.txt')" | tee -a "$TMP/l13d.all"
+      # The same, ending in Return, then in a click on Open (its place in a
+      # 1124x822 chooser at 0,0 on 1280x800, as l13d-2 showed), each on a reloaded page.
+      typed="{\"op\":\"click\",\"x\":640,\"y\":200},{\"op\":\"wait\",\"ms\":800},{\"op\":\"press\",\"key\":\"ctrl+l\"},{\"op\":\"wait\",\"ms\":300},{\"op\":\"type\",\"value\":\"$UPF\"},{\"op\":\"wait\",\"ms\":600}"
+      l13d 4-reload '[{"op":"press","key":"F5"},{"op":"wait","ms":1500}]'
+      l13d 5-return "[$typed,{\"op\":\"press\",\"key\":\"Return\"},{\"op\":\"wait\",\"ms\":1500}]"
+      echo "   l13d title after Return: $(see_title "$LP3/s.sock" 'up:l13-logo.txt')" | tee -a "$TMP/l13d.all"
+      l13d 6-reload '[{"op":"press","key":"F5"},{"op":"wait","ms":1500}]'
+      l13d 7-click-open "[$typed,{\"op\":\"click\",\"x\":1075,\"y\":795},{\"op\":\"wait\",\"ms\":1500}]"
+      echo "   l13d title after a click on Open: $(see_title "$LP3/s.sock" 'up:l13-logo.txt')" | tee -a "$TMP/l13d.all"
       gha "input harness: L13 replayed by stage" "$(cat "$TMP/l13d.all")"
     fi
     "$REAL_DAEMON" call "$LP3/s.sock" <<<'{"op":"shutdown"}' >/dev/null 2>&1
