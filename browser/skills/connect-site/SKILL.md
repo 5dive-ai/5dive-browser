@@ -119,6 +119,15 @@ The view is ephemeral; the login profile is durable. Revoke promptly: a live vie
 keyboard attached to the person's account.
 <!-- 5dive:connect-site-flow:end -->
 
+## Google once per group (DIVE-6013)
+
+Connected sites share a sign-in when they are in the same **group** (one browser profile). New
+sites join **Main**, so if Main is signed in to Google, a new site's "Continue with Google" sees
+the account — tap it, no fresh Google login. A site that predates groups has its own profile;
+`5dive browser group ls` shows which. To give it Main's Google: `5dive browser group move <site>
+Main` (the owner's call — its old profile is kept aside, not merged). A second Google account
+belongs in a second group (`group create Work`, then `group move <site> Work`).
+
 ## What will actually go wrong
 
 - **`serve` fails closed on a box without the stack.** Server mode needs chromium, Xvfb,

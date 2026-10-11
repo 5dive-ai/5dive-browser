@@ -411,9 +411,18 @@ usage() {
   used verbatim. A bare label (`linkedin`) is a different profile and is guessed
   as <label>.com, which is a guess and not the contract.
 
+  GROUPS — ONE SIGN-IN FOR MANY SITES: sites in a group share ONE browser, so
+  Google signed in once there is signed in for every site's "Continue with
+  Google". New sites join the default group "Main"; a site connected before
+  groups keeps its own profile until moved. See: 5dive browser group --help
+  5dive browser group ls | create <name> [--from=<site>] | rename <group> <name>
+  5dive browser group move <site> <group>|--own | move --all <group> | default <group>|--none
+
   SEVERAL ACCOUNTS ON ONE SITE: a profile is <site>_<label> — `github.com_work`,
   `github.com_personal`. Given a URL with two such logins, a verb refuses and names
-  them rather than guess; name the one the owner asked for.
+  them rather than guess; name the one the owner asked for. A labelled account
+  gets a profile of its own (it is a SECOND account); a second Google account is
+  a second group.
 USAGE
 }
 
@@ -598,9 +607,16 @@ _is_public() { [[ "$1" == "$PUBLIC_SITE" ]]; }
 _audit() {
   local d="$1" want_mode="$2" me; me=$(id -u)
   [[ -d "$d" ]] || return 1
+  # A SITE IN A GROUP IS A LINK (DIVE-6013), and plain `stat` grades the link
+  # (mode 777, whoever made it) instead of the profile behind it. Only the one
+  # shape `_group_link` makes is followed — a relative `.group-<id>` beside it —
+  # and the profile it reaches is graded exactly like any other.
+  if [[ -L "${d%/}" ]]; then
+    _site_group "$d" >/dev/null || die "$E_PERM" "${d%/} is a link this plugin did not make — refusing to use it as a profile. A profile is a directory, or a link to a group's."
+  fi
   local owner mode
-  owner=$(stat -c '%u' "$d") || return 1
-  mode=$(stat -c '%a' "$d") || return 1
+  owner=$(stat -L -c '%u' "$d") || return 1
+  mode=$(stat -L -c '%a' "$d") || return 1
   [[ "$owner" == "$me" ]] || die "$E_PERM" "$d is owned by uid $owner, not by you (uid $me) — refusing to use it as a profile store. Someone else can read that session."
   [[ "$mode" == "$want_mode" ]] || die "$E_PERM" "$d is mode $mode, want $want_mode — refusing. Anything that can read a profile directory can replay the session."
   return 0
@@ -865,6 +881,440 @@ _ensure_profile_dir() {
     mkdir -p "$d"; chmod 00700 "$d"; _audit "$d" 700
   fi
 }
+
+
+# >>> DIVE-6013 PROFILE GROUPS — sites that share one browser, so one sign-in
+#
+# WHY. A profile used to be one site: fireflies.ai, fathom.video and google.com
+# were three Chromes with three cookie jars, so Google signed in on google.com
+# was NOT signed in for fireflies.ai, and every new site's "Continue with Google"
+# was a fresh Google sign-in — which Google often refuses in an automated
+# browser, so the agent stopped and asked the owner, every time (lodar,
+# 2026-10-11: "all signups hit fresh login by google flow"; measured on
+# chill-gorge, DIVE-6012).
+#
+# A GROUP IS ONE PROFILE DIRECTORY, AND A SITE IN IT IS A LINK TO IT.
+#   <seat>/.group-<id>/          the group's Chrome profile, 0700, the real dir
+#   <seat>/<site> -> .group-<id> one relative symlink per site in the group
+# The link is the whole mapping: there is no table to drift from the disk. Every
+# verb still names a SITE and still finds `<seat>/<site>`, so enumeration (`ls`,
+# `served`, `probe-all`), the brokered rendezvous (keyed on the site name), the
+# lease and the one-Chrome-per-profile rule all keep working unchanged — the last
+# two now per GROUP, which is right: a group is one browser. The leading dot
+# keeps the group dir out of every `*/` glob and `_valid_site` refuses a leading
+# dot, so a group can never be addressed as, or collide with, a site.
+#
+# WHAT IS PER SITE INSIDE A SHARED DIR: the liveness stamp and the signed-in note
+# (`_site_state`), because "fireflies.ai is logged in" is not "Main is".
+#
+# THE RULES, and each is a refusal rather than a guess:
+#   - A NEW site joins the default group ("Main" unless the owner picks another,
+#     or `group default --none`). An EXISTING per-site profile is never touched:
+#     no upgrade merges cookies behind the owner's back.
+#   - A labelled account (`<site>_<label>`) is its own profile by default — it
+#     exists to be a SECOND account, and a group is one cookie jar.
+#   - A group holds at most one account per site, for the same reason: moving
+#     github.com_work into the group that has github.com is refused.
+#   - Moving a site's own profile into a group puts that profile ASIDE
+#     (`.own-<site>`), never deletes or merges it; `group move <site> --own`
+#     brings it back. In the group, the site signs in once (or already is, if
+#     the group's sign-in covers it: Google).
+#   - `group create <name> --from=<site>` makes an existing profile the group's
+#     profile — the one explicit way to keep a sign-in you already have (a box
+#     whose Google lives in google.com's profile).
+GROUP_PREFIX=".group-"
+GROUP_OWN_PREFIX=".own-"
+GROUP_DEFAULT_FILE=".groups-default"
+GROUP_NAME_FILE=".5dive-group-name"
+GROUP_DEFAULT_ID="main"
+GROUP_DEFAULT_NAME="Main"
+
+_valid_group() { [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]; }
+# A display name -> its id: lowercase, anything else a dash. "Work 2" -> work-2.
+_group_id_of() {
+  local s="${1,,}"
+  s=$(printf '%s' "$s" | tr -c 'a-z0-9' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//')
+  printf '%s\n' "${s:0:32}"
+}
+_group_dir() { printf '%s/%s%s\n' "$PROFILE_ROOT/${2:-$(_seat)}" "$GROUP_PREFIX" "$1"; }  # <id> [<seat>]
+_group_name() {  # <id> [<seat>]
+  local n; n=$(head -n1 "$(_group_dir "$1" "${2:-}")/$GROUP_NAME_FILE" 2>/dev/null)
+  printf '%s\n' "${n:-$1}"
+}
+# The group a site path is in, or rc 1 when it is its own profile. Only a link
+# of exactly the shape this file makes counts; `_audit` refuses any other link.
+_site_group() {  # <site-path>
+  local p="${1%/}" t
+  [[ -L "$p" ]] || return 1
+  t=$(readlink -- "$p") || return 1
+  [[ "$t" == "$GROUP_PREFIX"* ]] && _valid_group "${t#"$GROUP_PREFIX"}" || return 1
+  printf '%s\n' "${t#"$GROUP_PREFIX"}"
+}
+# A per-LOGIN file in a profile dir. In a group the dir is shared, so the name
+# carries the site; a site's own profile keeps the name it always had, which is
+# what keeps an existing profile resolving byte-for-byte unchanged.
+_site_state() {  # <profile-dir> <file>
+  local d="${1%/}"
+  if [[ -L "$d" ]]; then printf '%s/%s.%s\n' "$d" "$2" "$(basename "$d")"
+  else printf '%s/%s\n' "$d" "$2"; fi
+}
+# The default group's id, or rc 1 when the owner turned joining off.
+_group_default() {  # [<seat>]
+  local f v; f="$PROFILE_ROOT/${1:-$(_seat)}/$GROUP_DEFAULT_FILE"
+  if [[ -f "$f" ]]; then
+    v=$(head -n1 "$f" 2>/dev/null)
+    [[ "$v" == none ]] && return 1
+    _valid_group "$v" && { printf '%s\n' "$v"; return 0; }
+  fi
+  printf '%s\n' "$GROUP_DEFAULT_ID"
+}
+_group_ensure() {  # <id> [<display name>] -> 0 when the group's dir is there and sound
+  local gd; gd=$(_group_dir "$1")
+  if [[ ! -d "$gd" ]]; then
+    mkdir -m 700 -- "$gd" 2>/dev/null || return 1
+    local n="${2:-}"; [[ -n "$n" ]] || { [[ "$1" == "$GROUP_DEFAULT_ID" ]] && n="$GROUP_DEFAULT_NAME" || n="$1"; }
+    ( umask 077; printf '%s\n' "$n" > "$gd/$GROUP_NAME_FILE" ) 2>/dev/null || true
+  fi
+  _audit "$gd" 700
+}
+# Every site in <id>, one per line, from the links themselves.
+_group_sites() {  # <id> [<seat>]
+  local e
+  for e in "$PROFILE_ROOT/${2:-$(_seat)}"/*; do
+    [[ "$(_site_group "$e" 2>/dev/null)" == "$1" ]] && basename "$e"
+  done
+  return 0
+}
+# Another account of the same site already in <id>? Echoes it. One cookie jar
+# cannot hold two accounts of one site, so this is a refusal, not a warning.
+_group_base_taken() {  # <id> <site>
+  local s b; b=$(_site_base "$2")
+  while IFS= read -r s; do
+    [[ "$s" != "$2" && "$(_site_base "$s")" == "$b" ]] && { printf '%s\n' "$s"; return 0; }
+  done < <(_group_sites "$1")
+  return 1
+}
+# Accept the id or the display name (any case) the owner typed.
+_group_resolve() {  # <id-or-name> -> id, rc 1 when there is no such group
+  local want="$1" d id
+  if _valid_group "$want" && [[ -d "$(_group_dir "$want")" ]]; then printf '%s\n' "$want"; return 0; fi
+  for d in "$(_seat_dir)/$GROUP_PREFIX"*/; do
+    [[ -d "$d" ]] || continue
+    id=$(basename "$d"); id="${id#"$GROUP_PREFIX"}"
+    [[ "$(_group_name "$id" | tr '[:upper:]' '[:lower:]')" == "${want,,}" ]] && { printf '%s\n' "$id"; return 0; }
+  done
+  return 1
+}
+# Point <site-path> at a group, replacing what was there in one rename.
+_group_link() {  # <site-path> <id>
+  local p="${1%/}" tmp; tmp="$(dirname "$p")/.link.$$.$RANDOM"
+  ln -s -- "$GROUP_PREFIX$2" "$tmp" && mv -T -- "$tmp" "$p" || { rm -f -- "$tmp"; return 1; }
+}
+
+# A NEW site's first touch (`auth`, `serve`): it joins the default group. Silent
+# and a no-op for anything that already has a profile, the public profile, a
+# labelled account, a seat that turned joining off, or a group that already holds
+# another account of this site. Prints the group's id when it joined.
+_group_join_default() {  # <site> <own-site-path>
+  local site="$1" p="${2%/}" g
+  [[ -e "$p" || -L "$p" ]] && return 0
+  _is_public "$site" && return 0
+  [[ "$site" == *_* ]] && return 0
+  g=$(_group_default) || return 0
+  [[ -d "$(dirname "$p")" && -w "$(dirname "$p")" ]] || return 0
+  _group_ensure "$g" || return 0
+  _group_base_taken "$g" "$site" >/dev/null && return 0
+  _group_link "$p" "$g" || return 0
+  printf '%s\n' "$g"
+}
+
+# A group's browser serves every site in it, over ONE socket. A brokered seat
+# finds a site's socket by the site's name, so the other sites get a name for it:
+# a relative link in the rendezvous to the socket the browser was started on.
+_rv_alias() {  # <site> <profile-dir>
+  local p="${2%/}" me s mine
+  [[ -L "$p" ]] || return 0
+  me=$(_seat); s=$(_kv "$(_serve_pidfile "$p")" sock)
+  [[ -n "$s" && "$s" == "$(_rv_dir "$me")/"*.sock && -S "$s" ]] || return 0
+  mine=$(_rv_sock "$me" "$1")
+  [[ "$s" == "$mine" ]] && return 0
+  [[ -S "$mine" && ! -L "$mine" ]] && return 0
+  ln -sfn -- "$(basename "$s")" "$mine" 2>/dev/null || true
+}
+# After a stop: a name that points at a socket that is gone is a lie to every
+# brokered seat ("served" when nothing is), so it goes.
+_rv_alias_sweep() {
+  local d l; d=$(_rv_dir "$(_seat)")
+  for l in "$d"/*.sock; do
+    [[ -L "$l" && ! -e "$l" ]] && rm -f -- "$l" 2>/dev/null
+  done
+  return 0
+}
+
+# A grouped site's own cookies, out of the group's profile, when it is forgotten
+# — the group's OTHER sign-ins (Google) stay. Best-effort and said either way.
+_group_forget_cookies() {  # <group-dir> <site> -> 0 when they were cleared
+  local gd="$1" base db n=0; base=$(_site_base "$2")
+  command -v python3 >/dev/null 2>&1 || return 1
+  for db in "$gd/Default/Network/Cookies" "$gd/Default/Cookies"; do
+    [[ -f "$db" ]] || continue
+    python3 - "$db" "$base" <<'PY' 2>/dev/null || return 1
+import sqlite3, sys
+db, base = sys.argv[1], sys.argv[2]
+c = sqlite3.connect(db, timeout=5)
+c.execute("DELETE FROM cookies WHERE host_key = ? OR host_key = ? OR host_key LIKE ?",
+          (base, "." + base, "%." + base))
+c.commit(); c.close()
+PY
+    n=$((n+1))
+  done
+  return 0
+}
+
+_group_in_use() {  # <profile-dir> -> the reason on stdout, rc 0 when busy
+  local d="${1%/}"
+  if _viewer_live "$d"; then echo "a person is in its viewer right now"; return 0; fi
+  if _lease_live "$d"; then _lease_describe "$d" | tr -d '\n'; echo; return 0; fi
+  return 1
+}
+
+cmd_group() {
+  local sub="${1:-ls}"; shift || true
+  _require_store
+  [[ -d "$(_seat_dir)" ]] || die "$E_UNAVAILABLE" "this seat has no browser store of its own, so it has no groups. Create it once: $SETUP_CMD"
+  case "$sub" in
+    ls|list) _group_ls "$@" ;;
+    create)  _group_create "$@" ;;
+    rename)  _group_rename "$@" ;;
+    move|mv) _group_move "$@" ;;
+    default) _group_set_default "$@" ;;
+    -h|--help|help) _group_usage ;;
+    *) die "$E_USAGE" "unknown: $PROG group $sub (ls, create, rename, move, default)" ;;
+  esac
+}
+
+_group_usage() {
+  cat <<'USAGE'
+5dive browser group — sites that share one browser, so one sign-in (Google above all)
+
+  A group is ONE browser profile. Every site in it shares its cookies: sign in to
+  Google once in the group and every site's "Continue with Google" sees that
+  account. Different groups never share — a second Google account is a second
+  group. New sites join the default group ("Main").
+
+  5dive browser group ls [--json]             groups, their sites, and sites with their own profile
+  5dive browser group create <name> [--from=<site>]
+                                      # --from: that site's existing profile BECOMES the
+                                      # group's, keeping its sign-ins (e.g. google.com's)
+  5dive browser group rename <group> <new name>
+  5dive browser group move <site> <group>     # signs in there once, unless the group's
+                                      # sign-in covers it; its own profile is kept aside
+  5dive browser group move <site> --own       # back to a profile of its own
+  5dive browser group move --all <group>      # every site with its own profile, in one step
+  5dive browser group default <group>|--none  # where new sites go; --none: own profile each
+
+  One account per site in a group: github.com and github.com_work cannot share one.
+USAGE
+}
+
+_group_ls() {
+  local json=0 a
+  for a in "$@"; do
+    case "$a" in --json) json=1 ;; *) die "$E_USAGE" "unknown flag: $a" ;; esac
+  done
+  local def; def=$(_group_default) || def=""
+  local -a ids=(); local d id
+  for d in "$(_seat_dir)/$GROUP_PREFIX"*/; do
+    [[ -d "$d" ]] || continue
+    id=$(basename "$d"); id="${id#"$GROUP_PREFIX"}"; _valid_group "$id" && ids+=("$id")
+  done
+  local -a own=(); local e s
+  for e in "$(_seat_dir)"/*; do
+    [[ -d "$e" ]] || continue
+    s=$(basename "$e"); _is_public "$s" && continue
+    _site_group "$e" >/dev/null || own+=("$s")
+  done
+  if (( json )); then
+    local groups="[]" sites
+    for id in "${ids[@]}"; do
+      sites=$(_group_sites "$id" | jq -R . | jq -sc .)
+      groups=$(jq -c --arg id "$id" --arg n "$(_group_name "$id")" --argjson d "$([[ "$id" == "$def" ]] && echo true || echo false)" \
+        --argjson s "$sites" '. + [{id:$id, name:$n, default:$d, sites:$s}]' <<<"$groups")
+    done
+    jq -nc --arg def "$def" --argjson g "$groups" \
+      --argjson own "$(printf '%s\n' "${own[@]}" | sed '/^$/d' | jq -R . | jq -sc .)" \
+      '{default: (if $def == "" then null else $def end), groups: $g, own: $own}'
+    return 0
+  fi
+  if (( ${#ids[@]} == 0 )); then
+    printf 'no groups yet. The next site you connect joins %s.\n' "$([[ -n "$def" ]] && printf '"%s"' "$GROUP_DEFAULT_NAME" || printf 'nothing (joining is off)')"
+  fi
+  for id in "${ids[@]}"; do
+    printf '%s (%s)%s\n' "$(_group_name "$id")" "$id" "$([[ "$id" == "$def" ]] && printf ' — default, new sites join it')"
+    s=$(_group_sites "$id")
+    if [[ -n "$s" ]]; then printf '%s\n' "$s" | sed 's/^/  /'; else printf '  (no sites)\n'; fi
+  done
+  if (( ${#own[@]} )); then
+    printf 'own profile (shares nothing):\n'; printf '  %s\n' "${own[@]}"
+  fi
+  [[ -n "$def" ]] || printf 'new sites get a profile of their own (default: --none).\n'
+  return 0
+}
+
+_group_create() {
+  local name="" from="" a
+  for a in "$@"; do
+    case "$a" in
+      --from=*) from="${a#--from=}" ;;
+      -*) die "$E_USAGE" "unknown flag: $a" ;;
+      *) name="${name:+$name }$a" ;;
+    esac
+  done
+  [[ -n "$name" ]] || die "$E_USAGE" "name the group: 5dive browser group create Work"
+  (( ${#name} <= 40 )) && [[ "$name" != *$'\n'* ]] || die "$E_USAGE" "a group name is one line of at most 40 characters"
+  local id; id=$(_group_id_of "$name")
+  _valid_group "$id" || die "$E_USAGE" "'$name' has no letters or digits to make a group id from"
+  # A group that exists but is still EMPTY (Main, made by the first connect
+  # after the upgrade, before any site was moved in and before anything signed
+  # in to it) is no reason to refuse --from: it holds nothing to lose.
+  if [[ -n "$from" && -d "$(_group_dir "$id")" && -z "$(_group_sites "$id")" && ! -e "$(_group_dir "$id")/Default" ]]; then
+    rm -rf -- "$(_group_dir "$id")"
+  fi
+  [[ ! -e "$(_group_dir "$id")" ]] || die "$E_USAGE" "there is already a group '$(_group_name "$id")' ($id)"
+  if [[ -z "$from" ]]; then
+    _group_ensure "$id" "$name" || die "$E_UNAVAILABLE" "could not create the group's profile at $(_group_dir "$id")"
+    printf 'created group %s (%s). Move a site in: 5dive browser group move <site> %s\n' "$name" "$id" "$id"
+    return 0
+  fi
+  _valid_site "$from" && ! _is_public "$from" || die "$E_USAGE" "'$from' is not a connected site"
+  local p; p="$(_own_site_dir "$from")"
+  if [[ -L "$p" ]]; then die "$E_USAGE" "$from is already in the group '$(_group_name "$(_site_group "$p")")' — its profile is that group's"; fi
+  [[ -d "$p" ]] || die "$E_UNAVAILABLE" "no profile for $from on this seat — nothing to make a group from"
+  _audit "$p" 700
+  local why; why=$(_group_in_use "$p") && die "$E_UNAVAILABLE" "$from is in use ($why) — try again when it is free"
+  ! _serve_running "$p" >/dev/null || die "$E_UNAVAILABLE" "$from is being served; stop it first (5dive browser serve $from --stop), then create the group from it"
+  local gd; gd=$(_group_dir "$id")
+  mv -T -- "$p" "$gd" || die "$E_UNAVAILABLE" "could not turn $from's profile into the group's"
+  ( umask 077; printf '%s\n' "$name" > "$gd/$GROUP_NAME_FILE" ) 2>/dev/null || true
+  local f
+  for f in .5dive-liveness .5dive-signed-in; do
+    [[ -f "$gd/$f" ]] && mv -f -- "$gd/$f" "$gd/$f.$from"
+  done
+  _group_link "$p" "$id" || { mv -T -- "$gd" "$p"; die "$E_UNAVAILABLE" "could not link $from into the new group; its profile is back where it was"; }
+  _audit_row "$(_seat_dir)" group "created group $id from the $from profile"
+  printf 'created group %s (%s) from %s'"'"'s profile: everything it is signed in to — Google included — now carries to every site you move into %s.\n' "$name" "$id" "$from" "$name"
+}
+
+_group_rename() {
+  (( $# >= 2 )) || die "$E_USAGE" "usage: 5dive browser group rename <group> <new name>"
+  local id; id=$(_group_resolve "$1") || die "$E_USAGE" "no group '$1' (5dive browser group ls)"
+  shift; local name="$*"
+  (( ${#name} <= 40 )) && [[ "$name" != *$'\n'* ]] || die "$E_USAGE" "a group name is one line of at most 40 characters"
+  ( umask 077; printf '%s\n' "$name" > "$(_group_dir "$id")/$GROUP_NAME_FILE" ) || die "$E_UNAVAILABLE" "could not rename $id"
+  printf 'renamed %s to %s (its id stays %s)\n' "$id" "$name" "$id"
+}
+
+_group_set_default() {
+  (( $# == 1 )) || die "$E_USAGE" "usage: 5dive browser group default <group>|--none"
+  local f; f="$(_seat_dir)/$GROUP_DEFAULT_FILE"
+  if [[ "$1" == --none ]]; then
+    ( umask 077; printf 'none\n' > "$f" ) || die "$E_UNAVAILABLE" "could not write $f"
+    printf 'new sites now get a profile of their own; sites already in a group stay there.\n'; return 0
+  fi
+  local id; id=$(_group_resolve "$1") || {
+    [[ "$1" == "$GROUP_DEFAULT_ID" || "${1,,}" == "${GROUP_DEFAULT_NAME,,}" ]] && _group_ensure "$GROUP_DEFAULT_ID" && id="$GROUP_DEFAULT_ID"
+  } || die "$E_USAGE" "no group '$1' (5dive browser group ls)"
+  ( umask 077; printf '%s\n' "$id" > "$f" ) || die "$E_UNAVAILABLE" "could not write $f"
+  printf 'new sites now join %s (%s).\n' "$(_group_name "$id")" "$id"
+}
+
+_group_move() {
+  local all=0 own=0 site="" target="" a
+  for a in "$@"; do
+    case "$a" in
+      --all) all=1 ;;
+      --own) own=1 ;;
+      -*) die "$E_USAGE" "unknown flag: $a" ;;
+      *) if (( all )) || [[ -n "$site" ]]; then target="$a"; else site="$a"; fi ;;
+    esac
+  done
+  if (( all )); then
+    [[ -n "$target" && $own -eq 0 ]] || die "$E_USAGE" "usage: 5dive browser group move --all <group>"
+    local e s moved=0 skipped=0 out
+    for e in "$(_seat_dir)"/*; do
+      [[ -d "$e" && ! -L "$e" ]] || continue
+      s=$(basename "$e"); _is_public "$s" && continue
+      if out=$( ( _group_move_one "$s" "$target" 0 ) 2>&1 ); then moved=$((moved+1)); printf '%s\n' "$out"
+      else skipped=$((skipped+1)); printf 'skipped %s: %s\n' "$s" "${out#"$PROG: "}"; fi
+    done
+    printf '%s moved, %s skipped.\n' "$moved" "$skipped"
+    (( skipped == 0 )); return $?
+  fi
+  [[ -n "$site" ]] || die "$E_USAGE" "usage: 5dive browser group move <site> <group>|--own"
+  (( own )) && [[ -n "$target" ]] && die "$E_USAGE" "a site goes to a group OR --own, not both"
+  (( own )) || [[ -n "$target" ]] || die "$E_USAGE" "move $site where? 5dive browser group move $site <group>  (or --own)"
+  _group_move_one "$site" "$target" "$own"
+}
+
+_group_move_one() {  # <site> <group> <own 0|1>
+  local site="$1" target="$2" own="$3"
+  _valid_site "$site" && ! _is_public "$site" || die "$E_USAGE" "'$site' is not a connected site"
+  local p cur="" id="" why; p="$(_own_site_dir "$site")"
+  [[ -e "$p" || -L "$p" ]] || die "$E_UNAVAILABLE" "no profile for $site on this seat — connect it first (5dive browser auth $site)"
+  cur=$(_site_group "$p") || cur=""
+  [[ -n "$cur" || ! -L "$p" ]] || die "$E_PERM" "$p is a link this plugin did not make — refusing to move it"
+  [[ -d "$p" ]] && _audit "$p" 700
+  if (( ! own )); then
+    id=$(_group_resolve "$target") || {
+      [[ "$target" == "$GROUP_DEFAULT_ID" || "${target,,}" == "${GROUP_DEFAULT_NAME,,}" ]] && _group_ensure "$GROUP_DEFAULT_ID" && id="$GROUP_DEFAULT_ID"
+    } || die "$E_USAGE" "no group '$target' — create it first: 5dive browser group create $target"
+    [[ "$cur" != "$id" ]] || { printf '%s is already in %s\n' "$site" "$(_group_name "$id")"; return 0; }
+    local other; other=$(_group_base_taken "$id" "$site") \
+      && die "$E_USAGE" "$(_group_name "$id") already has $other — a group is one browser, so it holds one account per site. Put $site in another group."
+  else
+    [[ -n "$cur" ]] || { printf '%s already has a profile of its own\n' "$site"; return 0; }
+  fi
+  why=$(_group_in_use "$p") && die "$E_UNAVAILABLE" "$site is in use ($why) — try again when it is free"
+  local me; me=$(_seat)
+  if [[ -z "$cur" ]]; then
+    ! _serve_running "$p" >/dev/null || die "$E_UNAVAILABLE" "$site is being served; stop it first (5dive browser serve $site --stop)"
+  elif _serve_running "$p" >/dev/null && [[ "$(_kv "$(_serve_pidfile "$p")" sock)" == "$(_rv_sock "$me" "$site")" ]]; then
+    die "$E_UNAVAILABLE" "$(_group_name "$cur")'s browser was started as $site, so other seats reach it by that name; stop it first (5dive browser serve $site --stop)"
+  fi
+  local aside restored=0; aside="$(_seat_dir)/$GROUP_OWN_PREFIX$site"
+  if [[ -z "$cur" ]]; then
+    [[ ! -e "$aside" ]] || die "$E_UNAVAILABLE" "$aside already holds an earlier profile of $site — move it away by hand before moving $site again"
+    mv -T -- "$p" "$aside" || die "$E_UNAVAILABLE" "could not put $site's own profile aside"
+    _group_link "$p" "$id" || { mv -T -- "$aside" "$p"; die "$E_UNAVAILABLE" "could not link $site into $(_group_name "$id"); nothing changed"; }
+  elif (( own )); then
+    rm -f -- "$p" || die "$E_UNAVAILABLE" "could not unlink $site from $(_group_name "$cur")"
+    if [[ -d "$aside" && ! -L "$aside" ]]; then mv -T -- "$aside" "$p" && restored=1
+    else mkdir -m 700 -- "$p"; fi
+  else
+    _group_link "$p" "$id" || die "$E_UNAVAILABLE" "could not move $site; it is still in $(_group_name "$cur")"
+  fi
+  # The site's per-login notes in the group it LEFT, and any stale one in the
+  # group it joined: a stamp from another browser is not this browser's verdict.
+  local f
+  for f in .5dive-liveness .5dive-signed-in; do
+    [[ -n "$cur" ]] && rm -f -- "$(_group_dir "$cur")/$f.$site"
+    [[ -n "$id" ]] && rm -f -- "$(_group_dir "$id")/$f.$site"
+  done
+  local l; l=$(_rv_sock "$me" "$site"); [[ -L "$l" ]] && rm -f -- "$l"
+  _audit_row "$(_seat_dir)" group "moved $site from ${cur:-its own profile} to ${id:-its own profile}"
+  if (( own )); then
+    if (( ! restored )); then
+      printf 'moved %s out of %s to a profile of its own. It shares nothing now; sign in to it once (5dive browser auth %s).\n' "$site" "$(_group_name "$cur")" "$site"
+    else
+      printf 'moved %s out of %s, back to the profile it had before it joined.\n' "$site" "$(_group_name "$cur")"
+    fi
+  else
+    printf 'moved %s to %s. It now shares %s'"'"'s sign-ins: if %s is signed in to Google, its "Continue with Google" sees that account. Anything else, sign in once (5dive browser auth %s).%s\n' \
+      "$site" "$(_group_name "$id")" "$(_group_name "$id")" "$(_group_name "$id")" "$site" \
+      "$([[ -z "$cur" ]] && printf ' Its own profile is kept aside, not merged: 5dive browser group move %s --own brings it back.' "$site")"
+  fi
+}
+# <<< DIVE-6013
 
 _install_probe_timer() {
   local seat="$1" five unit timer
@@ -1191,9 +1641,13 @@ cmd_auth() {
   # write into somebody else's directory. A seat that runs this deliberately is
   # taking the private per-seat opt-in, which resolution then prefers over the
   # box login for that site (scope (b), acceptance 5).
-  local dir; dir="$(_own_site_dir "$site")"
+  local dir joined; dir="$(_own_site_dir "$site")"
+  joined=$(_group_join_default "$site" "$dir")
   _ensure_profile_dir "$dir"
   _rv_offer_write "$(_seat)" "$site"
+  [[ -n "$joined" ]] && printf '%s joined the group %s: it shares that browser, so a Google (or any) sign-in made there already counts here. Another group: 5dive browser group move %s <group>
+' \
+    "$site" "$(_group_name "$joined")" "$site" >&2
 
   local chrome; chrome=$(_chrome) || die "$E_UNAVAILABLE" "no Chrome or Chromium on this box — auth hands a real browser to a human and there is nothing to hand over."
 
@@ -1736,7 +2190,7 @@ _probe() {
 # otherwise — the owner's own scheduled probe keeps it current.
 _stamp() {
   (( _SITE_BROKERED )) && return 0
-  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" > "$1/.5dive-liveness" 2>/dev/null || true
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" > "$(_site_state "$1" .5dive-liveness)" 2>/dev/null || true
 }
 # _stamp_at <dir> <iso> <word> — a stamp whose date is NOT now. Used only by
 # `unverifiable`, whose date is the last time the login was SEEN signed in: the
@@ -1745,7 +2199,7 @@ _stamp() {
 # ago", not "we failed to look 2 minutes ago".
 _stamp_at() {
   (( _SITE_BROKERED )) && return 0
-  printf '%s %s\n' "$2" "$3" > "$1/.5dive-liveness" 2>/dev/null || true
+  printf '%s %s\n' "$2" "$3" > "$(_site_state "$1" .5dive-liveness)" 2>/dev/null || true
 }
 
 # THE LAST SIGNED-IN READ, AND THROUGH WHAT (DIVE-5388). "<iso> <via>", via one
@@ -1757,7 +2211,7 @@ _stamp_at() {
 # not to the served browser the same login was working in, and the tile said
 # "Needs you" over two healthy sessions. A logged-out or challenged read in the
 # owner's own browser removes it — that is the login, not the check.
-_signed_in_file() { echo "$1/.5dive-signed-in"; }
+_signed_in_file() { _site_state "$1" .5dive-signed-in; }
 _signed_in_note() {  # <dir> <via>
   (( _SITE_BROKERED )) && return 0
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" > "$(_signed_in_file "$1")" 2>/dev/null || true
@@ -1856,7 +2310,7 @@ cmd_ls() {
     [[ -d "$d" ]] || continue
     site=$(basename "$d")
     _is_public "$site" && continue   # the public profile is not a login (DIVE-4943)
-    printf '  %-20s %s\n' "$site" "$(cat "$d/.5dive-liveness" 2>/dev/null || echo 'never probed')"
+    printf '  %-20s %s\n' "$site" "$(cat "$(_site_state "$d" .5dive-liveness)" 2>/dev/null || echo 'never probed')"
   done
   _ls_box_offers
 }
@@ -3702,6 +4156,21 @@ cmd_forget() {
   # in again" for a profile that no longer exists.
   rm -f "$(_rv_offer "$(_seat)" "$site")" "$(_rv_sock "$(_seat)" "$site")" 2>/dev/null || true
 
+  # A SITE IN A GROUP (DIVE-6013): the profile is the GROUP's, and the other
+  # sites in it are still signed in through it. Forgetting one site removes that
+  # site — its link, its notes, its own cookies — and never the group's browser.
+  local g
+  if g=$(_site_group "$dir"); then
+    local gd; gd=$(_group_dir "$g")
+    rm -f -- "${dir%/}" "$gd/.5dive-liveness.$site" "$gd/.5dive-signed-in.$site"
+    if _group_forget_cookies "$gd" "$site"; then
+      printf 'forgot %s and removed it from %s. Its cookies are gone from that browser; %s'"'"'s other sign-ins (Google included) stay. Connect again to log back in.\n' "$site" "$(_group_name "$g")" "$(_group_name "$g")"
+    else
+      printf 'forgot %s and removed it from %s, but its cookies could not be cleared from that browser (no python3 sqlite here), so %s still holds them. Sign out inside the site to end that session.\n' "$site" "$(_group_name "$g")" "$(_group_name "$g")"
+    fi
+    return 0
+  fi
+
   rm -rf -- "${dir:?}"
   printf 'forgot %s. The login, the cookies and the liveness stamp are gone from this box; connect again to log back in.\n' "$site"
   return 0
@@ -4025,7 +4494,7 @@ cmd_serve() {
   # `serve` may be the first thing that ever touches this site (that is how a
   # box with no display gets a login at all: `auth` hands over to it), so the
   # directory is created here rather than demanded above.
-  (( _SITE_BROKERED )) || [[ -d "$dir" ]] || _ensure_profile_dir "$dir"
+  (( _SITE_BROKERED )) || [[ -d "$dir" ]] || { _group_join_default "$site" "$dir" >/dev/null; _ensure_profile_dir "$dir"; }
   _ensure_profile_dir "$dir"
 
   if (( stop )); then
@@ -4108,6 +4577,7 @@ cmd_serve() {
     [[ -n "$xpid" ]] && kill "$xpid" 2>/dev/null
     local ssock; ssock="$(_kv "$f" sock)"
     rm -f "$f" "${ssock:-$dir/.5dive-session.sock}" "$(_viewer_admitted_file "$dir")"
+    _rv_alias_sweep
     printf 'stopped the %s browser. The profile is untouched — it is the durable half.\n' "$site"
     return 0
   fi
@@ -4188,6 +4658,7 @@ cmd_serve() {
   local disp
   if disp=$(_serve_running "$dir"); then
     if (( input )) && [[ "$(_kv "$(_serve_pidfile "$dir")" drive)" == input ]]; then
+      _rv_alias "$site" "$dir"
       printf 'already serving %s on :%s (input mode)\n' "$site" "$disp"; return 0
     elif (( input )); then
       # Served the other way (a warm session from before the adapter said
@@ -4220,6 +4691,7 @@ cmd_serve() {
       printf '%s: the login view of %s has ended; re-serving it as the warm session.\n' "$PROG" "$site" >&2
     else
       [[ -n "$_lnote" ]] && _daemon_live "$dir" && printf '%s\n' "$_lnote" >&2
+      _rv_alias "$site" "$dir"
       printf 'already serving %s on :%s\n' "$site" "$disp"; return 0
     fi
   fi
@@ -8273,6 +8745,7 @@ case "${1:-}" in
   status) shift; _auth_status "${1:-}" ;;
   probe-all) shift; cmd_probe_all "$@" ;;
   ls)    shift; cmd_ls    "$@" ;;
+  group|groups) shift; cmd_group "$@" ;;
   doc)   shift; cmd_doc  "$@" ;;
   adblock) shift; cmd_adblock "$@" ;;
   config) shift; cmd_config "$@" ;;

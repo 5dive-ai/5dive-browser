@@ -273,6 +273,28 @@ than a cookie export:
 3. **No password ever enters our process** — the difference between "we had a breach" and "we had a
    breach and it did not matter."
 
+## Groups: one sign-in for many sites (DIVE-6013)
+
+A **group** is one browser profile shared by several sites, so a sign-in made once in it — Google
+above all — carries to every site in the group: each site's "Continue with Google" sees the
+account instead of asking for a fresh Google sign-in (which Google often refuses in an automated
+browser). Different groups share nothing, so a second Google account is a second group.
+
+- Every **new** site joins the default group, **Main** (`group default <group>` to change it,
+  `--none` for a profile per site as before).
+- A site connected **before** groups keeps its own profile, untouched — no upgrade merges cookies.
+  `group move <site> Main` moves it (its own profile is kept aside, not merged; `--own` brings it
+  back) and `group move --all Main` moves every one in one step.
+- `group create Main --from=google.com` makes an existing profile the group's, keeping what it
+  is signed in to.
+- A labelled account (`github.com_work`) is its own profile by default, and a group holds one
+  account per site — it is one cookie jar.
+- One group is one browser: two sites of one group are used one at a time, like one site was.
+
+On disk a group is `<seat>/.group-<id>/` and each of its sites is a relative link
+`<seat>/<site> -> .group-<id>`; the link is the whole mapping. `group ls --json` is the dashboard's
+read.
+
 ## A profile directory IS a credential
 
 Anything that can read the directory can replay the session, regardless of the permission model
@@ -282,7 +304,8 @@ store is:
 ```
 /var/lib/5dive/browser-profiles/          root, 0711   traverse, do not list
                               /<seat>/    that seat,  0700
-                                     /<site>/         0700
+                                     /<site>/         0700   (or a link to a group:)
+                                     /.group-<id>/    0700   one profile, shared by its sites
 
 /var/lib/5dive/browser-sessions/          root, 0711   traverse, do not list
                               /<seat>/    seat:group, 0750   the broker rendezvous
