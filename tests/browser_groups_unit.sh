@@ -29,6 +29,8 @@
 #   G12 group ls --json, rename, default
 #   G13 a group's browser serves its other sites over one socket (rendezvous
 #       name per site), and a stop removes the names it left dangling
+#   G14 the distribution-box path: Main FROM the profile holding Google, then
+#       move --all Main; --from never replaces a group that holds sites
 #   L   LIVE (CI: real Chrome + the pinned playwright-core): a real
 #       accounts.google.com cookie set through site A's profile is in site B's
 #       browser when both are in Main, and absent when B is in another group or
@@ -212,6 +214,30 @@ if command -v python3 >/dev/null 2>&1; then
 else
   SKIP=$((SKIP+1)); echo 'SKIP: G13 — no python3 to hold a unix socket'
 fi
+
+# ================================================================ G14
+# The distribution-box path (lodar 05:19Z, chill-gorge: one Google account, in
+# google.com's own profile): Main made empty by the upgrade, then Main FROM the
+# profile that already holds Google, then every other site into it in one step.
+export FIVEDIVE_BROWSER_PROFILE_ROOT="$TMP/p14"
+S14="$FIVEDIVE_BROWSER_PROFILE_ROOT/$ME"; mkdir -p "$S14"; chmod 711 "$FIVEDIVE_BROWSER_PROFILE_ROOT"; chmod 700 "$S14"
+"$BROWSER" group default main >/dev/null 2>&1          # Main exists, empty, nothing signed in
+mkdir -m 700 "$S14/google.test"; mkdir -p "$S14/google.test/Default"; printf 'SID\n' > "$S14/google.test/Default/google-session"
+mkdir -m 700 "$S14/otter.test" "$S14/grain.test"
+out=$("$BROWSER" group create Main --from=google.test 2>&1); rc=$?
+arm 'G14a an EMPTY Main is no reason to refuse create Main --from=google.test' '0 .group-main' "$rc $(readlink "$S14/google.test")"
+out=$("$BROWSER" group move --all main 2>&1); rc=$?
+arm 'G14b move --all main moves every own profile in one step' '0 .group-main .group-main' "$rc $(readlink "$S14/otter.test") $(readlink "$S14/grain.test")"
+arm 'G14c and each of them sees the Google sign-in google.test had' 'yes yes' "$(session_of otter.test) $(session_of grain.test)"
+arm 'G14d their own profiles are kept aside, not deleted' 'yes yes' "$(yn test -d "$S14/.own-otter.test") $(yn test -d "$S14/.own-grain.test")"
+mkdir -m 700 "$S14/late.test"; "$BROWSER" group create Other >/dev/null 2>&1; "$BROWSER" group move late.test other >/dev/null 2>&1
+out=$("$BROWSER" group create Other2 --from=otter.test 2>&1); rc=$?
+arm 'G14e --from refuses a site already in a group' '64' "$rc"
+"$BROWSER" group default main >/dev/null 2>&1; "$BROWSER" auth n.test >/dev/null 2>&1
+mkdir -m 700 "$S14/solo.test"
+out=$("$BROWSER" group create Main --from=solo.test 2>&1); rc=$?
+arm 'G14f a NON-empty Main is never replaced by --from' '64 .group-main dir' "$rc $(readlink "$S14/n.test") $([[ -d "$S14/solo.test" && ! -L "$S14/solo.test" ]] && echo dir || echo moved)"
+arm 'G14g and says why' 'yes' "$(yn grep -q 'already a group' <<<"$out")"
 
 # ================================================================ L  LIVE
 NOFAKE="${PATH#"$FAKEBIN:"}"
