@@ -220,3 +220,10 @@ Lessons from browser jobs that went wrong on real sites (DIVE-5390). One line ea
 - **A check that appears after you send means it was not delivered.** A chat or relay bot can let the first command through and hold the first real message behind a captcha. Report "not delivered".
 - **A site that fills the form by reading your URL writes text you were not given.** Clear every field you have no value for. If the form has no place for text you were given, stop and ask; never rewrite it to fit.
 - **An invite refused for a new account is usually an unverified email.** Verify the account's email, then retry the invite once.
+- **Input mode: re-shoot before you click by coordinates.** A cookie banner, a dialog or a name that wraps to two lines moves everything below it, so coordinates from an earlier screenshot miss.
+- **A tick box or dropdown can miss on the first click.** Before the final press, check in a screenshot that every box shows ticked, every dropdown shows its value and the submit button is enabled. A native dropdown that will not open takes a second click or the Down key.
+- **"Captcha verification failed" after a submit is an invisible bot check.** There was no widget to see, and it is still a hard stop: never press submit twice.
+- **A money form can open on the wrong direction or with an old amount.** Read the add/withdraw switch, the amount and the button label in a screenshot before you press.
+- **A site that flags the account as automated means stop there for the day.** After a captcha, a 403 or an "unusual activity" page on a site where you post, tell the owner and do nothing more on that site that day. Space later posts hours apart.
+- **A click can land on a different page than you meant**, like a notification that opens the feed instead of the post. Check the URL bar or title before you record a link or id from it; never guess one.
+- **An upsell or "verify your identity" prompt after an action is not the job.** Decline it ("Not now"); never start it.
