@@ -5179,6 +5179,14 @@ cmd_viewer() {
   printf '/browser/viewer/%s/%s\n' "$site" "$nonce"
   printf 'one-time, expires %s, bound to session %s. Redeeming it consumes it.\n' \
     "$(date -u -d "@$expires" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "in ${ttl}s")" "$bind" >&2
+  # A HAND-RUN IS REACHED OVER SSH, not through the relay (DIVE-6111), so it
+  # needs the VNC port — which is 5900 only when 5900 was free — and where the
+  # password is. The password's PATH, never its value: whoever reads this line
+  # (a log, a chat) learns a file only root and this seat can open.
+  if [[ "$bind" == local ]]; then
+    printf 'local view: VNC on 127.0.0.1:%s of this box only, one connection; its one-time password: sudo cat %s\n' \
+      "$vncport" "$pwfile" >&2
+  fi
 }
 
 # Redemption is the whole security boundary, so it is one verb with one answer.
@@ -7905,6 +7913,7 @@ CONNECT_SHELLD_URL=http://127.0.0.1:3101
 CONNECT_TG_API=https://api.telegram.org
 CONNECT_SELF="$0"
 CONNECT_PRIV=(sudo -n /usr/local/bin/5dive browser _connect)
+HANDOFF_SSH_SEAM=0 HANDOFF_SSH_USER="" HANDOFF_SSH_ADDR=""
 # TEST SEAMS, honoured only WITHOUT root. Unprivileged, every one of them points
 # the caller at its OWN files with its OWN rights, so none of them can grant
 # anything; under root the paths are fixed, whatever the environment says.
@@ -7917,6 +7926,11 @@ if [[ $EUID -ne 0 ]]; then
   CONNECT_TG_API="${FIVEDIVE_TELEGRAM_API:-$CONNECT_TG_API}"
   CONNECT_SELF="${FIVEDIVE_BROWSER_CONNECT_SELF:-$CONNECT_SELF}"
   [[ -n "${FIVEDIVE_BROWSER_CONNECT_PRIV:-}" ]] && CONNECT_PRIV=("$FIVEDIVE_BROWSER_CONNECT_PRIV" _connect)
+  # DIVE-6111: who and where the SSH steps name, instead of reading this box's
+  # groups and interfaces. Set but empty is the "not known" placeholder case.
+  if [[ -n "${FIVEDIVE_BROWSER_SSH_USER+x}${FIVEDIVE_BROWSER_SSH_ADDR+x}" ]]; then
+    HANDOFF_SSH_SEAM=1 HANDOFF_SSH_USER="${FIVEDIVE_BROWSER_SSH_USER-}" HANDOFF_SSH_ADDR="${FIVEDIVE_BROWSER_SSH_ADDR-}"
+  fi
 fi
 
 # Who asked. Under root it is the kernel's answer through sudo (env_reset sets
@@ -7981,6 +7995,124 @@ _connect_page_ok() {  # <site> <url>
   [[ -n "$host" ]] && _shot_host_ok "$1" "$host"
 }
 
+# ------------------------------------------------ handoff over SSH (DIVE-6111)
+#
+# A SELF-HOSTED BOX HAS NO LINK TO SEND. The hosted handoff is a one-time URL
+# served by the box's HTTPS front (shelld's relay + a viewer ticket); an
+# open-source box has no domain and no front, so a Connect tap could only fail
+# at "the relay did not accept". lodar, 2026-10-12: "how can clicker send a link
+# to take over if oss 5dive has not domain? just use ip?" — no: a bare-IP link
+# would be a public listener. The owner already reaches the box over SSH, so the
+# handoff starts the view on loopback and hands them the exact lines instead.
+# Nothing new listens anywhere but 127.0.0.1 (cmd_viewer: x11vnc -localhost,
+# websockify on 127.0.0.1), and the password goes out as the command that
+# reads it, never as its value.
+HANDOFF_SSH_TTL=1800   # how long the view waits for them to connect
+HANDOFF_SSH_LOCAL_PORT=5900
+
+# Does this box have the hosted front? provisioning.env is written only on a
+# box 5dive built (the same test `5dive doctor` and the installer use); a copy
+# a seat cannot read still says "hosted", so only root's reading of it can
+# send a box down the SSH path.
+_connect_has_front() {
+  [[ -e "$CONNECT_PROVISIONING_ENV" ]] || return 1
+  [[ -r "$CONNECT_PROVISIONING_ENV" ]] || return 0
+  grep -q '^FIVE_DOMAIN=.' "$CONNECT_PROVISIONING_ENV"
+}
+
+# Whose window is it? The caller's own profile first, then the box login it is
+# brokered to — _resolve_site's order, read from root's side.
+_connect_window_owner() {  # <caller> <site>
+  if [[ ! -d "$PROFILE_ROOT/$1/$2" && "$1" != "$BOX_SEAT" && -f "$(_rv_offer "$BOX_SEAT" "$2")" ]]; then
+    printf '%s\n' "$BOX_SEAT"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# user@address for the owner's laptop. The address is the box's public IPv4 if
+# it has one on an interface; the user is the one human in the sudo group. When
+# either is not known for certain it is a NAMED placeholder, never a guess.
+_handoff_ssh_target() {
+  local u="" a="" x; local -a cands=()
+  if (( HANDOFF_SSH_SEAM )); then u="$HANDOFF_SSH_USER" a="$HANDOFF_SSH_ADDR"
+  else
+    for x in $(getent group sudo admin wheel 2>/dev/null | cut -d: -f4 | tr ',' ' '); do
+      [[ "$x" == root || "$x" == "$BOX_SEAT" || "$x" == agent-* ]] && continue
+      [[ " ${cands[*]} " == *" $x "* ]] || cands+=("$x")
+    done
+    (( ${#cands[@]} == 1 )) && u="${cands[0]}"
+    a=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 \
+        | grep -vE '^(10\.|127\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.)' | head -1)
+  fi
+  [[ "$u" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || u="<your-sudo-user>"
+  [[ "$a" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || a="<your-box-address>"
+  printf '%s@%s\n' "$u" "$a"
+}
+
+# The steps, as plain text or as Telegram HTML (commands in <code>, so nothing
+# in them is turned into a link or previewed).
+_handoff_ssh_steps() {  # <plain|html> <site> <vnc port> <password file> <seat> <reason>
+  local fmt="$1" site="$2" vport="$3" pwf="$4" seat="$5" reason="$6" who="${5#agent-}" tgt
+  tgt=$(_handoff_ssh_target)
+  _hs_t() { if [[ "$fmt" == html ]]; then sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<<"$1" | tr -d '\n'; else printf '%s' "$1"; fi; }
+  _hs_c() { if [[ "$fmt" == html ]]; then printf '<code>%s</code>' "$(_hs_t "$1")"; else printf '  %s' "$1"; fi; }
+  _hs_t "🖐 $who is working in $site on this box and needs you to take over."; printf '\n'
+  [[ -n "$reason" ]] && { _hs_t "What for: $reason"; printf '\n'; }
+  printf '\n'
+  _hs_t "The same browser window is waiting for you over SSH. Nothing on it is public, so there is no link. On your laptop:"; printf '\n\n'
+  _hs_t "1. Open the tunnel and leave it running:"; printf '\n'
+  _hs_c "ssh -N -L $HANDOFF_SSH_LOCAL_PORT:127.0.0.1:$vport $tgt"; printf '\n'
+  _hs_t "2. Get the one-time VNC password:"; printf '\n'
+  _hs_c "ssh -t $tgt sudo cat $pwf"; printf '\n'
+  _hs_t "3. Open this in Screen Sharing (Mac) or any VNC client, and enter the password:"; printf '\n'
+  _hs_c "vnc://localhost:$HANDOFF_SSH_LOCAL_PORT"; printf '\n\n'
+  _hs_t "$who is paused while you are in it. When you are finished, close the VNC window, then $( [[ "$fmt" == html ]] && printf 'tap Done' || printf 'tell %s, or run on the box: sudo -u %s 5dive browser handoff %s --close' "$who" "$seat" "$site" ). It carries on from the page you left. The view closes if nobody connects within $(( HANDOFF_SSH_TTL / 60 )) minutes."; printf '\n'
+  unset -f _hs_t _hs_c
+}
+
+# Root's half: start the view on the window's owner seat, then send the steps
+# to the paired owner with a Done button, or print them when nobody is paired.
+_connect_handoff_ssh() {  # <caller> <site> <reason>
+  local caller="$1" site="$2" reason="$3" owner err rc line vport pwf sent=0 o resp done_code f text kb
+  owner=$(_connect_window_owner "$caller" "$site")
+  err=$(mktemp)
+  rc=0; _connect_as_seat "$owner" viewer "$site" --bind=local "--ttl=$HANDOFF_SSH_TTL" >/dev/null 2>"$err" || rc=$?
+  line=$(grep -m1 '^local view: ' "$err"); local why; why=$(tail -1 "$err"); rm -f "$err"
+  (( rc == 0 )) || die "$E_UNAVAILABLE" "could not open a view of the $site window: $why"
+  vport=$(sed -n 's/.*127\.0\.0\.1:\([0-9]\{1,5\}\) of this box.*/\1/p' <<<"$line")
+  pwf=$(sed -n 's/.*: sudo cat \(\/.*\/\.5dive-viewer\.pw\)$/\1/p' <<<"$line")
+  if [[ ! "$vport" =~ ^[0-9]{1,5}$ || ! "$pwf" =~ ^/[A-Za-z0-9._/@+-]+$ ]]; then
+    _connect_as_seat "$owner" viewer-revoke "$site" >/dev/null 2>&1 || true
+    die "$E_UNAVAILABLE" "the $site view did not say where it listens; it was closed and nothing was sent"
+  fi
+  if _connect_channel "$caller" && [[ "$CONNECT_TG_TYPE" == claude && -n "$CONNECT_TG_OWNERS" ]]; then
+    mkdir -p "$CONNECT_DIR" && chmod 700 "$CONNECT_DIR" || die "$E_UNAVAILABLE" "cannot create $CONNECT_DIR"
+    done_code=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    f=$(_connect_file "$done_code")
+    ( umask 077; printf 'op=done\nseat=%s\nsite=%s\nexpires_at=%s\nkind=handoff\nurl=\nowner=%s\n' \
+        "$caller" "$site" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" "$owner" > "$f" )
+    text=$(_handoff_ssh_steps html "$site" "$vport" "$pwf" "$caller" "$reason")
+    kb=$(jq -nc --arg d "bdone:${done_code}" '{inline_keyboard:[[{text:"Done — carry on",callback_data:$d}]]}')
+    for o in $CONNECT_TG_OWNERS; do
+      resp=$(_connect_tg sendMessage --data-urlencode "chat_id=$o" --data-urlencode "text=$text" \
+               --data-urlencode "parse_mode=HTML" --data-urlencode 'link_preview_options={"is_disabled":true}' \
+               --data-urlencode "reply_markup=$kb")
+      [[ "$(jq -r '.ok // false' <<<"$resp" 2>/dev/null)" == true ]] && sent=$((sent + 1))
+    done
+    if (( sent > 0 )); then
+      printf 'this box has no web front, so there is no link: sent the owner the SSH steps to the live %s window (%s message%s), with a Done button. The view waits %s minutes for them to connect.\n' \
+        "$site" "$sent" "$([[ $sent == 1 ]] || echo s)" "$(( HANDOFF_SSH_TTL / 60 ))"
+      return 0
+    fi
+    rm -f "$f"
+    printf 'Telegram did not accept the message, so the owner was not told. Give them these steps:\n\n'
+  else
+    printf 'this box has no web front and this seat has no paired Telegram owner, so there is no link and nobody was messaged. Give the owner these steps:\n\n'
+  fi
+  _handoff_ssh_steps plain "$site" "$vport" "$pwf" "$caller" "$reason"
+}
+
 _connect_request() {  # <caller> <site> <reason> [challenge <url> | handoff]
   local caller="$1" site="$2" reason="$3" kind="${4:-login}" url="${5:-}" code f now exp label text kb sent=0 o resp
   _valid_site "$site" && [[ "$site" != "$PUBLIC_SITE" ]] \
@@ -7994,6 +8126,9 @@ _connect_request() {  # <caller> <site> <reason> [challenge <url> | handoff]
     kind=login url=""
   fi
   reason=$(printf '%s' "$reason" | tr -d '\000-\037\177' | cut -c1-"$CONNECT_REASON_MAX")
+  if [[ "$kind" == handoff ]] && ! _connect_has_front; then
+    _connect_handoff_ssh "$caller" "$site" "$reason"; return
+  fi
   _connect_channel "$caller" \
     || die "$E_UNAVAILABLE" "seat '$caller' has no paired Telegram channel, so there is nobody to ask. Ask the owner to use Connected sites in the 5dive dashboard."
   [[ "$CONNECT_TG_TYPE" == claude ]] \
@@ -8070,15 +8205,20 @@ _connect_claim() {  # <caller> <code> <op> <sender>  -> sets CONNECT_SITE; print
   CONNECT_SITE=$(_connect_field "$claimed" site)
   CONNECT_KIND=$(_connect_field "$claimed" kind)
   CONNECT_URL=$(_connect_field "$claimed" url)
+  CONNECT_OWNER=$(_connect_field "$claimed" owner)   # DIVE-6111: an SSH handoff's window seat
   [[ "$CONNECT_KIND" == challenge ]] || CONNECT_KIND=login CONNECT_URL=""
   rm -f "$claimed"
 }
 
 # Run a browser verb as the relay seat, exactly as shelld's
 # `sudo -n 5dive browser …` does for the dashboard. The audit row names who asked.
-_connect_as_box() {
+_connect_as_box() { _connect_as_seat "$BOX_SEAT" "$@"; }
+# The same, as a named seat: a self-hosted box's handoff window is usually the
+# asking agent's own browser, not the relay seat's (DIVE-6111).
+_connect_as_seat() {  # <seat> <browser verb args...>
+  local seat="$1"; shift
   if [[ $EUID -eq 0 ]]; then
-    runuser -u "$BOX_SEAT" -- env -u SUDO_USER -u SUDO_UID -u SUDO_GID -u SUDO_COMMAND \
+    runuser -u "$seat" -- env -u SUDO_USER -u SUDO_UID -u SUDO_GID -u SUDO_COMMAND \
       -u FIVEDIVE_BROWSER_SEAT FIVEDIVE_BROWSER_ON_BEHALF_OF="$CONNECT_CALLER" "$CONNECT_SELF" "$@"
   else
     "$CONNECT_SELF" "$@"
@@ -8182,6 +8322,19 @@ _connect_done() {  # <caller> <code> <sender>
     _connect_as_box serve "$site" "${at[@]}" >/dev/null 2>&1 \
       || st="the view is closed; the browser did not restart for the agent, so its next command starts it (the cleared check is kept in the profile)"
     printf 'site=%s\nkind=challenge\nstatus_rc=0\nstatus=%s\n' "$site" "$st"
+    return 0
+  fi
+  # AN SSH HANDOFF'S WINDOW IS ITS OWNER SEAT'S (DIVE-6111): on a self-hosted
+  # box that is usually the agent itself, not the relay seat. Root wrote the
+  # seat into the Done code; it is re-checked to be the caller or the box seat.
+  if [[ -n "$CONNECT_OWNER" ]]; then
+    [[ "$CONNECT_OWNER" == "$caller" || "$CONNECT_OWNER" == "$BOX_SEAT" ]] || die "$E_PERM" "the request names no usable seat"
+    _connect_as_seat "$CONNECT_OWNER" viewer-revoke "$site" >/dev/null 2>&1 || true
+    _connect_as_seat "$CONNECT_OWNER" handoff "$site" --close >/dev/null 2>&1 || true
+    rc=0; out=$(_connect_as_seat "$CONNECT_OWNER" status "$site" 2>&1) || rc=$?
+    local v; v=$(printf '%s\n' "$out" | awk -v s="$site" '$1 == s { sub(/^[ \t]+/, ""); sub(/[ \t]+/, " "); print; exit }')
+    [[ -n "$v" ]] || v=$(printf '%s\n' "$out" | grep -v '^$' | tail -1)
+    printf 'site=%s\nstatus_rc=%s\nstatus=%s\n' "$site" "$rc" "$v"
     return 0
   fi
   # revoke -> stop -> probe, in that order: a served profile cannot be probed
@@ -8835,6 +8988,28 @@ cmd_handoff() {
       if (( ask )); then
         local rc=0
         printf '%s\0' handoff "$site" "$reason" | "${CONNECT_PRIV[@]}" || rc=$?
+        # SUDO REFUSED, ON A BOX WITH NO FRONT (DIVE-6111): a seat without the
+        # _connect grant still owns its window, so it starts the loopback view
+        # itself and prints the SSH steps. (rc 1 is sudo's refusal; every die
+        # here is 64 or above.) A brokered window is the box seat's to open.
+        if (( rc == 1 )) && ! _connect_has_front && (( ! _SITE_BROKERED )); then
+          local verr vline vport pwf
+          verr=$(mktemp)
+          if ( cmd_viewer "$site" --bind=local "--ttl=$HANDOFF_SSH_TTL" ) >/dev/null 2>"$verr"; then
+            vline=$(grep -m1 '^local view: ' "$verr")
+            vport=$(sed -n 's/.*127\.0\.0\.1:\([0-9]\{1,5\}\) of this box.*/\1/p' <<<"$vline")
+            pwf=$(sed -n 's/.*: sudo cat \(\/.*\/\.5dive-viewer\.pw\)$/\1/p' <<<"$vline")
+            if [[ "$vport" =~ ^[0-9]{1,5}$ && -n "$pwf" ]]; then
+              rm -f "$verr"
+              printf 'this box has no web front, so there is no link, and the owner could not be messaged. Give them these steps:\n\n'
+              _handoff_ssh_steps plain "$site" "$vport" "$pwf" "$(_seat)" "$reason"
+              printf 'Wait for them:  5dive browser handoff %s --wait\n' "$site"
+              return 0
+            fi
+          fi
+          printf '%s: the view for the owner did not start: %s\n' "$PROG" "$(tail -1 "$verr")" >&2
+          rm -f "$verr"
+        fi
         if (( rc != 0 )); then
           printf '%s: the owner could not be asked over Telegram (above). They can take over from the dashboard: Connected sites -> %s -> Connect opens this same window.\n' "$PROG" "$site" >&2
         fi
