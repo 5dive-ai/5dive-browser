@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+# DIVE-6089 — `sudo 5dive browser setup` installs the box stack a self-hosted box
+# lacks (chrome, Xvfb, x11vnc, websockify, Node >= 20, the pinned playwright-core),
+# and touches nothing on a box that already has it (every hosted VM).
+#
+# Driven through the real bin/browser as a subprocess. Nothing real is installed:
+# apt-get, curl, gpg, dpkg and npm are fakes on a SANDBOX PATH that holds only the
+# core tools setup needs — a CI runner ships its own chrome, Xvfb and node, and a
+# PATH that could see them would grade the runner instead of setup. The fake
+# apt-get "installs" a package by dropping its binary into the sandbox, so every
+# predicate setup re-checks after an install reads the box it would really see.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+ROOT="$PWD"
+TMP="$(mktemp -d)"
+trap 'rc=$?; rm -rf "$TMP"; echo "HARNESS-RC=$rc"' EXIT
+PASS=0; FAIL=0
+t()  { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL: %s\n   expected: %s\n   got:      %s\n' "$1" "$2" "$3"; fi; }
+tc() { if [[ "$3" == *"$2"* ]]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL: %s\n   expected to contain: %s\n   got: %s\n' "$1" "$2" "$3"; fi; }
+tn() { if [[ "$3" != *"$2"* ]]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL: %s\n   expected NOT to contain: %s\n   got: %s\n' "$1" "$2" "$3"; fi; }
+SEAT="$(id -un)"
+PIN=$(sed -n 's/.*"playwright-core"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' browser/package.json)
+t 'T0 the package pins a playwright-core (anchor)' yes "$([[ "$PIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo yes || echo no)"
+
+# --- the sandbox -------------------------------------------------------------
+CORE="$TMP/core"; mkdir -p "$CORE"
+REALID="$(command -v id)"
+for c in bash env sed head tail paste mkdir chmod chown cat rm cp mv ln stat grep awk timeout \
+         tr sort date mktemp dirname basename readlink realpath uname wc cut tee touch sleep \
+         jq getent printf ls find xargs flock pgrep sha256sum; do
+  p=$(command -v "$c" 2>/dev/null) && [[ "$p" == /* ]] && ln -sf "$p" "$CORE/$c"
+done
+cat > "$CORE/id" <<ID
+#!$(command -v bash)
+[[ "\$*" == "-u" ]] && { echo 0; exit 0; }
+exec "$REALID" "\$@"
+ID
+for c in systemctl visudo 5dive; do printf '#!%s\nexit 0\n' "$(command -v bash)" > "$CORE/$c"; done
+cat > "$CORE/dpkg" <<'DPKG'
+#!/usr/bin/env bash
+# --print-architecture, and `-s libnode-dev` answered from a marker in the box.
+[[ "$1" == --print-architecture ]] && { echo amd64; exit 0; }
+[[ "$1" == -s && "$2" == libnode-dev && -e "$BOX_DIR/.libnode-dev" ]] && exit 0
+exit 1
+DPKG
+printf '#!%s\necho "curl $*" >> "$STACK_LOG"; echo FAKEKEY\n' "$(command -v bash)" > "$CORE/curl"
+cat > "$CORE/gpg" <<'GPG'
+#!/usr/bin/env bash
+o=""; while (($#)); do [[ "$1" == -o ]] && { o="$2"; shift; }; shift; done
+cat > "${o:-/dev/null}"
+GPG
+chmod +x "$CORE/id" "$CORE/systemctl" "$CORE/visudo" "$CORE/5dive" "$CORE/dpkg" "$CORE/curl" "$CORE/gpg"
+
+# The fake apt-get. `install <pkg>...` drops each package's binaries into $BOX
+# unless APT_FAIL names it. NODE_VER is what the installed nodejs answers.
+mk_node() {  # mk_node <version> — a node (and npm) on the sandbox PATH
+  printf '#!%s\necho v%s\n' "$(command -v bash)" "$1" > "$BOX/node"; chmod +x "$BOX/node"
+  cat > "$BOX/npm" <<'NPM'
+#!/usr/bin/env bash
+echo "npm $*" >> "$STACK_LOG"
+d=""; a=("$@"); for ((i=0;i<${#a[@]};i++)); do [[ "${a[i]}" == --prefix ]] && d="${a[i+1]}"; done
+[[ -n "$d" && "$1" == install ]] || exit 1
+mkdir -p "$d/node_modules/playwright-core"
+printf '{\n  "name": "playwright-core",\n  "version": "%s"\n}\n' "${NPM_VERSION:?}" > "$d/node_modules/playwright-core/package.json"
+exit "${NPM_RC:-0}"
+NPM
+  chmod +x "$BOX/npm"
+}
+cat > "$CORE/apt-get.real" <<'APT'
+#!/usr/bin/env bash
+echo "apt-get $*" >> "$STACK_LOG"
+BOX="$BOX_DIR"; sub=""; pk=()
+for a in "$@"; do case "$a" in -*|DPkg::*) ;; update|install|remove) sub="$a" ;; *) [[ -n "$sub" ]] && pk+=("$a") ;; esac; done
+# Ubuntu's libnode-dev blocks NodeSource's nodejs (dpkg overwrite); remove clears it.
+[[ "$sub" == remove ]] && { for p in "${pk[@]}"; do [[ "$p" == libnode-dev ]] && rm -f "$BOX/.libnode-dev"; done; exit 0; }
+[[ "$sub" == install ]] || exit 0
+rc=0
+for p in "${pk[@]}"; do
+  [[ " ${APT_FAIL:-} " == *" $p "* ]] && { rc=100; continue; }
+  [[ "$p" == nodejs && -e "$BOX/.libnode-dev" ]] && { rc=100; continue; }
+  case "$p" in
+    xvfb) b=(Xvfb) ;; google-chrome-stable) b=(google-chrome-stable) ;; nodejs) b=() ;;
+    *) b=("$p") ;;
+  esac
+  for x in "${b[@]}"; do printf '#!/usr/bin/env bash\nexit 0\n' > "$BOX/$x"; chmod +x "$BOX/$x"; done
+  [[ "$p" == nodejs ]] && { "$MK_NODE" "${NODE_VER:-22.11.0}"; }
+done
+exit "$rc"
+APT
+chmod +x "$CORE/apt-get.real"
+MK_NODE="$TMP/mk_node"
+{ printf '#!%s\nBOX=%q\n' "$(command -v bash)" ""; declare -f mk_node; printf 'BOX="$BOX_DIR"; mk_node "$1"\n'; } > "$MK_NODE"; chmod +x "$MK_NODE"
+export MK_NODE
+
+# fresh_box [with-apt] — a new sandbox: package copy, empty BOX, empty logs.
+fresh_box() {
+  rm -rf "$TMP/box" "$TMP/pkg" "$TMP/state" "$TMP/aproot"
+  BOX="$TMP/box"; mkdir -p "$BOX" "$TMP/state" "$TMP/aproot"
+  cp -r "$ROOT/browser" "$TMP/pkg"; rm -rf "$TMP/pkg/node_modules"
+  [[ "${1:-apt}" == apt ]] && ln -s "$CORE/apt-get.real" "$BOX/apt-get"
+  export BOX_DIR="$BOX" STACK_LOG="$TMP/stack.log"; : > "$STACK_LOG"
+}
+full_box() {  # everything a hosted VM has
+  for x in Xvfb google-chrome-stable x11vnc websockify; do printf '#!/usr/bin/env bash\nexit 0\n' > "$BOX/$x"; chmod +x "$BOX/$x"; done
+  mk_node 22.11.0
+  mkdir -p "$TMP/pkg/node_modules/playwright-core"
+  printf '{\n  "name": "playwright-core",\n  "version": "%s"\n}\n' "$PIN" > "$TMP/pkg/node_modules/playwright-core/package.json"
+}
+setup_go() {  # setup_go [bin] — run setup in the sandbox
+  local bin="${1:-$TMP/pkg/bin/browser}" o="$TMP/.o" e="$TMP/.e"
+  env -i HOME="$TMP" PATH="$BOX:$CORE" STATE_DIR="$TMP/state" \
+    FIVEDIVE_BROWSER_SEAT="${SEAT_AS:-$SEAT}" FIVEDIVE_BROWSER_AGENT_GROUP="$(id -gn)" \
+    FIVEDIVE_BROWSER_PROFILE_ROOT="$TMP/state/browser-profiles" \
+    FIVEDIVE_BROWSER_SYSTEMD_DIR="$TMP/systemd" FIVEDIVE_BROWSER_SYSTEMCTL=systemctl \
+    FIVEDIVE_BROWSER_SUDOERS_DIR="$TMP/sudoers" FIVEDIVE_BROWSER_VISUDO="$CORE/visudo" \
+    FIVEDIVE_BROWSER_STACK_ROOT="$TMP/aproot" ${STACK_ENV:+FIVEDIVE_BROWSER_STACK=$STACK_ENV} \
+    STACK_LOG="$STACK_LOG" BOX_DIR="$BOX" MK_NODE="$MK_NODE" NPM_VERSION="${NPM_VERSION:-$PIN}" \
+    NODE_VER="${NODE_VER:-22.11.0}" APT_FAIL="${APT_FAIL:-}" \
+    "$bin" setup >"$o" 2>"$e"
+  RC=$?; OUT=$(cat "$o"); ERR=$(cat "$e"); LOG=$(cat "$STACK_LOG")
+}
+mkdir -p "$TMP/systemd" "$TMP/sudoers"
+pin_have() { sed -n 's/.*"version": "\(.*\)".*/\1/p' "$TMP/pkg/node_modules/playwright-core/package.json" 2>/dev/null; }
+
+# --- T1 a fresh Ubuntu box: nothing there, apt present -------------------------
+fresh_box; setup_go
+t  'T1 fresh box: setup exits 0'                       0 "$RC"
+tc 'T1 ...names what it is about to install'           'installing what the browser needs and this box lacks: Xvfb (xvfb), chrome (google-chrome-stable), x11vnc, websockify (novnc), Node.js >= 20 (none), playwright-core' "$OUT"
+tc 'T1 ...apt installs exactly the three X packages'   'install xvfb x11vnc websockify' "$LOG"
+tc 'T1 ...chrome is Google'"'"'s deb, not the chromium snap shim' 'install google-chrome-stable' "$LOG"
+tn 'T1 ...and the fallback is never asked for'         'install chromium' "$LOG"
+tc 'T1 ...Google'"'"'s repo is signed and amd64'       'deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main' "$(cat "$TMP/aproot/etc/apt/sources.list.d/google-chrome.list" 2>/dev/null)"
+tc 'T1 ...Node comes from NodeSource 22'               'deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main' "$(cat "$TMP/aproot/etc/apt/sources.list.d/nodesource.list" 2>/dev/null)"
+tc 'T1 ...apt installs nodejs'                         'install nodejs' "$LOG"
+tc 'T1 ...npm: the hosted converger'"'"'s exact flags, into the package' "npm install --prefix $TMP/pkg --omit=dev --ignore-scripts --no-audit --no-fund --no-package-lock --loglevel=error" "$LOG"
+t  'T1 ...playwright-core lands at the pin'            "$PIN" "$(pin_have)"
+for w in 'installed xvfb' 'installed x11vnc' 'installed websockify' 'installed google-chrome-stable' 'installed Node.js v22.11.0 (NodeSource 22)' "installed playwright-core $PIN" 'browser stack ready'; do
+  tc "T1 ...says: $w" "$w" "$OUT"
+done
+tc 'T1 ...and still makes the store'                   'profile store ready' "$OUT"
+t  'T1 ...nothing on stderr'                           '' "$ERR"
+t  'T1 ...apt-get update ran once per new source, not per package' 3 "$(grep -c '^apt-get .* update' "$STACK_LOG")"
+
+# --- T2 a hosted box: everything present --------------------------------------
+fresh_box; full_box; STACK_ENV=off setup_go; OFF_OUT="$OUT"
+: > "$STACK_LOG"; setup_go
+t  'T2 hosted box: setup exits 0'                      0 "$RC"
+t  'T2 ...apt, curl and npm are never called'          '' "$LOG"
+t  'T2 ...stdout is byte-identical to a setup with the stack step off' "$OFF_OUT" "$OUT"
+t  'T2 ...nothing on stderr'                           '' "$ERR"
+t  'T2 ...no apt source written'                       0 "$(find "$TMP/aproot" -type f | wc -l)"
+
+# --- T3 Node 18 (Ubuntu 24.04's apt nodejs) ends at >= 20, pin installed ------
+fresh_box; full_box; mk_node 18.19.1; rm -rf "$TMP/pkg/node_modules"
+setup_go
+t  'T3 node 18: setup exits 0'                         0 "$RC"
+tc 'T3 ...names the old node'                          'Node.js >= 20 (found 18)' "$OUT"
+tc 'T3 ...installs nodejs'                             'install nodejs' "$LOG"
+tc 'T3 ...and says from what'                          'installed Node.js v22.11.0 (NodeSource 22, was 18)' "$OUT"
+t  'T3 ...node on PATH is now 22'                      'v22.11.0' "$("$BOX/node" --version)"
+t  'T3 ...playwright-core at the pin'                  "$PIN" "$(pin_have)"
+tn 'T3 ...the present X packages are not reinstalled'  'xvfb' "$LOG"
+tn 'T3 ...nor chrome'                                  'chrome' "$LOG"
+
+# --- T3b Node 18 + Ubuntu's npm (libnode-dev): the dpkg overwrite is cleared once
+fresh_box; full_box; mk_node 18.19.1; rm -rf "$TMP/pkg/node_modules"; : > "$BOX/.libnode-dev"
+setup_go
+t  'T3b node 18 + libnode-dev: setup exits 0'          0 "$RC"
+tc 'T3b ...says it removes libnode-dev, and why'       "removing Ubuntu's libnode-dev" "$OUT"
+tc 'T3b ...removes exactly that package'               'remove libnode-dev' "$LOG"
+t  'T3b ...and installs nodejs twice (fail, then retry)' 2 "$(grep -c 'install nodejs' "$STACK_LOG")"
+t  'T3b ...node on PATH is now 22'                     'v22.11.0' "$("$BOX/node" --version)"
+t  'T3b ...playwright-core at the pin'                 "$PIN" "$(pin_have)"
+fresh_box; full_box; mk_node 18.19.1; rm -rf "$TMP/pkg/node_modules"
+setup_go
+tn 'T3c node 18 without libnode-dev: nothing is removed' 'remove' "$LOG"
+
+# --- T4 Node 22 already there: never touched -----------------------------------
+fresh_box; full_box; mk_node 22.3.0; rm -rf "$TMP/pkg/node_modules"
+SUM=$(sha256sum "$BOX/node")
+setup_go
+t  'T4 node 22: setup exits 0'                         0 "$RC"
+tn 'T4 ...nodejs is never asked for'                   'nodejs' "$LOG"
+tn 'T4 ...NodeSource is never fetched'                 'nodesource' "$LOG"
+t  'T4 ...node is byte-identical'                      "$SUM" "$(sha256sum "$BOX/node")"
+t  'T4 ...and still answers 22.3.0'                    'v22.3.0' "$("$BOX/node" --version)"
+t  'T4 ...the pin is installed'                        "$PIN" "$(pin_have)"
+t  'T4 ...apt is never called at all'                  0 "$(grep -c '^apt-get' "$STACK_LOG")"
+
+# --- T5 no apt-get: the named list, nothing installed, the store still made ---
+fresh_box noapt; setup_go
+t  'T5 no apt: setup still exits 0 (agent create must not fail on it)' 0 "$RC"
+tc 'T5 ...refuses to install, naming every missing piece' 'missing Xvfb (xvfb), chrome (google-chrome-stable), x11vnc, websockify (novnc), Node.js >= 20 (none), playwright-core' "$ERR"
+tc 'T5 ...and why'                                     'it has no apt-get, so setup installs nothing' "$ERR"
+t  'T5 ...nothing was fetched or run'                  '' "$LOG"
+tc 'T5 ...the store is still made'                     'profile store ready' "$OUT"
+
+# --- T6 an apt failure is named, never fatal ----------------------------------
+fresh_box; APT_FAIL="x11vnc google-chrome-stable chromium" setup_go
+t  'T6 apt fails for some: setup exits 0'              0 "$RC"
+tc 'T6 ...names the X package it could not install'    'could not install x11vnc' "$ERR"
+tc 'T6 ...tries chromium only after Google'"'"'s chrome failed' 'install chromium' "$LOG"
+tc 'T6 ...and names the chrome failure'                'could not install a chrome' "$ERR"
+tc 'T6 ...the closing line lists what is still missing' 'still missing after install: chrome (google-chrome-stable), x11vnc' "$ERR"
+tc 'T6 ...what did install is still said'              'installed xvfb' "$OUT"
+tc 'T6 ...the store is still made'                     'profile store ready' "$OUT"
+
+# --- T7 npm exits 0 at the wrong version: graded on the box, not the exit -----
+fresh_box; full_box; rm -rf "$TMP/pkg/node_modules"; NPM_VERSION=1.0.0 setup_go
+t  'T7 wrong version: setup exits 0'                   0 "$RC"
+tc 'T7 ...says npm left the wrong version'             "playwright-core reads '1.0.0' in $TMP/pkg where the pin is $PIN" "$ERR"
+tn 'T7 ...and never claims it installed'               'installed playwright-core' "$OUT"
+
+# --- T8 root operator: the stack is converged before the root-seat refusal ----
+fresh_box; SEAT_AS=root setup_go
+t  'T8 root: still refused as a seat (exit 64)'        64 "$RC"
+tc 'T8 ...but the stack went in first'                 'browser stack ready' "$OUT"
+tc 'T8 ...and the refusal says where seat stores come from' 'agent seat gets its store at `5dive agent create`' "$ERR"
+
+# --- T9 MUTANT: setup without the converge call is T1-red ---------------------
+MUT="$TMP/mutant"; rm -rf "$MUT"; cp -r "$ROOT/browser" "$MUT"
+perl -pi -e 's/^  _stack_converge \|\| true$/  : # MUTANT (DIVE-6089)/' "$MUT/bin/browser"
+t  'T9 (anchor) the mutation landed'                   1 "$(grep -c 'MUTANT (DIVE-6089)' "$MUT/bin/browser")"
+fresh_box; setup_go "$MUT/bin/browser"
+t  'T9 MUTANT: nothing is installed — T1 would be red' '' "$LOG"
+tn 'T9 MUTANT: ...and no install line'                 'installing what the browser needs' "$OUT"
+
+# --- T10 the stack step can be turned off (the other suite's arms use it) ------
+fresh_box; STACK_ENV=off setup_go
+t  'T10 FIVEDIVE_BROWSER_STACK=off: nothing called'    '' "$LOG"
+t  'T10 ...setup exits 0'                              0 "$RC"
+
+printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+[[ "$FAIL" -eq 0 ]]

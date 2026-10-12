@@ -10,16 +10,13 @@ person — the plugin never solves one.
 Tested on fresh Ubuntu 24.04 (2 vCPU / 4 GB) at OVH and Hetzner. You need a sudo user and your own
 Claude or OpenAI subscription or API key.
 
-**1. Install.** The hosted 5dive VMs come with Chrome, a virtual screen, VNC and Node. The
-open-source installer does not add them yet, so these lines do:
+**1. Install.** Three lines. The first agent's `browser setup` (which `init` runs for it) installs
+whatever the box is missing: Google Chrome, a virtual screen, VNC, Node.js 22 and the plugin's
+browser library. Each install is named as it runs, and on apt boxes only (Debian, Ubuntu).
 
 ```sh
 curl -fsSL https://install.5dive.ai | sudo bash
-wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt-get install -y ./google-chrome-stable_current_amd64.deb xvfb x11vnc websockify nodejs
 sudo 5dive plugin add 5dive-ai/5dive-browser
-sudo npm install --prefix /var/lib/5dive/plugins/enabled/browser@5dive-browser --omit=dev --ignore-scripts
 sudo 5dive init     # your first agent; run it AFTER the plugin so the agent gets a browser
 ```
 
@@ -100,6 +97,12 @@ browser verb"*) on every new box. After installing the plugin, a box still needs
 ```sh
 sudo 5dive browser setup
 ```
+
+On a **self-hosted** box, which never runs `browser-stack.sh`, that same command also installs
+the stack when it is missing (DIVE-6089): Google Chrome, `xvfb x11vnc websockify`, Node.js 22 from
+NodeSource when node is missing or older than 20, and the pinned playwright-core — apt boxes only,
+each install named, nothing touched that is already there. `agent create` runs `setup` for each
+new seat, so on a box where the plugin is added before `5dive init` it happens with no extra line.
 
 ## Layout
 
