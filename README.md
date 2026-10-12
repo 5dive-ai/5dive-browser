@@ -5,6 +5,58 @@ site **once, by hand**; the agent is granted the session and never the credentia
 deterministic adapters decide where to click. A security challenge is a hard stop that asks for a
 person — the plugin never solves one.
 
+## Run it on your own server
+
+Tested on fresh Ubuntu 24.04 (2 vCPU / 4 GB) at OVH and Hetzner. You need a sudo user and your own
+Claude or OpenAI subscription or API key.
+
+**1. Install.** The hosted 5dive VMs come with Chrome, a virtual screen, VNC and Node. The
+open-source installer does not add them yet, so these lines do:
+
+```sh
+curl -fsSL https://install.5dive.ai | sudo bash
+wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y ./google-chrome-stable_current_amd64.deb xvfb x11vnc websockify nodejs
+sudo 5dive plugin add 5dive-ai/5dive-browser
+sudo npm install --prefix /var/lib/5dive/plugins/enabled/browser@5dive-browser --omit=dev --ignore-scripts
+sudo 5dive init     # your first agent; run it AFTER the plugin so the agent gets a browser
+```
+
+**2. Sign in to a site once, by hand.** Chrome runs on the box's virtual screen, and you reach it
+over VNC through SSH:
+
+```sh
+cd /tmp
+A=agent-myagent   # your agent's Linux user: agent-<the name you gave it>
+S=github.com      # the site
+sudo -u $A 5dive browser auth $S                 # starts Chrome for a person to sign in
+sudo -u $A 5dive browser viewer $S --bind=local  # VNC on the box's 127.0.0.1:5900, one connection
+sudo cat /var/lib/5dive/browser-profiles/$A/$S/.5dive-viewer.pw   # its one-time password
+```
+
+On your laptop, run `ssh -N -L 5900:127.0.0.1:5900 you@your-box`, open `vnc://localhost:5900`
+(Screen Sharing on a Mac, or any VNC client), and sign in. Wait about 30 seconds after you are
+signed in, then close the window.
+
+**3. Let the agent use it.**
+
+```sh
+sudo -u $A 5dive browser serve $S --stop                             # saves the session
+sudo -u $A 5dive browser snapshot https://github.com/notifications   # what the agent runs
+```
+
+From then on the agent opens pages through that session itself. Nothing listens on the internet:
+the VNC server and its bridge bind to `127.0.0.1`, and the only way in is your SSH tunnel.
+
+- A read that says "logged out": sign in again and wait longer before `--stop`. A site that signs
+  you out when the browser closes will not stay signed in; tick "remember me".
+- An agent created before the plugin has no browser yet. Give it one, as root:
+  `SUDO_USER=agent-myagent 5dive browser setup`.
+- github.com, reddit.com, x.com, google.com, booking.com, tiktok.com and web.telegram.org ship a
+  sign-in check. Other sites are checked at their home page, so a home page that always shows a
+  login form reads as logged out.
+
 ## Install
 
 ```sh
