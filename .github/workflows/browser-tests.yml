@@ -74,6 +74,11 @@ jobs:
         run: npm install --prefix browser --no-audit --no-fund
       - name: totp harness
         run: bash tests/browser_totp_unit.sh
+      # DIVE-6013: profile groups — two sites in one group share a sign-in, another
+      # group does not, a pre-upgrade profile resolves unchanged; the L arms set a
+      # real Google cookie through one site and read it from the other in real Chrome.
+      - name: profile groups harness
+        run: bash tests/browser_groups_unit.sh
       # DIVE-5751: a file an act downloads reaches the seat. lib arms, cold `act`
       # with the recording stub, and a live arm in real Chrome against a local page.
       - name: act download harness

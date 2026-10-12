@@ -8,6 +8,28 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — profile groups: Google once per group, not once per site (DIVE-6013), 1.34.0
+
+lodar, 2026-10-11: "all signups hit fresh login by google flow". Each connected site had its own
+browser profile, so Google signed in on google.com was not signed in for fireflies.ai, and every
+new site's "Continue with Google" was a fresh Google sign-in — one Google often refuses in an
+automated browser, so the agent stopped and asked the owner every time.
+
+- **A group is one browser profile its sites share.** Sign in to Google once in the group and
+  every site in it sees the account. Groups never share with each other: a second Google account
+  is a second group.
+- **New sites join the default group, Main.** Sites connected before this release keep their own
+  profiles untouched; nothing is merged behind the owner's back. `group move <site> Main` moves
+  one (its own profile is kept aside and `--own` brings it back), `group move --all Main` moves
+  them all, and `group create Main --from=google.com` makes an existing profile the group's,
+  keeping its sign-ins.
+- **`5dive browser group ls|create|rename|move|default`**, with `ls --json` for the dashboard.
+  A labelled account (`site_label`) is its own profile by default, and a group holds one account
+  per site.
+- A group is one browser: a served group answers for each of its sites (one socket, a rendezvous
+  name per site), and forgetting a site in a group removes that site and its cookies, never the
+  group's other sign-ins.
+
 ### Fixed — public pages: a named site with no login opens them, and an act keeps the page for the next one (DIVE-5817), 1.33.2
 
 From the chill-gorge pass (DIVE-5733, part 3).
