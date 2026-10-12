@@ -71,7 +71,10 @@ case "$1" in
   viewer)
     [[ -f "$FAKE_CTL.badpath" ]] && { echo "not-a-path"; echo "one-time, expires 2099-01-01T00:00:00Z, bound to session x." >&2; exit 0; }
     printf '/browser/viewer/%s/%s\n' "$2" "$(printf 'a%.0s' $(seq 64))"
-    echo "one-time, expires 2099-01-01T00:00:00Z, bound to session ${3#--bind=}. Redeeming it consumes it." >&2 ;;
+    echo "one-time, expires 2099-01-01T00:00:00Z, bound to session ${3#--bind=}. Redeeming it consumes it." >&2
+    # DIVE-6111: a hand-run view says where it listens and how to read its password.
+    [[ "$3" == --bind=local && ! -f "$FAKE_CTL.novline" ]] \
+      && echo "local view: VNC on 127.0.0.1:5917 of this box only, one connection; its one-time password: sudo cat /var/lib/5dive/browser-profiles/agent-clicker/$2/.5dive-viewer.pw" >&2 ;;
   status)
     # DIVE-5638: the real shape of a BROKEN status — the site's verdict line,
     # then a paragraph that ends in a reproducer command, rc 69.
@@ -106,7 +109,7 @@ export FIVEDIVE_BROWSER_CONNECT_PRIV="$BROWSER"
 export FAKE_LOG="$TMP/fake.log" FAKE_CTL="$TMP/ctl"
 
 priv() { printf '%s\0' "$@" | "$BROWSER" _connect; }
-reset() { : >"$TMP/stub.log"; : >"$FAKE_LOG"; rm -f "$TMP"/ctl.{noprofile,authed,bind500,tgfail,badpath,servefail,broken}; }
+reset() { : >"$TMP/stub.log"; : >"$FAKE_LOG"; rm -f "$TMP"/ctl.{noprofile,authed,bind500,tgfail,badpath,servefail,broken,novline}; }
 binds() { grep -c '"/shell/browser-viewer-bind"' "$TMP/stub.log" 2>/dev/null || true; }
 last_code() { jq -r 'select(.path|test("sendMessage")) | .form.reply_markup' "$TMP/stub.log" | tail -1 | jq -r '.inline_keyboard[0][0].callback_data' | sed 's/^bconn://'; }
 
@@ -373,6 +376,69 @@ DONE=$(sed -n 's/^done=//p' <<<"$out"); : >"$FAKE_LOG"
 out=$(priv done "$DONE" "$OWNER" 2>&1); rc=$?
 t  "H3 Done on an input-mode site hands the window BACK and does not stop it" "viewer-revoke tiktok.com|handoff tiktok.com --close|status tiktok.com" "$(tr '\n' '|' <"$FAKE_LOG" | sed 's/|$//')"
 
+# ---- X: a self-hosted box (DIVE-6111) — no front, so SSH steps to the same window ----
+# No provisioning.env is what a box 5dive did not build looks like. The hosted
+# arms above ran WITH it, unchanged.
+export FIVEDIVE_PROVISIONING_ENV="$TMP/no-provisioning.env"
+export FIVEDIVE_BROWSER_SSH_USER=lodar FIVEDIVE_BROWSER_SSH_ADDR=203.0.113.7
+reset; rm -rf "$TMP/req"/*
+out=$(priv handoff tiktok.com "sign in to Google" 2>&1); rc=$?
+t  "X1 a self-host handoff exits 0" 0 "$rc"
+tc "X1 ... and tells the agent there is no link, the steps went out" "no web front, so there is no link: sent the owner the SSH steps" "$out"
+t  "X2 it starts the view on loopback, on the live window, as a hand-run" "viewer tiktok.com --bind=local --ttl=1800" "$(head -1 "$FAKE_LOG")"
+t  "X2 ... and NEVER registers a relay bind (there is no relay)" 0 "$(binds)"
+msg=$(jq -c 'select(.path|test("sendMessage"))' "$TMP/stub.log" | tail -1)
+txt=$(jq -r '.form.text' <<<"$msg")
+t  "X3 exactly one message, to the paired owner" "$OWNER" "$(jq -r '.form.chat_id' <<<"$msg")"
+tc "X3 ... the tunnel line, filled in, onto the view's REAL port" "<code>ssh -N -L 5900:127.0.0.1:5917 lodar@203.0.113.7</code>" "$txt"
+tc "X3 ... the password as the command that reads it" "<code>ssh -t lodar@203.0.113.7 sudo cat /var/lib/5dive/browser-profiles/agent-clicker/tiktok.com/.5dive-viewer.pw</code>" "$txt"
+tc "X3 ... where to point the VNC client" "<code>vnc://localhost:5900</code>" "$txt"
+tc "X3 ... what for" "What for: sign in to Google" "$txt"
+tc "X3 ... and to tap Done when finished" "tap Done" "$txt"
+tn "X4 NO http(s) link of any kind is sent" "http" "$txt"
+t  "X4 ... HTML, commands in code, previews off" "HTML true" "$(jq -r '.form.parse_mode' <<<"$msg") $(jq -r '.form.link_preview_options' <<<"$msg" | jq -r .is_disabled)"
+t  "X5 the button is Done, carrying a 48-hex Done code" "Done — carry on" "$(jq -r '.form.reply_markup' <<<"$msg" | jq -r '.inline_keyboard[0][0].text')"
+XDONE=$(jq -r '.form.reply_markup' <<<"$msg" | jq -r '.inline_keyboard[0][0].callback_data' | sed -n 's/^bdone:\([0-9a-f]\{48\}\)$/\1/p')
+t  "X5 ... (the code parses)" 48 "${#XDONE}"
+tn "X5 ... and the code is never printed to the asking seat" "$XDONE" "$out"
+: >"$FAKE_LOG"
+out=$(priv done "$XDONE" "$OWNER" 2>&1); rc=$?
+t  "X6 the owner's Done hands the window BACK on the window's own seat" "0 viewer-revoke tiktok.com|handoff tiktok.com --close|status tiktok.com" "$rc $(tr '\n' '|' <"$FAKE_LOG" | sed 's/|$//')"
+tc "X6 ... and answers the bridge in the verdict shape it parses" "site=tiktok.com" "$out"
+out=$(priv done "$XDONE" "$OWNER" 2>&1); rc=$?
+t  "X6 ... once: a second Done is refused" 77 "$rc"
+
+reset; rm -rf "$TMP/req"/*
+out=$(FIVEDIVE_BROWSER_SSH_USER= FIVEDIVE_BROWSER_SSH_ADDR= priv handoff tiktok.com "" 2>&1); rc=$?
+txt=$(jq -rs 'map(select(.path|test("sendMessage"))) | last | .form.text' "$TMP/stub.log")
+tc "X7 an unknown user and address are NAMED placeholders, never a guess" "ssh -N -L 5900:127.0.0.1:5917 &lt;your-sudo-user&gt;@&lt;your-box-address&gt;" "$txt"
+
+reset; rm -rf "$TMP/req"/*
+out=$(FIVEDIVE_BROWSER_CONNECT_HOME="$TMP/nohome" priv handoff tiktok.com "solve the check" 2>&1); rc=$?
+t  "X8 no paired owner: still exits 0, nobody messaged" "0 0" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+tc "X8 ... and the steps are PRINTED instead" "ssh -N -L 5900:127.0.0.1:5917 lodar@203.0.113.7" "$out"
+tc "X8 ... with how to hand the window back" "or run on the box: sudo -u $ME 5dive browser handoff tiktok.com --close" "$out"
+t  "X8 ... and no Done code is left behind" "" "$(ls "$TMP/req")"
+
+reset; rm -rf "$TMP/req"/*; : >"$TMP/ctl.tgfail"
+out=$(priv handoff tiktok.com "" 2>&1); rc=$?
+t  "X9 Telegram refuses: exits 0, steps printed, no Done code left" "0 yes " "$rc $(grep -q 'sudo cat /var/lib' <<<"$out" && echo yes) $(ls "$TMP/req")"
+
+reset; : >"$TMP/ctl.novline"
+out=$(priv handoff tiktok.com "" 2>&1); rc=$?
+t  "X10 a view that does not say where it listens is closed, nothing sent" "69 0 viewer-revoke tiktok.com" "$rc $(grep -c sendMessage "$TMP/stub.log") $(tail -1 "$FAKE_LOG")"
+
+printf 'CONNECTORD_TOKEN=x\n' >"$TMP/half-provisioning.env"
+reset
+out=$(FIVEDIVE_PROVISIONING_ENV="$TMP/half-provisioning.env" priv handoff tiktok.com "" 2>&1); rc=$?
+t  "X11 a provisioning file with no domain is no front either" "0 yes" "$rc $(grep -q 'no web front' <<<"$out" && echo yes)"
+reset
+out=$(FIVEDIVE_PROVISIONING_ENV="$TMP/provisioning.env" priv handoff tiktok.com "" 2>&1); rc=$?
+t  "X12 (control) with the front, the same call is the hosted Connect button again" "0 Connect tiktok.com " \
+   "$rc $(jq -r 'select(.path|test("sendMessage")) | .form.reply_markup' "$TMP/stub.log" | jq -r '.inline_keyboard[0][0].text') $(cat "$FAKE_LOG")"
+unset FIVEDIVE_BROWSER_SSH_USER FIVEDIVE_BROWSER_SSH_ADDR
+export FIVEDIVE_PROVISIONING_ENV="$TMP/provisioning.env"
+
 # ---- S: the seams are not a door under root -------------------------------------------
 # EVERY top-level non-root block, not the first one: the on-demand serve's seams
 # (DIVE-5389) live in a second block, and an awk that exits at the first `fi`
@@ -380,7 +446,7 @@ t  "H3 Done on an input-mode site hands the window BACK and does not stop it" "v
 seam_block=$(awk '/^if \[\[ \$EUID -ne 0 \]\]; then$/{p=1} p{print} p&&/^fi$/{p=0}' "$BROWSER")
 t  "S0 the scan reads every non-root block" "$(grep -c '^if \[\[ \$EUID -ne 0 \]\]; then$' "$BROWSER")" "$(grep -c '^if \[\[ \$EUID -ne 0 \]\]; then$' <<<"$seam_block")"
 for v in FIVEDIVE_BROWSER_CONNECT_DIR FIVEDIVE_CONNECTOR_DIR FIVEDIVE_CONNECTORD_ENV FIVEDIVE_PROVISIONING_ENV FIVEDIVE_SHELLD_URL FIVEDIVE_TELEGRAM_API FIVEDIVE_BROWSER_CONNECT_SELF FIVEDIVE_BROWSER_CONNECT_PRIV \
-         FIVEDIVE_BROWSER_WAKE_PRIV FIVEDIVE_BROWSER_SERVE_MIN_MB FIVEDIVE_BROWSER_MEMINFO FIVEDIVE_BROWSER_SUDOERS_DIR FIVEDIVE_BROWSER_VISUDO; do
+         FIVEDIVE_BROWSER_SSH_USER FIVEDIVE_BROWSER_SSH_ADDR FIVEDIVE_BROWSER_WAKE_PRIV FIVEDIVE_BROWSER_SERVE_MIN_MB FIVEDIVE_BROWSER_MEMINFO FIVEDIVE_BROWSER_SUDOERS_DIR FIVEDIVE_BROWSER_VISUDO; do
   t "S1 $v is used at all (a seam the file never reads grades nothing)" 1 "$(( $(grep -c "$v" "$BROWSER") > 0 ))"
   t "S1 $v is read only inside the non-root block" "$(grep -c "$v" "$BROWSER")" "$(grep -c "$v" <<<"$seam_block")"
 done

@@ -1374,6 +1374,21 @@ tc 'T10k ...and the escape is explicit, never implicit' '--bind=local' "$ERR"
 run env PATH="$SPATH" "$BROWSER" viewer viewsite --bind=sess-A --ttl=99999
 t  'T10k a ttl past the re-auth window is refused' 64 "$RC"
 
+# --- T10L a hand-run view says where it listens (DIVE-6111) -------------------
+# The SSH handoff needs the VNC port (5900 only when 5900 was free) and the
+# password FILE. Never the password, and only for --bind=local: the hosted
+# mint's output is what the relay parses, byte for byte.
+run env PATH="$SPATH" "$BROWSER" viewer viewsite --bind=local --ttl=600
+t  'T10L a hand-run view mints' 0 "$RC"
+VPORT=$(sed -n 's/^vnc_port=//p' "$VDIR/.5dive-viewer")
+tc 'T10L ...naming its REAL loopback VNC port' "VNC on 127.0.0.1:$VPORT of this box only" "$ERR"
+tc 'T10L ...and the password as the command that reads it' "its one-time password: sudo cat $VDIR/.5dive-viewer.pw" "$ERR"
+t  'T10L (control) the password file is there to leak' yes "$( [[ -s "$VDIR/.5dive-viewer.pw" ]] && echo yes || echo no)"
+tn 'T10L ...AND ITS VALUE IS PRINTED NOWHERE' "$(cat "$VDIR/.5dive-viewer.pw")" "$OUT$ERR"
+run env PATH="$SPATH" "$BROWSER" viewer viewsite --bind=sess-A --ttl=600
+t  'T10L (control) a relay mint still mints' 0 "$RC"
+tn 'T10L ...and says nothing new: the hosted output is unchanged' 'local view' "$ERR"
+
 # --- T10m NOTHING LISTENS OFF-BOX, measured on the argv the fakes recorded -----
 # This is the property the README and the design note LEAD with, and until the
 # fakes recorded argv it was graded by zero arms. Each assertion below is the

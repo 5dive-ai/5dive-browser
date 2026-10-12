@@ -8,6 +8,28 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — a self-hosted box hands the owner SSH steps to the live window, not a link (DIVE-6111), 1.36.0
+
+lodar, 2026-10-12: "how can clicker send a link to take over if oss 5dive has not domain? just use
+ip?" A hosted box's `handoff` sends a one-time link served by the box's HTTPS front. An
+open-source box has no domain and no front, so there was no link to send. A bare-IP link would
+have meant a public listener, so that was never the answer.
+
+- **`5dive browser handoff <site>` on a box with no front** (no `/etc/5dive/provisioning.env`)
+  starts the view on loopback for the LIVE window, the same Chrome the agent was driving. It then
+  gives the owner the exact lines: `ssh -N -L 5900:127.0.0.1:<port> <user>@<box>`, the command
+  that reads the one-time VNC password, and `vnc://localhost:5900`. The user and address are
+  filled in when the box knows them (the one human in the sudo group, the public IPv4 on an
+  interface). Otherwise the line carries a named placeholder.
+- **Paired on Telegram:** the steps arrive as one message with a Done button. Done closes the view
+  and hands the window back, on the seat that owns it. **Not paired:** the steps are printed.
+- Nothing new listens off the box. The view binds to 127.0.0.1 only. No http(s) link is printed
+  or sent. The password goes out as `sudo cat <file>`, never as its value.
+- `viewer <site> --bind=local` now also says which loopback port the VNC is on (5900 only when
+  5900 was free) and where its password file is. A relay mint's output is unchanged.
+- The hosted path is unchanged: a box with the front still sends the Connect button and the
+  one-time URL.
+
 ### Added — `sudo 5dive browser setup` installs the browser stack a self-hosted box lacks (DIVE-6089), 1.35.0
 
 lodar, 2026-10-12: "why chrome, a virtual screen, vnc and node 22 dont come through 5dive browser
