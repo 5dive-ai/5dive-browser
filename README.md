@@ -37,6 +37,10 @@ On your laptop, run `ssh -N -L 5900:127.0.0.1:5900 you@your-box`, open `vnc://lo
 (Screen Sharing on a Mac, or any VNC client), and sign in. Wait about 30 seconds after you are
 signed in, then close the window.
 
+When an agent needs you in the middle of a job (a sign-in, a robot check), `5dive browser handoff`
+sends you these same steps for its live window, already filled in, on Telegram if the agent is
+paired. Otherwise it prints them.
+
 **3. Let the agent use it.**
 
 ```sh

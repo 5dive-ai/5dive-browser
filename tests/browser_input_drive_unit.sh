@@ -379,6 +379,42 @@ arm 'R6 --wait returns at once when nothing is handed over' '0 yes' "$rc $(yn gr
 o=$("$BROWSER" handoff reddit.com 2>&1); rc=$?
 arm 'R6 handoff on a CDP site is refused: there is no live window to hand over' '69 yes' "$rc $(yn grep -q 'not in input mode' <<<"$o")"
 
+# R6b A SELF-HOSTED SEAT WITHOUT THE _connect GRANT (DIVE-6111). No front (no
+# provisioning.env) and sudo refused: the seat starts the loopback view on its
+# own window and PRINTS the SSH steps. With a front, the same refusal keeps the
+# hosted advice and starts nothing. The VNC fakes bind the port they are given.
+cat > "$FAKEBIN/x11vnc" <<'VNC'
+#!/usr/bin/env bash
+port=""; while (( $# )); do [[ "$1" == -rfbport ]] && port="$2"; shift; done
+exec python3 -c 'import socket,sys,time
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+s.bind(("127.0.0.1",int(sys.argv[1]))); s.listen(1); time.sleep(300)' "$port"
+VNC
+cat > "$FAKEBIN/websockify" <<'WS'
+#!/usr/bin/env bash
+exec python3 -c 'import socket,sys,time
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+s.bind(("127.0.0.1",int(sys.argv[1]))); s.listen(1); time.sleep(300)' "${1##*:}"
+WS
+printf '#!/usr/bin/env bash
+cat >/dev/null; echo "sudo: a password is required" >&2; exit 1\n' > "$TMP/refuse-connect"
+chmod +x "$FAKEBIN/x11vnc" "$FAKEBIN/websockify" "$TMP/refuse-connect"
+printf 'FIVE_DOMAIN=box.example.5dive.ai\n' > "$TMP/prov-hosted.env"
+TVDIR="$TMP/pr/$SEAT/tiktok.com"
+o=$(FIVEDIVE_BROWSER_CONNECT_PRIV="$TMP/refuse-connect" FIVEDIVE_PROVISIONING_ENV="$TMP/prov-hosted.env" "$BROWSER" handoff tiktok.com --reason="sign in" 2>&1); rc=$?
+arm 'R6b (control) hosted box, sudo refused: the dashboard advice, no view started' '0 yes no' \
+  "$rc $(yn grep -q 'could not be asked over Telegram' <<<"$o") $(yn test -f "$TVDIR/.5dive-viewer")"
+"$BROWSER" handoff tiktok.com --close >/dev/null 2>&1
+o=$(FIVEDIVE_BROWSER_CONNECT_PRIV="$TMP/refuse-connect" FIVEDIVE_PROVISIONING_ENV="$TMP/no-prov.env" \
+    FIVEDIVE_BROWSER_SSH_USER=lodar FIVEDIVE_BROWSER_SSH_ADDR=203.0.113.7 "$BROWSER" handoff tiktok.com --reason="sign in" 2>&1); rc=$?
+VP=$(sed -n 's/^vnc_port=//p' "$TVDIR/.5dive-viewer" 2>/dev/null)
+arm 'R6b self-hosted, sudo refused: exits 0 and starts the view on the live window' '0 yes' "$rc $(yn test -n "$VP")"
+arm 'R6b ...printing the tunnel onto its real port' yes "$(yn grep -qF "ssh -N -L 5900:127.0.0.1:$VP lodar@203.0.113.7" <<<"$o")"
+arm 'R6b ...and the password as the command that reads it' yes "$(yn grep -qF "sudo cat $TVDIR/.5dive-viewer.pw" <<<"$o")"
+arm 'R6b ...never its value, and no http link' 'no no' "$(yn grep -qF "$(cat "$TVDIR/.5dive-viewer.pw" 2>/dev/null || echo MISSING-PW)" <<<"$o") $(yn grep -q 'http' <<<"$o")"
+arm 'R6b ...and the window is still handed over' true "$("$BROWSER" handoff tiktok.com --status 2>/dev/null | jq -r .open)"
+"$BROWSER" viewer-revoke tiktok.com >/dev/null 2>&1; "$BROWSER" handoff tiktok.com --close >/dev/null 2>&1
+
 "$BROWSER" serve tiktok.com --stop >/dev/null 2>&1
 printf 'http://u:p@example.com:8080\n' > "$TMP/pr/$SEAT/.5dive-proxy"; chmod 600 "$TMP/pr/$SEAT/.5dive-proxy"
 n0=$(wc -l < "$TMP/daemon.argv")
