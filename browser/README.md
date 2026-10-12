@@ -18,7 +18,7 @@ therefore a **public surface**, and "how does a user add a site" is a core desig
 than a detail.
 
 ```
-5dive browser setup                 # once, as root: the profile store (+ the box stack if missing)
+5dive browser setup                 # once, as root: installs Chrome, a virtual screen, VNC and Node 22 if missing (+ a seat's profile store)
 5dive browser auth <site>           # a browser opens; you log in yourself
 5dive browser status                # per-site auth state; run this on a SCHEDULE
 5dive browser probe-all             # scheduled sweep; a served site is checked through its own browser
@@ -921,11 +921,11 @@ action that half happened.
 
 **Playwright is pinned.** The plugin's `package.json` (`browser/package.json` in this repo) names an exact `playwright-core` version,
 no caret: the driver speaks CDP to a Chrome holding a human's live session, and a silent minor bump
-changes the launch arguments under a credential. Install it with
-`npm install --prefix <the plugin directory>`; without it, `run` refuses and says so.
+changes the launch arguments under a credential. Without it, `run` refuses and says so.
 
-On a self-hosted box `sudo 5dive browser setup` runs it for you (DIVE-6089), installing Node.js 22
-first when node is missing or older than 20. On a managed 5dive box nobody types that command. The nightly browser-stack converger
+On a self-hosted box `sudo 5dive browser setup` installs it (DIVE-6089, DIVE-6112), installing
+Node.js 22 first when node is missing or older than 20; a hire never does. On a managed 5dive box
+nobody types that command. The nightly browser-stack converger
 (`/usr/local/bin/5dive-browser-stack-install`, shipped by 5dive-api) reads the pin out of this
 `package.json`, installs it as root into the enabled package directory with `--ignore-scripts`, and
 does so again after every `plugin upgrade` replaces that directory — until then its status file reads

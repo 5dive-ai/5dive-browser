@@ -239,7 +239,7 @@ usage() {
                                       # posting, sending and deleting go ahead and are
                                       # logged. yolo = all allow, careful = all ask.
 
-  5dive browser setup                 # one-time, as root: the profile store (+ the box stack if missing)
+  5dive browser setup                 # once, as root: installs Chrome, a virtual screen, VNC and Node 22 if missing (+ a seat's profile store)
   5dive browser auth <site>           # open a browser; log in yourself, once
   5dive browser status [site]         # per-site auth state (run on a SCHEDULE)
   5dive browser probe-all             # scheduled check; a served site through its own browser
@@ -1432,10 +1432,25 @@ _seat_is_deregistered() {
 # for each new seat, DIVE-5478, and never fails the create on it), and a store on
 # a box missing x11vnc still serves `snapshot`. So a failed install is a named
 # line on stderr and the store is still made.
+#
+# ONLY A PERSON INSTALLS (DIVE-6112). lodar, after DIVE-6089: "realy hiring does
+# all installs? ... is it good decision?" A hire runs setup for its new seat
+# (5dive-cli seed_browser_store_for_seat, which passes FIVEDIVE_BROWSER_SEAT) and
+# CAPTURES every line, so on a fresh box the first hire spent ~2 minutes putting
+# Chrome and Node on it with nothing on screen. The install is now the explicit
+# command a person runs to get a browser, `sudo 5dive browser setup`, the shape
+# voice already has (`sudo 5dive voice setup`): numbered, named steps, the
+# command plugin.json's `setup` block prints. A hire never installs. If the box
+# lacks the stack it still gets its store, and setup exits $E_UNAVAILABLE with
+# the command as its last line: that is the one line the hire shows (it prints
+# only a FAILED setup's last line). A hosted box is exempt — its own converger
+# (browser-stack.sh, nightly) owns and reports the stack, so a hire there stays
+# silent and exits 0, as it did before DIVE-6089.
 STACK_ROOT="${FIVEDIVE_BROWSER_STACK_ROOT:-}"   # a prefix for /etc/apt and the keyrings (tests)
 STACK_NODE_FLOOR=20
 STACK_NODE_MAJOR=22
 _STACK_APT_UPDATED=0
+_STACK_INSTALLED=0   # set when this run installed the stack and it is now complete
 
 _stack_pkg_dir() { cd "$_SELF_DIR/.." && pwd; }
 # The pin this package declares; empty when it declares none. No jq and no node:
@@ -1479,6 +1494,10 @@ _stack_missing() {
 _stack_apt() { DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 -y -q "$@" >/dev/null 2>&1; }
 _stack_apt_update() { (( _STACK_APT_UPDATED )) && return 0; _stack_apt update && _STACK_APT_UPDATED=1; }
 _stack_say() { printf '  %s\n' "$*"; }
+_stack_step() { printf '\n== Step %s/4 — %s ==\n' "$1" "$2"; }
+STACK_HOSTED_CONVERGER="${FIVEDIVE_BROWSER_HOSTED_CONVERGER:-/usr/local/bin/5dive-browser-stack-install}"
+_setup_is_hire() { [[ -n "${FIVEDIVE_BROWSER_SEAT:-}" ]]; }
+_stack_off() { case "${FIVEDIVE_BROWSER_STACK:-}" in off|0|no|false) return 0 ;; esac; return 1; }
 _stack_warn() { printf '%s: %s\n' "$PROG" "$*" >&2; }
 
 # _stack_repo <name> <key-url> <uri suite component> [<extra option>] — a signed apt source.
@@ -1500,7 +1519,8 @@ _stack_install_x() {
   _have Xvfb       || pk+=(xvfb)
   _have x11vnc     || pk+=(x11vnc)
   _have websockify || pk+=(websockify)
-  (( ${#pk[@]} )) || return 0
+  (( ${#pk[@]} )) || { _stack_say "already here: Xvfb, x11vnc, websockify"; return 0; }
+  _stack_say "installing ${pk[*]} (apt)..."
   _stack_apt_update; _stack_apt install "${pk[@]}" || true
   for p in "${pk[@]}"; do
     case "$p" in xvfb) _have Xvfb ;; *) _have "$p" ;; esac \
@@ -1509,14 +1529,16 @@ _stack_install_x() {
 }
 
 _stack_install_chrome() {
-  _chrome >/dev/null && return 0
+  local c; c=$(_chrome) && { _stack_say "already here: $c"; return 0; }
   # Google ships amd64 only; anywhere else the fallback is the only candidate.
   if [[ "$(dpkg --print-architecture 2>/dev/null)" == amd64 ]] \
      && _stack_repo google-chrome https://dl.google.com/linux/linux_signing_key.pub \
           "https://dl.google.com/linux/chrome/deb/ stable main" "arch=amd64"; then
+    _stack_say "installing google-chrome-stable (Google's apt repo)..."
     _stack_apt_update; _stack_apt install google-chrome-stable
     _chrome >/dev/null && { _stack_say "installed google-chrome-stable"; return 0; }
   fi
+  _stack_say "installing chromium (apt, the fallback)..."
   _stack_apt_update; _stack_apt install chromium
   _chrome >/dev/null && { _stack_say "installed chromium (fallback: no google-chrome-stable for this box)"; return 0; }
   _stack_warn "could not install a chrome (google-chrome-stable, or chromium as fallback)"
@@ -1524,8 +1546,9 @@ _stack_install_chrome() {
 }
 
 _stack_install_node() {
-  _stack_node_ok && return 0
+  _stack_node_ok && { _stack_say "already here: Node.js $(node --version 2>/dev/null)"; return 0; }
   local was; was=$(_stack_node_major)
+  _stack_say "installing Node.js $STACK_NODE_MAJOR (NodeSource)..."
   if _stack_repo nodesource https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
        "https://deb.nodesource.com/node_$STACK_NODE_MAJOR.x nodistro main"; then
     _stack_apt_update; _stack_apt install nodejs
@@ -1552,9 +1575,10 @@ _stack_install_node() {
 
 _stack_install_pin() {
   local want d had; want=$(_stack_pin)
-  _stack_pin_ok && return 0
+  _stack_pin_ok && { _stack_say "already here: playwright-core${want:+ $want}"; return 0; }
   _stack_node_ok && _have npm || { _stack_warn "playwright-core $want not installed: it needs Node.js >= $STACK_NODE_FLOOR and npm — \`5dive browser run\` will refuse here"; return 1; }
   d=$(_stack_pkg_dir); had=$(_stack_pin_have)
+  _stack_say "installing playwright-core $want (npm, into $d)..."
   timeout 300 npm install --prefix "$d" --omit=dev --ignore-scripts --no-audit --no-fund --no-package-lock --loglevel=error >/dev/null 2>&1
   # Grade where the box ENDED UP, never whether npm exited 0.
   if _stack_pin_ok; then
@@ -1566,7 +1590,7 @@ _stack_install_pin() {
 }
 
 _stack_converge() {
-  case "${FIVEDIVE_BROWSER_STACK:-}" in off|0|no|false) return 0 ;; esac
+  _stack_off && return 0
   local missing; missing=$(_stack_missing)
   [[ -n "$missing" ]] || return 0
   local list; list=$(paste -sd, <<<"$missing" | sed 's/,/, /g')
@@ -1575,26 +1599,63 @@ _stack_converge() {
     return 1
   fi
   printf 'installing what the browser needs and this box lacks: %s\n' "$list"
+  _stack_step 1 "virtual screen and VNC (xvfb, x11vnc, websockify)"
   _stack_install_x
+  _stack_step 2 "Google Chrome"
   _stack_install_chrome || true
+  _stack_step 3 "Node.js $STACK_NODE_MAJOR"
   _stack_install_node || true
+  _stack_step 4 "playwright-core $(_stack_pin) (the browser library)"
   _stack_install_pin || true
+  printf '\n'
   missing=$(_stack_missing)
   if [[ -n "$missing" ]]; then
     _stack_warn "still missing after install: $(paste -sd, <<<"$missing" | sed 's/,/, /g'). The store is made anyway; re-run $SETUP_CMD once that is fixed."
     return 1
   fi
   printf '  browser stack ready\n'
+  _STACK_INSTALLED=1
+}
+
+# _stack_hire_check — a hire's half: install nothing, name what is missing.
+# Echoes the sentence (empty when the box can browse, the step is off, or the box
+# is hosted) for cmd_setup to end on.
+_stack_hire_check() {
+  _stack_off && return 0
+  [[ -e "$STACK_HOSTED_CONVERGER" ]] && return 0
+  local missing; missing=$(_stack_missing)
+  [[ -n "$missing" ]] || return 0
+  printf 'this box has no browser stack yet (missing %s), so this seat cannot browse. A hire installs nothing; run once, as root: %s\n' \
+    "$(paste -sd, <<<"$missing" | sed 's/,/, /g')" "$SETUP_CMD"
 }
 
 cmd_setup() {
   [[ "$(id -u)" == 0 ]] || die "$E_PERM" "setup creates a root-owned store and a seat-owned subdirectory under it. Run: $SETUP_CMD"
-  # The stack first, and before the seat checks: it is box-wide, and the root
-  # operator of a self-hosted box (no SUDO_USER, refused as a seat just below)
-  # is exactly who runs this to get it. Never fatal — see _stack_converge.
-  _stack_converge || true
-  local seat; seat="$(_seat)"
-  [[ "$seat" != root ]] || die "$E_USAGE" "refusing to make root a browser seat — run this via sudo from the seat that will own the profiles, so SUDO_USER names it. (The box-wide browser stack was checked above either way; an agent seat gets its store at \`5dive agent create\`, or: sudo env FIVEDIVE_BROWSER_SEAT=agent-<name> 5dive browser setup.)"
+  # The stack first, and before the seat checks: it is box-wide. A person
+  # installs it; a hire only names it (DIVE-6112, see "ONLY A PERSON INSTALLS").
+  # Never fatal — see _stack_converge.
+  local seat hire_gap=""; seat="$(_seat)"
+  if _setup_is_hire; then
+    hire_gap=$(_stack_hire_check)
+  else
+    local stack_ok=1
+    _stack_converge || stack_ok=0
+    # Root with no seat (no SUDO_USER: `ssh root@box`, then the README's line) is
+    # the person setting up the BOX, and the stack is the whole of that job. No
+    # store is made for root — each hire makes its own seat's. This used to end
+    # in the root-seat refusal below, exit 64, under a stack that had just gone
+    # in fine, so the reader who copied the line saw an error (DIVE-6112).
+    if [[ "$seat" == root ]]; then
+      if (( stack_ok )) || _stack_off; then
+        printf 'browser ready: agents you hire get a browser\n'
+      else
+        printf 'browser NOT ready: the lines above name what did not install. Fix that, then re-run: %s\n' "$SETUP_CMD" >&2
+      fi
+      return 0
+    fi
+  fi
+  # Reached only by FIVEDIVE_BROWSER_SEAT=root: a person running as root returned above.
+  [[ "$seat" != root ]] || die "$E_USAGE" "refusing to make root a browser seat — name the seat that will own the profiles. An agent seat gets its store at \`5dive agent create\`, or: sudo env FIVEDIVE_BROWSER_SEAT=agent-<name> 5dive browser setup. The box's browser stack: $SETUP_CMD"
   id -u "$seat" >/dev/null 2>&1 || die "$E_USAGE" "no unix user '$seat' — a profile is owned by a real uid or it is not isolated."
   # DIVE-4730 — a unix account is not a seat. Refuse BEFORE the store is made:
   # the timer is the lasting artifact, and a store for an account nobody will
@@ -1674,6 +1735,11 @@ cmd_setup() {
       "$SESSION_ROOT/$seat" "$seat" >&2
   fi
   printf '\nNow, as %s:  5dive browser auth <site>\n' "$seat"
+  # The README's line run from a sudo user lands here (SUDO_USER names them), so
+  # it ends on the same sentence the root path does — only when this run put the
+  # stack in, so a box that had it (every hosted VM) prints nothing new.
+  (( _STACK_INSTALLED )) && printf 'browser ready: agents you hire get a browser\n'
+  [[ -z "$hire_gap" ]] || die "$E_UNAVAILABLE" "$hire_gap"
 }
 
 # ------------------------------------------------------------------------ auth
