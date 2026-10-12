@@ -8,6 +8,31 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — `sudo 5dive browser setup` installs the browser stack a self-hosted box lacks (DIVE-6089), 1.35.0
+
+lodar, 2026-10-12: "why chrome, a virtual screen, vnc and node 22 dont come through 5dive browser
+own setup?" On a self-hosted box (`install.5dive.ai` + `plugin add`) the browser needed four manual
+lines before the first page: Chrome, Xvfb/x11vnc/websockify, a Node >= 20, and the pinned
+playwright-core (DIVE-6085, two fresh Ubuntu 24.04 boxes).
+
+- **`setup` now converges the box first**, then makes the store as before: Google's
+  `google-chrome-stable` (chromium only as fallback), `xvfb x11vnc websockify` from apt, Node.js
+  from NodeSource 22 when node is missing or older than 20, and the pinned playwright-core into
+  this package with the hosted converger's exact npm flags. Each install is named on its own line.
+- **Only what is missing is touched.** A box that has everything (every hosted VM) gets no apt,
+  no npm and no new output. A Node >= 20 is never reinstalled, upgraded or downgraded.
+- **apt only.** A box without apt-get gets the named list and nothing is installed.
+- **Never fatal.** A failed install is a named line on stderr and the store is still made, so
+  `agent create` (which runs setup for each new seat, DIVE-5478) never fails on it — and on a
+  self-hosted box the first `agent create` inside `5dive init` installs the stack with no extra line.
+- Root running `sudo 5dive browser setup` (no seat) gets the stack before the root-seat refusal.
+- A Node 18 that came with Ubuntu's `npm` (whose `libnode-dev` blocks NodeSource's nodejs) has
+  `libnode-dev` removed once, said out loud, and the install retried.
+- The hosted path is unchanged: 5dive-api `browser-stack.sh` still installs the stack at provision
+  time and nightly; `setup` makes the same choices and is a no-op after it.
+- Harness: `tests/browser_setup_stack_unit.sh` (71 arms, apt/npm faked on a sandbox PATH, a
+  mutant that drops the call). `FIVEDIVE_BROWSER_STACK=off` skips the step.
+
 ### Added — profile groups: Google once per group, not once per site (DIVE-6013), 1.34.0
 
 lodar, 2026-10-11: "all signups hit fresh login by google flow". Each connected site had its own

@@ -451,6 +451,9 @@ t  'T2c22 MUTANT dropping the serve-only guard breaks T2c13' 'claude' \
 # ExecStart is an exact string rather than whatever this runner happens to have
 # installed — then assert on the files that land and the commands that ran.
 SETUPBIN="$TMP/setupbin"; mkdir -p "$SETUPBIN"
+# DIVE-6089: setup also installs a missing box stack through apt. These arms grade
+# the STORE; tests/browser_setup_stack_unit.sh grades the stack, with apt faked.
+export FIVEDIVE_BROWSER_STACK=off
 REALID="$(command -v id)"
 REALCHOWN="$(command -v chown)"
 cat > "$SETUPBIN/id" <<ID

@@ -101,6 +101,12 @@ browser verb"*) on every new box. After installing the plugin, a box still needs
 sudo 5dive browser setup
 ```
 
+On a **self-hosted** box, which never runs `browser-stack.sh`, that same command also installs
+the stack when it is missing (DIVE-6089): Google Chrome, `xvfb x11vnc websockify`, Node.js 22 from
+NodeSource when node is missing or older than 20, and the pinned playwright-core — apt boxes only,
+each install named, nothing touched that is already there. `agent create` runs `setup` for each
+new seat, so on a box where the plugin is added before `5dive init` it happens with no extra line.
+
 ## Layout
 
 ```

@@ -239,7 +239,7 @@ usage() {
                                       # posting, sending and deleting go ahead and are
                                       # logged. yolo = all allow, careful = all ask.
 
-  5dive browser setup                 # one-time, as root: create the profile store
+  5dive browser setup                 # one-time, as root: the profile store (+ the box stack if missing)
   5dive browser auth <site>           # open a browser; log in yourself, once
   5dive browser status [site]         # per-site auth state (run on a SCHEDULE)
   5dive browser probe-all             # scheduled check; a served site through its own browser
@@ -1398,10 +1398,203 @@ _seat_is_deregistered() {
   [[ "$verdict" == out ]]
 }
 
+# ---------------------------------------------------------------- the stack
+# DIVE-6089 — `setup` also puts the box stack on a box that lacks it.
+#
+# The stack (a chrome, Xvfb, x11vnc, websockify, a Node the pinned playwright-core
+# runs on, and that pin in this package's node_modules) is installed on a MANAGED
+# box by 5dive-api `scripts/inc/browser-stack.sh`, at provision time and nightly.
+# A self-hosted box (`install.5dive.ai` + `plugin add`) never runs that file, so
+# until now it needed four manual lines before the first page (DIVE-6085, two
+# fresh Ubuntu 24.04 boxes). browser-stack.sh STAYS the hosted path — the README's
+# DIVE-4347 reason holds: a box with the stack and no `plugin add` must not lose
+# it. This is the self-hosted half, and it is a no-op where that file already ran.
+#
+# SAME CHOICES, NOT A SECOND OPINION. Each step below makes the choice the hosted
+# converger makes, for its reason, and names the function it mirrors; a change to
+# one is a change to both (tests/browser_setup_stack_unit.sh pins them).
+#   _bs_install_packages  xvfb x11vnc websockify, from apt
+#   _bs_install_chrome    google-chrome-stable from Google's repo — Ubuntu's
+#                         chromium is a snap shim — and chromium only as fallback
+#   _bs_plugin_deps       the exact pin from package.json, root, --ignore-scripts,
+#                         graded on where the box ENDED UP, never on npm's exit
+# plus the one thing the hosted fleet gets from its image: Node >= 20 (NodeSource
+# 22, the fleet's version) when node is missing or older. Ubuntu 24.04's apt node
+# is 18.19.1 and playwright-core 1.63.0 needs >= 20.
+#
+# BOUNDED. Only what is MISSING is touched: a present chrome, an X package, a
+# Node >= 20 (whatever installed it) are never reinstalled, upgraded or
+# downgraded, and a box with everything prints nothing at all. apt only — a box
+# without apt-get gets the named list and installs nothing; guessing a package
+# manager as root is worse than a sentence.
+#
+# NEVER FAILS SETUP. Every caller of setup wants the STORE (agent create runs it
+# for each new seat, DIVE-5478, and never fails the create on it), and a store on
+# a box missing x11vnc still serves `snapshot`. So a failed install is a named
+# line on stderr and the store is still made.
+STACK_ROOT="${FIVEDIVE_BROWSER_STACK_ROOT:-}"   # a prefix for /etc/apt and the keyrings (tests)
+STACK_NODE_FLOOR=20
+STACK_NODE_MAJOR=22
+_STACK_APT_UPDATED=0
+
+_stack_pkg_dir() { cd "$_SELF_DIR/.." && pwd; }
+# The pin this package declares; empty when it declares none. No jq and no node:
+# both may be what this box is missing.
+_stack_pin() {
+  local f; f="$(_stack_pkg_dir)/package.json"
+  [[ -f "$f" ]] || return 0
+  sed -n 's/.*"playwright-core"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -n1
+}
+_stack_pin_have() {
+  local f; f="$(_stack_pkg_dir)/node_modules/playwright-core/package.json"
+  [[ -f "$f" ]] || return 0
+  sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -n1
+}
+# The major of the node on PATH, or empty. Driven by the shebang of
+# bin/driver-playwright (`/usr/bin/env node`), so PATH's node is the one that counts.
+_stack_node_major() {
+  local v; v=$(node --version 2>/dev/null) || return 0
+  v="${v#v}"; v="${v%%.*}"
+  [[ "$v" =~ ^[0-9]+$ ]] && printf '%s\n' "$v"
+}
+_stack_node_ok() { local m; m=$(_stack_node_major); [[ -n "$m" ]] && (( m >= STACK_NODE_FLOOR )); }
+_stack_pin_ok() { local want; want=$(_stack_pin); [[ -z "$want" || "$(_stack_pin_have)" == "$want" ]]; }
+
+# _stack_missing — one named item per line, empty when the box lacks nothing.
+# The first four are browser-stack.sh `_bs_missing`, word for word.
+_stack_missing() {
+  local m=() nm
+  _have Xvfb          || m+=("Xvfb (xvfb)")
+  _chrome >/dev/null  || m+=("chrome (google-chrome-stable)")
+  _have x11vnc        || m+=("x11vnc")
+  _have websockify    || m+=("websockify (novnc)")
+  if ! _stack_node_ok; then
+    nm=$(_stack_node_major)
+    m+=("Node.js >= $STACK_NODE_FLOOR (${nm:+found }${nm:-none})")
+  fi
+  _stack_pin_ok || m+=("playwright-core $(_stack_pin) (npm)")
+  printf '%s\n' "${m[@]+"${m[@]}"}"
+}
+
+_stack_apt() { DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 -y -q "$@" >/dev/null 2>&1; }
+_stack_apt_update() { (( _STACK_APT_UPDATED )) && return 0; _stack_apt update && _STACK_APT_UPDATED=1; }
+_stack_say() { printf '  %s\n' "$*"; }
+_stack_warn() { printf '%s: %s\n' "$PROG" "$*" >&2; }
+
+# _stack_repo <name> <key-url> <uri suite component> [<extra option>] — a signed apt source.
+_stack_repo() {
+  local name="$1" key="$2" line="$3"
+  local kr="$STACK_ROOT/usr/share/keyrings/$name.gpg" src="$STACK_ROOT/etc/apt/sources.list.d/$name.list"
+  if [[ ! -s "$kr" ]]; then
+    mkdir -p "${kr%/*}" "${src%/*}" || return 1
+    curl -fsSL "$key" | gpg --dearmor --yes -o "$kr" 2>/dev/null || { rm -f "$kr"; return 1; }
+    chmod go+r "$kr"
+  fi
+  mkdir -p "${src%/*}" || return 1
+  printf 'deb [%ssigned-by=/usr/share/keyrings/%s.gpg] %s\n' "${4:+$4 }" "$name" "$line" > "$src" || return 1
+  _STACK_APT_UPDATED=0
+}
+
+_stack_install_x() {
+  local pk=() p
+  _have Xvfb       || pk+=(xvfb)
+  _have x11vnc     || pk+=(x11vnc)
+  _have websockify || pk+=(websockify)
+  (( ${#pk[@]} )) || return 0
+  _stack_apt_update; _stack_apt install "${pk[@]}" || true
+  for p in "${pk[@]}"; do
+    case "$p" in xvfb) _have Xvfb ;; *) _have "$p" ;; esac \
+      && _stack_say "installed $p" || _stack_warn "could not install $p (apt-get install $p)"
+  done
+}
+
+_stack_install_chrome() {
+  _chrome >/dev/null && return 0
+  # Google ships amd64 only; anywhere else the fallback is the only candidate.
+  if [[ "$(dpkg --print-architecture 2>/dev/null)" == amd64 ]] \
+     && _stack_repo google-chrome https://dl.google.com/linux/linux_signing_key.pub \
+          "https://dl.google.com/linux/chrome/deb/ stable main" "arch=amd64"; then
+    _stack_apt_update; _stack_apt install google-chrome-stable
+    _chrome >/dev/null && { _stack_say "installed google-chrome-stable"; return 0; }
+  fi
+  _stack_apt_update; _stack_apt install chromium
+  _chrome >/dev/null && { _stack_say "installed chromium (fallback: no google-chrome-stable for this box)"; return 0; }
+  _stack_warn "could not install a chrome (google-chrome-stable, or chromium as fallback)"
+  return 1
+}
+
+_stack_install_node() {
+  _stack_node_ok && return 0
+  local was; was=$(_stack_node_major)
+  if _stack_repo nodesource https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+       "https://deb.nodesource.com/node_$STACK_NODE_MAJOR.x nodistro main"; then
+    _stack_apt_update; _stack_apt install nodejs
+    # Ubuntu's `npm` drags in libnode-dev (via node-gyp), whose headers NodeSource's
+    # nodejs also ships, so dpkg refuses the overwrite. NodeSource's nodejs carries
+    # its own npm and replaces Ubuntu's anyway: remove that one package, retry once.
+    if ! _stack_node_ok && dpkg -s libnode-dev >/dev/null 2>&1; then
+      _stack_say "removing Ubuntu's libnode-dev (and the npm that needs it): NodeSource's nodejs ships its own npm"
+      _stack_apt remove libnode-dev && _stack_apt install nodejs
+    fi
+  fi
+  if _stack_node_ok; then
+    _stack_say "installed Node.js $(node --version 2>/dev/null) (NodeSource $STACK_NODE_MAJOR${was:+, was $was})"
+    return 0
+  fi
+  local now; now=$(_stack_node_major)
+  if [[ -n "$now" && -x /usr/bin/node && "$(command -v node)" != /usr/bin/node ]]; then
+    _stack_warn "Node.js $STACK_NODE_MAJOR may be in /usr/bin, but the node on PATH is $(command -v node) (v$now) and it comes first — remove it or put /usr/bin ahead of it"
+  else
+    _stack_warn "could not install Node.js >= $STACK_NODE_FLOOR (NodeSource $STACK_NODE_MAJOR)"
+  fi
+  return 1
+}
+
+_stack_install_pin() {
+  local want d had; want=$(_stack_pin)
+  _stack_pin_ok && return 0
+  _stack_node_ok && _have npm || { _stack_warn "playwright-core $want not installed: it needs Node.js >= $STACK_NODE_FLOOR and npm — \`5dive browser run\` will refuse here"; return 1; }
+  d=$(_stack_pkg_dir); had=$(_stack_pin_have)
+  timeout 300 npm install --prefix "$d" --omit=dev --ignore-scripts --no-audit --no-fund --no-package-lock --loglevel=error >/dev/null 2>&1
+  # Grade where the box ENDED UP, never whether npm exited 0.
+  if _stack_pin_ok; then
+    _stack_say "installed playwright-core ${had:+$had -> }$want in $d"
+    return 0
+  fi
+  _stack_warn "playwright-core reads '$(_stack_pin_have)' in $d where the pin is $want — \`5dive browser run\` will refuse here"
+  return 1
+}
+
+_stack_converge() {
+  case "${FIVEDIVE_BROWSER_STACK:-}" in off|0|no|false) return 0 ;; esac
+  local missing; missing=$(_stack_missing)
+  [[ -n "$missing" ]] || return 0
+  local list; list=$(paste -sd, <<<"$missing" | sed 's/,/, /g')
+  if ! _have apt-get; then
+    _stack_warn "this box is missing $list, and it has no apt-get, so setup installs nothing. Install them once yourself, then re-run: $SETUP_CMD"
+    return 1
+  fi
+  printf 'installing what the browser needs and this box lacks: %s\n' "$list"
+  _stack_install_x
+  _stack_install_chrome || true
+  _stack_install_node || true
+  _stack_install_pin || true
+  missing=$(_stack_missing)
+  if [[ -n "$missing" ]]; then
+    _stack_warn "still missing after install: $(paste -sd, <<<"$missing" | sed 's/,/, /g'). The store is made anyway; re-run $SETUP_CMD once that is fixed."
+    return 1
+  fi
+  printf '  browser stack ready\n'
+}
+
 cmd_setup() {
   [[ "$(id -u)" == 0 ]] || die "$E_PERM" "setup creates a root-owned store and a seat-owned subdirectory under it. Run: $SETUP_CMD"
+  # The stack first, and before the seat checks: it is box-wide, and the root
+  # operator of a self-hosted box (no SUDO_USER, refused as a seat just below)
+  # is exactly who runs this to get it. Never fatal — see _stack_converge.
+  _stack_converge || true
   local seat; seat="$(_seat)"
-  [[ "$seat" != root ]] || die "$E_USAGE" "refusing to make root a browser seat — run this via sudo from the seat that will own the profiles, so SUDO_USER names it."
+  [[ "$seat" != root ]] || die "$E_USAGE" "refusing to make root a browser seat — run this via sudo from the seat that will own the profiles, so SUDO_USER names it. (The box-wide browser stack was checked above either way; an agent seat gets its store at \`5dive agent create\`, or: sudo env FIVEDIVE_BROWSER_SEAT=agent-<name> 5dive browser setup.)"
   id -u "$seat" >/dev/null 2>&1 || die "$E_USAGE" "no unix user '$seat' — a profile is owned by a real uid or it is not isolated."
   # DIVE-4730 — a unix account is not a seat. Refuse BEFORE the store is made:
   # the timer is the lasting artifact, and a store for an account nobody will
