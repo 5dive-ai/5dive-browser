@@ -1,6 +1,6 @@
 {
   "name": "browser",
-  "version": "1.35.0",
+  "version": "1.36.0",
   "description": "Browse and act on any website with nothing connected; where it must be you, persistent human-authenticated sessions you log into once by hand (several accounts per site). Paying stops for your approval by default; posting, sending and deleting go ahead and are logged for you; set careful and all four wait for your yes. Never solves a security challenge; it stops and asks you.",
   "author": {
     "name": "5dive",
@@ -38,7 +38,7 @@
       "review": "official"
     },
     "setup": {
-      "hint": "browser needs a root-created profile store that 5dive will not create behind your back, and a Chrome on the box.",
+      "hint": "browser needs Google Chrome, a virtual screen, VNC and Node.js 22 on this box, which 5dive will not install behind your back. The command below installs whichever of them are missing, one named step at a time (apt boxes: Debian, Ubuntu), and after it every agent you hire gets a browser.",
       "command": "sudo 5dive browser setup"
     }
   }

@@ -3,6 +3,11 @@
 # lacks (chrome, Xvfb, x11vnc, websockify, Node >= 20, the pinned playwright-core),
 # and touches nothing on a box that already has it (every hosted VM).
 #
+# DIVE-6112 — only a PERSON installs. setup is driven as its three callers:
+#   root   `sudo 5dive browser setup` with no SUDO_USER: the box, exits 0, no store
+#   person the same line from a sudo user (SUDO_USER = that seat): stack + its store
+#   hire   agent create/import (FIVEDIVE_BROWSER_SEAT set): installs nothing, names it
+#
 # Driven through the real bin/browser as a subprocess. Nothing real is installed:
 # apt-get, curl, gpg, dpkg and npm are fakes on a SANDBOX PATH that holds only the
 # core tools setup needs — a CI runner ships its own chrome, Xvfb and node, and a
@@ -33,6 +38,7 @@ done
 cat > "$CORE/id" <<ID
 #!$(command -v bash)
 [[ "\$*" == "-u" ]] && { echo 0; exit 0; }
+[[ "\$*" == "-un" && -n "\${FAKE_UN:-}" ]] && { echo "\$FAKE_UN"; exit 0; }
 exec "$REALID" "\$@"
 ID
 for c in systemctl visudo 5dive; do printf '#!%s\nexit 0\n' "$(command -v bash)" > "$CORE/$c"; done
@@ -106,10 +112,15 @@ full_box() {  # everything a hosted VM has
   mkdir -p "$TMP/pkg/node_modules/playwright-core"
   printf '{\n  "name": "playwright-core",\n  "version": "%s"\n}\n' "$PIN" > "$TMP/pkg/node_modules/playwright-core/package.json"
 }
-setup_go() {  # setup_go [bin] — run setup in the sandbox
-  local bin="${1:-$TMP/pkg/bin/browser}" o="$TMP/.o" e="$TMP/.e"
-  env -i HOME="$TMP" PATH="$BOX:$CORE" STATE_DIR="$TMP/state" \
-    FIVEDIVE_BROWSER_SEAT="${SEAT_AS:-$SEAT}" FIVEDIVE_BROWSER_AGENT_GROUP="$(id -gn)" \
+setup_go() {  # setup_go [bin] — run setup in the sandbox; AS=root|person (default)|hire
+  local bin="${1:-$TMP/pkg/bin/browser}" o="$TMP/.o" e="$TMP/.e" who=()
+  case "${AS:-person}" in
+    root)   who=(FAKE_UN=root) ;;                      # no SUDO_USER, no seat named
+    person) ;;                                         # id -un names the seat, as SUDO_USER would
+    hire)   who=(FIVEDIVE_BROWSER_SEAT="$SEAT") ;;      # what seed_browser_store_for_seat passes
+  esac
+  env -i HOME="$TMP" PATH="$BOX:$CORE" STATE_DIR="$TMP/state" "${who[@]}" \
+    FIVEDIVE_BROWSER_AGENT_GROUP="$(id -gn)" FIVEDIVE_BROWSER_HOSTED_CONVERGER="$TMP/hosted-converger" \
     FIVEDIVE_BROWSER_PROFILE_ROOT="$TMP/state/browser-profiles" \
     FIVEDIVE_BROWSER_SYSTEMD_DIR="$TMP/systemd" FIVEDIVE_BROWSER_SYSTEMCTL=systemctl \
     FIVEDIVE_BROWSER_SUDOERS_DIR="$TMP/sudoers" FIVEDIVE_BROWSER_VISUDO="$CORE/visudo" \
@@ -138,6 +149,11 @@ for w in 'installed xvfb' 'installed x11vnc' 'installed websockify' 'installed g
   tc "T1 ...says: $w" "$w" "$OUT"
 done
 tc 'T1 ...and still makes the store'                   'profile store ready' "$OUT"
+for w in 'Step 1/4 — virtual screen and VNC (xvfb, x11vnc, websockify)' 'Step 2/4 — Google Chrome' 'Step 3/4 — Node.js 22' "Step 4/4 — playwright-core $PIN" \
+         'installing xvfb x11vnc websockify (apt)...' "installing google-chrome-stable (Google's apt repo)..." 'installing Node.js 22 (NodeSource)...' "installing playwright-core $PIN (npm"; do
+  tc "T1 ...numbered, named: $w" "$w" "$OUT"
+done
+tc 'T1 ...a person from a seat ends on the ready line'  'browser ready: agents you hire get a browser' "$(tail -n1 <<<"$OUT")"
 t  'T1 ...nothing on stderr'                           '' "$ERR"
 t  'T1 ...apt-get update ran once per new source, not per package' 3 "$(grep -c '^apt-get .* update' "$STACK_LOG")"
 
@@ -211,15 +227,39 @@ t  'T7 wrong version: setup exits 0'                   0 "$RC"
 tc 'T7 ...says npm left the wrong version'             "playwright-core reads '1.0.0' in $TMP/pkg where the pin is $PIN" "$ERR"
 tn 'T7 ...and never claims it installed'               'installed playwright-core' "$OUT"
 
-# --- T8 root operator: the stack is converged before the root-seat refusal ----
-fresh_box; SEAT_AS=root setup_go
-t  'T8 root: still refused as a seat (exit 64)'        64 "$RC"
-tc 'T8 ...but the stack went in first'                 'browser stack ready' "$OUT"
-tc 'T8 ...and the refusal says where seat stores come from' 'agent seat gets its store at `5dive agent create`' "$ERR"
+# --- T8 root, no seat: the README's line on a fresh box (DIVE-6112 NEGATIVE CONTROL)
+# EUID 0, no SUDO_USER. It installs, names each install, and EXITS 0 — it used to
+# install and then die "refusing to make root a browser seat", exit 64.
+root_arms() {  # root_arms <label> — the arms a revert of DIVE-6112 item 1 turns red
+  t  "$1 root: setup exits 0"                          0 "$RC"
+  for w in 'Step 1/4 — virtual screen and VNC' 'Step 2/4 — Google Chrome' 'Step 3/4 — Node.js 22' 'Step 4/4 — playwright-core' \
+           'installing xvfb x11vnc websockify' 'installed xvfb' "installing google-chrome-stable" 'installed google-chrome-stable' \
+           'installing Node.js 22' 'installed Node.js v22.11.0' 'installing playwright-core' "installed playwright-core $PIN"; do
+    tc "$1 ...stdout names: $w" "$w" "$OUT"
+  done
+  t  "$1 ...and ends on the ready line"                'browser ready: agents you hire get a browser' "$(tail -n1 <<<"$OUT")"
+  t  "$1 ...nothing on stderr"                         '' "$ERR"
+}
+fresh_box; AS=root setup_go; root_arms T8
+tn 'T8 ...no refusal'                                  'refusing to make root' "$ERR"
+t  'T8 ...no store is made for root'                   no "$([[ -e "$TMP/state/browser-profiles/root" ]] && echo yes || echo no)"
+t  'T8 ...nor a seat-shaped store line'                '' "$(grep 'profile store ready' <<<"$OUT")"
+
+fresh_box; full_box; AS=root setup_go
+t  'T8b root, box has everything: exits 0'             0 "$RC"
+t  'T8b ...apt, curl and npm never called'             '' "$LOG"
+t  'T8b ...says only that it is ready'                 'browser ready: agents you hire get a browser' "$OUT"
+
+fresh_box; APT_FAIL="google-chrome-stable chromium" AS=root setup_go
+t  'T8c root, chrome fails: still exits 0 (never fatal)' 0 "$RC"
+tc 'T8c ...the failure is a named line'                'could not install a chrome' "$ERR"
+tc 'T8c ...and the box is NOT called ready'            'browser NOT ready' "$ERR"
+tn 'T8c ...no ready line on stdout'                    'browser ready:' "$OUT"
+tc 'T8c ...what did install is still said'             'installed Node.js v22.11.0' "$OUT"
 
 # --- T9 MUTANT: setup without the converge call is T1-red ---------------------
 MUT="$TMP/mutant"; rm -rf "$MUT"; cp -r "$ROOT/browser" "$MUT"
-perl -pi -e 's/^  _stack_converge \|\| true$/  : # MUTANT (DIVE-6089)/' "$MUT/bin/browser"
+perl -pi -e 's/^    _stack_converge \|\| stack_ok=0$/    : # MUTANT (DIVE-6089)/' "$MUT/bin/browser"
 t  'T9 (anchor) the mutation landed'                   1 "$(grep -c 'MUTANT (DIVE-6089)' "$MUT/bin/browser")"
 fresh_box; setup_go "$MUT/bin/browser"
 t  'T9 MUTANT: nothing is installed — T1 would be red' '' "$LOG"
@@ -229,6 +269,62 @@ tn 'T9 MUTANT: ...and no install line'                 'installing what the brow
 fresh_box; STACK_ENV=off setup_go
 t  'T10 FIVEDIVE_BROWSER_STACK=off: nothing called'    '' "$LOG"
 t  'T10 ...setup exits 0'                              0 "$RC"
+fresh_box; STACK_ENV=off AS=root setup_go
+t  'T10b off, as root: nothing called, exits 0'        "0 " "$RC $LOG"
+
+# --- T11 a HIRE on a self-hosted box without the stack: installs nothing ------
+# agent create/import passes FIVEDIVE_BROWSER_SEAT and shows only a FAILED
+# setup's last line. So: no apt, no npm, the store still made, exit 69, and the
+# last line is the command to run.
+fresh_box; AS=hire setup_go
+t  'T11 hire, no stack: apt, curl and npm are never called' '' "$LOG"
+t  'T11 ...exits 69 so the hire shows the line'        69 "$RC"
+tc 'T11 ...the store is still made'                    'profile store ready' "$OUT"
+tn 'T11 ...nothing claims to install'                  'installing' "$OUT"
+tc 'T11 ...the last line names what is missing'        'this box has no browser stack yet (missing Xvfb (xvfb), chrome (google-chrome-stable)' "$(tail -n1 <<<"$ERR")"
+tc 'T11 ...and the one command'                        'A hire installs nothing; run once, as root: sudo 5dive browser setup' "$(tail -n1 <<<"$ERR")"
+
+# --- T12 a hire on a HOSTED box missing the stack: as before DIVE-6089 --------
+fresh_box; : > "$TMP/hosted-converger"; AS=hire setup_go; rm -f "$TMP/hosted-converger"
+t  'T12 hire, hosted box: exits 0'                     0 "$RC"
+t  'T12 ...nothing called'                             '' "$LOG"
+t  'T12 ...nothing on stderr (its converger owns the stack)' '' "$ERR"
+
+# --- T13 a hire on a box with everything: exit 0, byte-identical to off -------
+fresh_box; full_box; STACK_ENV=off AS=hire setup_go; OFF_OUT="$OUT"
+: > "$STACK_LOG"; AS=hire setup_go
+t  'T13 hire, full box: exits 0'                       0 "$RC"
+t  'T13 ...nothing called'                             '' "$LOG"
+t  'T13 ...stdout byte-identical to the step off'      "$OFF_OUT" "$OUT"
+t  'T13 ...nothing on stderr'                          '' "$ERR"
+fresh_box; STACK_ENV=off AS=hire setup_go
+t  'T13b hire, no stack, FIVEDIVE_BROWSER_STACK=off: exits 0, silent' "0|" "$RC|$ERR"
+
+# --- T14 MUTANT: the install lines hidden — the T8 arms must go red -----------
+MUT2="$TMP/mutant2"; rm -rf "$MUT2"; cp -r "$ROOT/browser" "$MUT2"
+perl -pi -e 's/^(_stack_say\(\) \{ printf .*?);( \})$/$1 >\/dev\/null;$2 # MUTANT-HIDE/; s/^(_stack_step\(\) \{ printf .*?);( \})$/$1 >\/dev\/null;$2 # MUTANT-HIDE/' "$MUT2/bin/browser"
+t  'T14 (anchor) both mutations landed'                2 "$(grep -c 'MUTANT-HIDE' "$MUT2/bin/browser")"
+fresh_box; AS=root setup_go "$MUT2/bin/browser"
+P0=$PASS F0=$FAIL; root_arms T14m >/dev/null; MUT_RED=$((FAIL-F0)); PASS=$P0; FAIL=$F0
+t  'T14 MUTANT: the T8 root arms go red (>= 12 of them)' yes "$( (( MUT_RED >= 12 )) && echo yes || echo no)"
+t  'T14 MUTANT: ...yet the stack still went in (the arms grade the LINES)' "yes $PIN" "$([[ -x "$BOX/google-chrome-stable" ]] && echo yes) $(sed -n 's/.*"version": "\(.*\)".*/\1/p' "$MUT2/node_modules/playwright-core/package.json" 2>/dev/null)"
+
+# --- T15 MUTANT: item 1 reverted (root refused as a seat) — T8 goes red -------
+MUT3="$TMP/mutant3"; rm -rf "$MUT3"; cp -r "$ROOT/browser" "$MUT3"
+perl -pi -e 's/^    if \[\[ "\$seat" == root \]\]; then$/    if false; then # MUTANT-REVERT/' "$MUT3/bin/browser"
+t  'T15 (anchor) the mutation landed'                  1 "$(grep -c 'MUTANT-REVERT' "$MUT3/bin/browser")"
+fresh_box; AS=root setup_go "$MUT3/bin/browser"
+t  'T15 MUTANT: root exits non-zero again (T8 red)'   64 "$RC"
+tc 'T15 MUTANT: ...with the old refusal'               'refusing to make root a browser seat' "$ERR"
+
+# --- T16 plugin.json: voice's `setup` shape, pointing at this command ---------
+# `plugin add` prints this block and runs nothing (5dive-cli cmd_plugin_add);
+# voice/.claude-plugin/plugin.json is {hint, command} and so is this one.
+MJ="$ROOT/browser/.claude-plugin/plugin.json"
+t  'T16 setup block is exactly {hint, command}'         '["command","hint"]' "$(jq -c '.fivedive.setup | keys' "$MJ")"
+t  'T16 ...command is the box setup line'                'sudo 5dive browser setup' "$(jq -r '.fivedive.setup.command' "$MJ")"
+tc 'T16 ...hint names what it installs'                  'Google Chrome, a virtual screen, VNC and Node.js 22' "$(jq -r '.fivedive.setup.hint' "$MJ")"
+tn 'T16 ...and no hand npm line'                         'npm install' "$(jq -r '.fivedive.setup.hint' "$MJ")"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

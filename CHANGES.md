@@ -8,6 +8,32 @@ that file stays where it is.
 
 ## Unreleased
 
+### Changed — the browser stack installs at `sudo 5dive browser setup`, never inside a hire (DIVE-6112), 1.36.0
+
+lodar, 2026-10-12, after DIVE-6089: "realy hiring does all installs? ... is it good decision?",
+then "I would add 5dive browser setup or something" and "follow our established pattern". The
+install is now the explicit command a person runs to get a browser, the shape voice already has
+(`sudo 5dive voice setup`): `plugin add` prints the plugin's `setup` block, and that command
+installs in numbered, named steps.
+
+- **`sudo 5dive browser setup` as root with no seat** (a fresh self-hosted box) installs what is
+  missing in four steps (virtual screen and VNC, Google Chrome, Node.js 22, the pinned
+  playwright-core), names each install as it starts, and ends `browser ready: agents you hire get
+  a browser`, exit 0. It used to install the stack and then die "refusing to make root a browser
+  seat", exit 64. No store is made for root; each hire makes its own seat's.
+- **A hire installs nothing.** `agent create`/`agent import` runs setup with the seat named and
+  shows only a failed setup's last line, so on a fresh box the first hire spent about two silent
+  minutes installing Chrome and Node. Now a hire on a box without the stack still gets its store,
+  and setup exits 69 ending in the command to run: the hire prints "this box has no browser stack
+  yet (…). A hire installs nothing; run once, as root: sudo 5dive browser setup". A hosted box
+  (its own converger owns the stack) and `FIVEDIVE_BROWSER_STACK=off` stay silent, exit 0.
+- **The plugin's `setup` hint** names Chrome, a virtual screen, VNC and Node.js 22 instead of a
+  store and "a Chrome on the box".
+- Never fatal: a failed apt is a named line, every other step still runs, and the seat's store is
+  still made. A box that has everything (every hosted VM) gets no apt, no npm and no new output.
+- Harness: `tests/browser_setup_stack_unit.sh` now drives the three callers (root, a person from a
+  seat, a hire) and two mutants: one hides the install lines, one restores the root refusal.
+
 ### Added — `sudo 5dive browser setup` installs the browser stack a self-hosted box lacks (DIVE-6089), 1.35.0
 
 lodar, 2026-10-12: "why chrome, a virtual screen, vnc and node 22 dont come through 5dive browser

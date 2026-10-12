@@ -10,14 +10,15 @@ person — the plugin never solves one.
 Tested on fresh Ubuntu 24.04 (2 vCPU / 4 GB) at OVH and Hetzner. You need a sudo user and your own
 Claude or OpenAI subscription or API key.
 
-**1. Install.** Three lines. The first agent's `browser setup` (which `init` runs for it) installs
-whatever the box is missing: Google Chrome, a virtual screen, VNC, Node.js 22 and the plugin's
-browser library. Each install is named as it runs, and on apt boxes only (Debian, Ubuntu).
+**1. Install.** Four lines. `browser setup` installs whatever the box is missing, one numbered
+step at a time, each install named as it runs (apt boxes only: Debian, Ubuntu). Agents you hire
+after it get a browser.
 
 ```sh
 curl -fsSL https://install.5dive.ai | sudo bash
 sudo 5dive plugin add 5dive-ai/5dive-browser
-sudo 5dive init     # your first agent; run it AFTER the plugin so the agent gets a browser
+sudo 5dive browser setup   # installs Chrome, a virtual screen, VNC and Node 22
+sudo 5dive init            # your first agent; run it AFTER setup so the agent gets a browser
 ```
 
 **2. Sign in to a site once, by hand.** Chrome runs on the box's virtual screen, and you reach it
@@ -99,10 +100,11 @@ sudo 5dive browser setup
 ```
 
 On a **self-hosted** box, which never runs `browser-stack.sh`, that same command also installs
-the stack when it is missing (DIVE-6089): Google Chrome, `xvfb x11vnc websockify`, Node.js 22 from
-NodeSource when node is missing or older than 20, and the pinned playwright-core — apt boxes only,
-each install named, nothing touched that is already there. `agent create` runs `setup` for each
-new seat, so on a box where the plugin is added before `5dive init` it happens with no extra line.
+the stack when it is missing (DIVE-6089, DIVE-6112): Google Chrome, a virtual screen and VNC,
+Node.js 22 when node is missing or older than 20, and the pinned playwright-core, in four numbered
+steps, each install named, apt boxes only, nothing touched that is already there. It is the only
+place the stack is installed: `agent create` runs `setup` for each new seat and installs nothing,
+and on a box without the stack it says to run `sudo 5dive browser setup`.
 
 ## Layout
 
