@@ -141,4 +141,4 @@ Extracted from `5dive-ai/5dive-plugins` (`plugins/browser`) on 2026-09-20 with i
 intact (DIVE-4661). The registry keeps a deprecation entry so `plugin add browser` keeps resolving
 for boxes installed before the move.
 
-MIT licensed. Part of [5dive](https://5dive.ai).
+Apache 2.0 licensed (see LICENSE). Part of [5dive](https://5dive.ai).
