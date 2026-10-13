@@ -8,7 +8,7 @@
     "url": "https://5dive.ai"
   },
   "homepage": "https://github.com/5dive-ai/5dive-browser",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "skills": "./skills/",
   "keywords": [
     "browser",
