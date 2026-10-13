@@ -153,6 +153,8 @@ bash tests/browser_plugin_unit.sh      # the graded suite; needs no Chrome and n
 `tests/browser_session_bench.sh` and `tests/browser_snapshot_bench.sh` are benchmarks, not gates —
 they want a real Chrome and are not run by CI.
 
+To report a bug or send a change, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## History
 
 Extracted from `5dive-ai/5dive-plugins` (`plugins/browser`) on 2026-09-20 with its commit history
