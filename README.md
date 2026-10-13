@@ -77,6 +77,10 @@ run without asking and are logged. To be asked before those too:
 sudo 5dive browser approvals policy set careful   # ask before paying, posting, sending and deleting
 ```
 
+Want an agent built for this? [Clicker](https://github.com/5dive-ai/5dive-marketplace/tree/main/packs/clicker)
+is the ready-made browser operator in the 5dive marketplace, and she starts with lessons from her own
+browser jobs: `5dive agent import clicker --as=<name>`.
+
 ## Install
 
 ```sh
