@@ -59,6 +59,24 @@ the VNC server and its bridge bind to `127.0.0.1`, and the only way in is your S
   sign-in check. Other sites are checked at their home page, so a home page that always shows a
   login form reads as logged out.
 
+## What your agent gets
+
+Two skills come with the plugin, and the agent picks them up on its own:
+
+- **use-browser**: "go to <site> and …" work in a real Chrome on the box. It clicks, types, fills
+  forms and checks pages, signed in or not.
+- **connect-site**: when a job needs your own account on a site, it asks you to sign in once, then
+  uses that session.
+
+Before a step that pays, the agent stops and asks you, with a screenshot and what it is about to
+pay. On a paired agent the ask comes to Telegram with Approve and Decline. An ask nobody answers
+expires after 30 minutes, and a yes covers exactly those steps, once. Posting, sending and deleting
+run without asking and are logged. To be asked before those too:
+
+```sh
+sudo 5dive browser approvals policy set careful   # ask before paying, posting, sending and deleting
+```
+
 ## Install
 
 ```sh
