@@ -5706,22 +5706,30 @@ t  'T32o ...the click reached the held page, nothing reloaded it, nothing launch
    "$(tail -n +$((DREC_LINES+1)) "$DREC" | jq -rs '[([.[]|select(.call=="click")]|length), ([.[]|select(.call=="goto" and .kind=="first")]|length)]|join(" ")') $(launches)"
 tc 'T32o ...and it says so, with the way to skip the URL next time' 'already on, so the steps carry on there' "$ERR"
 # NEGATIVES: a stale note, another Google page, and the mutant all go where the host
-# says (no google login here: the public profile, cold), and never touch this browser.
-n32o() {  # <bin> <crumb-age-s> <url> -> "<clicks on the held browser> <launched in _public: yes|no>"
+# says (no google login here: the public profile), never to warmact.test's browser.
+# Graded on the routing itself: the note, and the profile the act ran in (its
+# artifacts land under that profile's dir). A click count cannot tell the two
+# browsers apart, since both stubs call their first page "first".
+n32o() {  # <bin> <crumb-age-s> <url> -> "<carried on: yes|no> <ran in: the profile its artifacts name>"
+  env PATH="$SPATH" "$BROWSER" serve _public --stop >/dev/null 2>&1
   printf 'warmact.test\t%s\t%s\n' "$(( $(date +%s) - $2 ))" "$NCH" > "$NCRUMB"
-  local l; l=$(wc -l < "$DREC")
-  dwarm env FIVEDIVE_BROWSER_NO_DAEMON=1 "$1" act "$3" --steps='[{"op":"click","selector":"#star"}]' --out="$TMP/act32o2"
-  printf '%s %s' "$(tail -n +$((l+1)) "$DREC" | jq -rs '[.[]|select(.call=="click" and .kind=="first")]|length')" \
-    "$(tail -n +$((l+1)) "$DREC" | jq -rs '[.[]|select(.call=="launch")|.profile|endswith("/_public")]|any' | sed 's/true/yes/;s/false/no/')"; }
-t  'T32o NEGATIVE: a note older than 15 minutes is not followed' '0 yes' \
+  local ra="$FIVEDIVE_BROWSER_PROFILE_ROOT/$SEAT/.read-artifacts" before
+  before="$(ls "$ra" 2>/dev/null | sort)"
+  dwarm env FIVEDIVE_BROWSER_NO_DAEMON=1 "$1" act "$3" --steps='[{"op":"click","selector":"#star"}]'
+  printf '%s %s' "$(grep -q 'already on, so the steps carry on there' <<<"$ERR" && echo yes || echo no)" \
+    "$(comm -13 <(printf '%s\n' "$before") <(ls "$ra" 2>/dev/null | sort) | head -1 | sed 's/\.[^.]*$//')"; }
+t  'T32o NEGATIVE: a note older than 15 minutes is not followed' 'no _public' \
    "$(n32o "$BROWSER" 2000 'https://accounts.google.com/v3/signin/accountchooser?client_id=945160079396')"
-t  'T32o NEGATIVE: another Google page is not the page it is on' '0 yes' \
+t  'T32o NEGATIVE: another Google page is not the page it is on' 'no _public' \
    "$(n32o "$BROWSER" 0 'https://accounts.google.com/signin/oauth/legacy/consent?part=x')"
+t  'T32o (control) the same harness sees the carry-on' 'yes warmact.test' \
+   "$(n32o "$BROWSER" 0 'https://accounts.google.com/v3/signin/accountchooser?client_id=945160079396')"
 MUT32O="$TMP/browser-noflow"
 sed 's|_r="$(_flow_site "$2")"|_r="$(false)"|' "$BROWSER" > "$MUT32O"; chmod +x "$MUT32O"
 t  'T32o mutant applied' yes "$(cmp -s "$MUT32O" "$BROWSER" && echo no || echo yes)"
-t  'T32o MUTANT (no flow note): the cut chooser URL opens cold in another profile (round 3)' '0 yes' \
+t  'T32o MUTANT (no flow note): the cut chooser URL goes to another profile (round 3)' 'no _public' \
    "$(n32o "$MUT32O" 0 'https://accounts.google.com/v3/signin/accountchooser?client_id=945160079396')"
+env PATH="$SPATH" "$BROWSER" serve _public --stop >/dev/null 2>&1
 rm -f "$NCRUMB"
 env PATH="$SPATH" "$BROWSER" serve warmact.test --stop >/dev/null 2>&1
 
@@ -8266,8 +8274,10 @@ env PATH="$SPATH" "$BROWSER" serve warmdl.test --stop >/dev/null 2>&1
 #   T50h  a served public profile is never offered as a box login (at base: _public.offered)
 PUB50="$FIVEDIVE_BROWSER_PROFILE_ROOT/$SEAT/_public"
 U50="https://code50.test/verify"
+# The flow note (DIVE-6247, T32o) would carry a same-URL act on with no reload by
+# itself, so T50 turns it off: these arms grade the daemon's own stay check.
 pub50() { run env PATH="$SPATH" DISPLAY= NODE_PATH="$DSTUB/node_modules" PWREC="$DREC" DPWDOM="$DPWDOM" \
-              FIVEDIVE_BROWSER_PUBLIC_KEEP=1 "$@"; }
+              FIVEDIVE_BROWSER_PUBLIC_KEEP=1 FIVEDIVE_BROWSER_FLOW_TTL=-1 "$@"; }
 pub50stop() { env PATH="$SPATH" FIVEDIVE_BROWSER_SESSION_DAEMON="${2:-$DAEMONBIN}" "${1:-$BROWSER}" serve _public --stop >/dev/null 2>&1; }
 pub50live() { kill -0 "$(dkv "$PUB50/.5dive-serve" daemon_pid)" 2>/dev/null && echo yes || echo no; }
 gotos50() { tail -n +$(( $1 + 1 )) "$DREC" | jq -rs --arg u "$U50" '[.[]|select(.call=="goto" and .url==$u)]|length'; }
