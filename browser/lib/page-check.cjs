@@ -88,17 +88,31 @@ function challenge(html, url) {
 //          robot check: still the hard stop.
 //   none   no Google button: the generic sign-in refusal stands.
 const GOOGLE_BUTTON = /\b(continue|sign ?in|sign ?up|log ?in|login|signup|register|get started)\s+(with|using|via)\s+google\b/;
+// A PROVIDER BUTTON NAMED ONLY "Google" (DIVE-6247): coda.io's sign-up lands on
+// id.superhuman.com, "Continue to Superhuman Docs" over three buttons that say
+// just Google, Microsoft and Apple. Round 3 refused that page, so the agent took
+// its URL into the public profile, which has no Google session, and met Google's
+// email box. A button or link whose whole visible text is "Google" is the same
+// offer as "Continue with Google".
+function googleOnlyButton(markup) {
+  const re = /<(button|a)\b[^>]*>([\s\S]*?)<\/\1\s*>/gi; let m;
+  while ((m = re.exec(markup))) {
+    if (m[2].replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase() === 'google') return true;
+  }
+  return false;
+}
 function signin(html, url) {
   const text = visibleText(html);
-  const b = text.match(GOOGLE_BUTTON);
-  if (!b) return { verdict: 'none', kind: 'no-google', why: 'the page offers no "Continue with Google"' };
   const markup = visibleMarkup(html);
+  const m = text.match(GOOGLE_BUTTON);
+  const b = m ? `"${m[0]}"` : googleOnlyButton(markup) ? 'a button that says just "Google"' : '';
+  if (!b) return { verdict: 'none', kind: 'no-google', why: 'the page offers no "Continue with Google"' };
   if (visibleInputs(markup, (a) => (a.type || '').toLowerCase() === 'password').length) {
     return { verdict: 'stop', kind: 'password', why: 'the page shows a password box' };
   }
   const c = challenge(html, url);
   if (c.challenge) return { verdict: 'stop', kind: 'challenge', why: c.why };
-  return { verdict: 'offer', kind: 'google-button', why: `the page offers "${b[0]}" and shows no password box, code box or robot check` };
+  return { verdict: 'offer', kind: 'google-button', why: `the page offers ${b} and shows no password box, code box or robot check` };
 }
 
 module.exports = { challenge, signin };

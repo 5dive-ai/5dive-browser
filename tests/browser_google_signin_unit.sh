@@ -97,5 +97,55 @@ t 'G16h "Superhuman Docs will be able to" inside the list is the name, not Drive
 t 'G16f a hidden block that never closes is kept on the screen (the stricter reading)' 'ask wide-consent' \
   "$(g "$LC" "$(legacy 'Whimsical' "<li><div aria-hidden=\"true\">x</li><li>See your Google Drive files</li>")")"
 
+# --- DIVE-6247: round 3's stop pages, real captures (trimmed to what a person sees) --
+# tests/fixtures/dive-6247/ is visibleMarkup() of the round-3 page.html each arm
+# names (marketing/reddit/2026-10-14-r3-shots/g-artifacts/), links and hidden values
+# blanked. Each arm also names what 1.40.0 said on the same page.
+FX="$PWD/tests/fixtures/dive-6247"
+gf() { node "$LIB" "$FX/$2" "$1" | jq -r '"\(.verdict) \(.kind)"'; }
+t 'G17 Pitch: basic consent with the profile detail list ("See your gender") is allowed (1.40.0: ask)' \
+  'allow basic-consent' "$(gf "$LC" pitch-consent.html)"
+t 'G17b Tally: the same consent, allowed (1.40.0: ask)' 'allow basic-consent' "$(gf "$LC" tally-consent.html)"
+t 'G17c NEGATIVE: Calendly, calendar scope on top of the same detail lists, still asks' 'ask wide-consent' \
+  "$(gf "$LC" calendly-consent.html)"
+t 'G17d ...naming the calendar, not a word from a detail list' 'yes' \
+  "$(node "$LIB" "$FX/calendly-consent.html" "$LC" | jq -r '.why' | grep -q '"calendars"' && echo yes || echo no)"
+DETAIL='<div><div>See your personal info</div><div><a></a><div><p>This app wants permission to:</p><li>See your gender</li><li>See your preferred languages</li></div></div></div>'
+t 'G17e a detail list is dropped with everything in it' 'allow basic-consent' "$(g "$LC" "$(legacy 'Whimsical' "<li>$DETAIL</li>")")"
+t 'G17f NEGATIVE: "See your gender" as a TOP-LEVEL line still asks' 'ask wide-consent' \
+  "$(g "$LC" "$(legacy 'Whimsical' "<li><div>See your gender</div></li>$BASIC3")")"
+t 'G17g NEGATIVE: a detail block that never closes is kept (the stricter reading)' 'ask wide-consent' \
+  "$(g "$LC" "$(legacy 'Whimsical' "<li><div><p>This app wants permission to:</p><li>See your gender</li>")")"
+t 'G17h NEGATIVE: a Drive line beside the detail lists still asks' 'ask wide-consent' \
+  "$(g "$LC" "$(legacy 'Whimsical' "<li>$DETAIL</li><li><div>See and download all your Google Drive files</div></li>")")"
+CH="$AC/v3/signin/accountchooser?access_type=online&client_id=945160079396&prompt=select_account&redirect_uri=https%3A%2F%2Fwhimsical.com%2Flogin-google%2F&scope=profile+email&continue=https%3A%2F%2Faccounts.google.com%2Fsignin%2Foauth%2Flegacy%2Fconsent"
+t 'G18 Whimsical: the chooser round 3 saw ("alex torn") is allowed' 'allow chooser' "$(gf "$CH" whimsical-chooser.html)"
+t 'G18b Coda: its chooser is allowed' 'allow chooser' "$(gf "$CH" coda-chooser.html)"
+t 'G18c Google'"'"'s 400 at the bare chooser path is an error, not "no saved account" (1.40.0: stop add-account)' \
+  'stop error' "$(gf "$AC/v3/signin/accountchooser" chooser-400.html)"
+t 'G18d NEGATIVE: Google'"'"'s email box still stops as adding an account' 'stop add-account' \
+  "$(gf "$AC/v3/signin/identifier?flowName=GeneralOAuthFlow" add-account.html)"
+t 'G18e NEGATIVE: a chooser with only "Use another account" still stops' 'stop add-account' \
+  "$(g "$CH" '<html><body><h1>Choose an account</h1><div>Use another account</div></body></html>')"
+t 'G18f NEGATIVE: an error page carrying a password box still stops at the password' 'stop password' \
+  "$(g "$AC/v3/signin/accountchooser" '<html><body>400. That'"'"'s an error.<input type="password" name="Passwd"></body></html>')"
+t 'G18g NEGATIVE: a robot check outranks an error page' 'stop robot' \
+  "$(g "$AC/v3/signin/accountchooser" '<html><body>400. That'"'"'s an error. Our systems have detected unusual traffic</body></html>')"
+
+# samePage: the page a browser is on, asked for again with its query cut (DIVE-6247)
+sp() { node "$LIB" --same-page "$1" "$2" && echo same || echo different; }
+t 'G19 the chooser asked for with its whole query gone is the same page' same "$(sp "$CH" "$AC/v3/signin/accountchooser")"
+t 'G19b ...with the query cut mid-parameter' same "$(sp "$CH" "${CH:0:150}")"
+t 'G19c ...with parameters dropped from the middle' same "$(sp "$CH" "$AC/v3/signin/accountchooser?client_id=945160079396&scope=profile+email")"
+t 'G19d NEGATIVE: another Google page is not the same page' different "$(sp "$CH" "$LC")"
+t 'G19e NEGATIVE: a parameter with another value is not the same page' different "$(sp "$CH" "$AC/v3/signin/accountchooser?client_id=1")"
+t 'G19f NEGATIVE: a parameter the page does not have is not the same page' different "$(sp "$CH" "$AC/v3/signin/accountchooser?hl=fr")"
+t 'G19g NEGATIVE: another host is not the same page' different "$(sp "$CH" "https://accounts.example.com/v3/signin/accountchooser")"
+t 'G19h a site'"'"'s own sign-in page, its query cut, is the same page' same \
+  "$(sp 'https://id.superhuman.com/signin?oauth_client_type=MEDIATED_WEB&client_id=superhumanDocs' 'https://id.superhuman.com/signin')"
+t 'G19i NEGATIVE: an ordinary page needs the exact URL (page 2 of a search is not page 1)' different \
+  "$(sp 'https://shop.test/search?q=shoes&page=2' 'https://shop.test/search?q=shoes')"
+t 'G19j the exact URL is always the same page' same "$(sp 'https://shop.test/search?q=shoes' 'https://shop.test/search?q=shoes')"
+
 printf 'google-signin: %d pass, %d fail\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

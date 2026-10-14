@@ -134,12 +134,18 @@ pages get one fixed answer each, whatever site led there:
 
 - **You may click:** the account chooser, to pick the saved account the task names (never another
   one); the "Sign in to <app> with Google" / "Continue as …" confirm; a consent screen that asks
-  only for basic profile and email. Carry on with `act` and no URL; the page you are on is kept.
+  only for basic profile and email (the "See your gender / languages" lines under the profile
+  item are its details, not extra access). Carry on with `act <the site you started on>` and no
+  URL: the whole sign-up stays in that one browser. Never copy a Google URL into a command; its
+  long query IS the sign-up, and a cut copy opens Google's "400. That's an error." page.
 - **Hard stop (exit 75), hand it over:** a password field, a verification code or 2-step prompt, a
   robot check, Google asking for an email address (adding an account), a chooser whose account is
   signed out. `5dive browser handoff <site>` (a robot check: `connect-request <site> --challenge`).
-- **A sign-up that lands on the site's own login page** with "Continue with Google" on it comes
-  back with a note saying so. Click that button and nothing else on that page.
+- **Google's error page (exit 76)**, "400. That's an error.": the sign-up was lost, not refused.
+  Open the site's sign-up again and click its Google button.
+- **A sign-up that lands on the site's own login page** with "Continue with Google" (or a button
+  that says just "Google") on it comes back with a note saying so. Click that button and nothing
+  else on that page, again with `act <site>` and no URL.
 - **Ask your owner (exit 73):** a consent screen that wants more than basic profile and email
   (calendar, contacts, Drive, ticking boxes). Tell them what it wants. Never click Allow on it; if
   they say yes, they click it themselves through `handoff`.

@@ -2142,8 +2142,8 @@ _signin_google_offer() {  # <html-file> [<url>] -> 0 = hand it back for the Goog
   [[ -s "$f" ]] && _have node && [[ -r "$_SELF_DIR/../lib/page-check.cjs" ]] || return 1
   v=$(node "$_SELF_DIR/../lib/page-check.cjs" signin "$f" "$u" 2>/dev/null | head -1)
   [[ "$(jq -r '.verdict' <<<"$v" 2>/dev/null)" == offer ]] || return 1
-  printf '%s: this is %s'"'"'s own sign-in page%s, handed back for its Google button only: %s. Click that and nothing else here; a password, a code or a robot check stops.\n' \
-    "$PROG" "${_PG_SITE:-the site}" "${u:+ ($u)}" "$(jq -r '.why' <<<"$v")" >&2
+  printf '%s: this is %s'"'"'s own sign-in page%s, handed back for its Google button only: %s. Click that and nothing else here, in this same browser with no URL (5dive browser act %s --steps='"'"'[…]'"'"'); a password, a code or a robot check stops.\n' \
+    "$PROG" "${_PG_SITE:-the site}" "${u:+ ($u)}" "$(jq -r '.why' <<<"$v")" "${_PG_SITE:-<site>}" >&2
   return 0
 }
 
@@ -2165,6 +2165,10 @@ _google_die() {  # <verdict-json>
   fi
   case "$kind" in
     robot) die "$E_COLD" "STOP: $why. Ask your owner to clear it, then carry on after their Done: 5dive browser connect-request $site --challenge --url=<the page you asked for>" ;;
+    # Not the owner's to fix (DIVE-6247): the flow was lost, and it starts again
+    # from the site. Exit 76: this capture is not the page, and logging in again
+    # would change nothing.
+    error) die "$E_NOT_READY" "STOP: $why. Open the site's sign-up again and click its Google button; never open a Google sign-in link by hand, its long query is the sign-up." ;;
     *)     die "$E_COLD" "STOP: $why ($kind). This is a hard stop for an agent; hand the window to your owner: 5dive browser handoff $site --reason=\"Google sign-in needs you ($kind)\"" ;;
   esac
 }
@@ -2178,8 +2182,8 @@ _google_page_guard() {
   v=$(node "$lib" "$f" "$u" 2>/dev/null | head -1)
   [[ -n "$v" ]] || return 1
   if [[ "$(jq -r '.verdict' <<<"$v" 2>/dev/null)" == allow ]]; then
-    printf '%s: Google sign-in page, allowed: %s. Pick only the saved account the task names; a password, a code, a robot check or a wider grant stops.\n' \
-      "$PROG" "$(jq -r '.why' <<<"$v")" >&2
+    printf '%s: Google sign-in page, allowed: %s. Pick only the saved account the task names; a password, a code, a robot check or a wider grant stops. Carry on in this same browser, with no URL: 5dive browser act %s --steps='"'"'[…]'"'"'\n' \
+      "$PROG" "$(jq -r '.why' <<<"$v")" "${_PG_SITE:-<site>}" >&2
     return 0
   fi
   _google_die "$v"
@@ -6356,6 +6360,7 @@ cmd_snapshot() {
   fi
 
   [[ -s "$stage/page.html" ]] || die "$E_UNAVAILABLE" "the capture produced no document; no evidence files were written"
+  _page_crumb "$site" "$(jq -r '.url // ""' <<<"$payload" 2>/dev/null)"
   _signin_guard "$stage/page.html" "$(jq -r '.url // ""' <<<"$payload" 2>/dev/null)"
   _challenge_hint "$stage/page.html" "$(jq -r '.url // ""' <<<"$payload" 2>/dev/null)" "$url"
 
@@ -6816,6 +6821,8 @@ cmd_act() {
 
   # A GOOGLE PAGE THE STEP LOOP STOPPED ON (DIVE-6228): the same verdict the
   # guard below gives, and the same exit, whether or not a step ran first.
+  # Where the steps left this browser, before any stop below (_flow_site).
+  _page_crumb "$site" "$(jq -r '.url // ""' "$stage/after.json" 2>/dev/null)"
   local gstop; gstop=$(sed -n 's/.*5dive-google-stop: //p' "$errf" 2>/dev/null | tail -1)
   if [[ -n "$gstop" ]] && (( drc == 70 )); then _google_die "$gstop"; fi
 
@@ -7430,6 +7437,55 @@ _route_site() {  # _route_site <url> -> the profile name
     1) printf '%s\n' "${hits[0]}" ;;
     *) die "$E_USAGE" "$host has ${#hits[@]} connected accounts: ${hits[*]}. Which one acts is the owner's call — ask them, then name it: 5dive browser <verb> <profile> $url" ;;
   esac
+}
+
+# THE PAGE A SERVED BROWSER WAS LEFT ON (DIVE-6247). A sign-up crosses hosts by
+# clicks — whimsical.com to accounts.google.com, coda.io to id.superhuman.com —
+# all inside the one browser that started it. The agent then names the page it
+# sees, and a URL picks its profile by HOST: the Google chooser went to the
+# google.com profile and id.superhuman.com to the public one, each a different
+# browser that re-opened the link cold (Google's 400 for a chooser whose query
+# was cut, myaccount.google.com for a pick with no way back to the site, an
+# email box where no Google session was). Round 3 lost Whimsical and Coda to it.
+# So the last page an act or snapshot left is written down, per seat, and `act`
+# given that same page carries on in that browser instead (_flow_site).
+FLOW_CRUMB_TTL="${FIVEDIVE_BROWSER_FLOW_TTL:-900}"
+_flow_crumb_file() { printf '%s/.5dive-last-page\n' "$(_seat_dir)"; }
+_page_crumb() {  # <site> <url> — never fatal: it only steers the next act
+  local f; f="$(_flow_crumb_file)"
+  [[ -n "${2:-}" && "$2" =~ ^https?:// ]] || return 0
+  [[ -d "${f%/*}" && -w "${f%/*}" ]] || return 0
+  ( umask 077; printf '%s\t%s\t%s\n' "$1" "$(date +%s)" "$2" > "$f.$$" && mv -f -- "$f.$$" "$f" ) 2>/dev/null || rm -f -- "$f.$$" 2>/dev/null
+  return 0
+}
+_flow_site() {  # <url> -> the profile whose served browser is ON that page, rc 1 otherwise
+  local want="$1" f site at url now
+  f="$(_flow_crumb_file)"; [[ -r "$f" ]] || return 1
+  IFS=$'\t' read -r site at url < "$f" || return 1
+  [[ -n "$site" && "$at" =~ ^[0-9]+$ && -n "$url" ]] && _valid_site "$site" || return 1
+  now=$(date +%s); (( now - at <= FLOW_CRUMB_TTL )) || return 1
+  if [[ "$url" != "$want" ]]; then
+    _have node && [[ -r "$_SELF_DIR/../lib/google-signin.cjs" ]] || return 1
+    node "$_SELF_DIR/../lib/google-signin.cjs" --same-page "$url" "$want" 2>/dev/null || return 1
+  fi
+  _resolve_site "$site" >/dev/null
+  [[ -d "$_SITE_DIR" ]] && _daemon_live "$_SITE_DIR" || return 1
+  printf '%s\n' "$site"
+}
+
+# A HOST NAMED WHERE A PROFILE GOES (DIVE-6247). Round 3's R9 asked for
+# mail.google.com and was told there was no such profile, minutes after R6 read
+# the same Gmail through google.com — whose profile answers for every
+# *.google.com page, as a URL already finds. A name with no profile of its own,
+# on this seat or offered by the box, that is a host exactly ONE connected
+# profile answers for, means that profile.
+_host_profile() {  # <name> -> the profile, rc 1 when it is not that case
+  local name="$1" r
+  [[ "$name" == *.* && "$name" != *_* ]] && _valid_site "$name" || return 1
+  [[ -d "$PROFILE_ROOT/$(_seat)/$name" || -f "$(_rv_offer "$BOX_SEAT" "$name")" ]] && return 1
+  r="$(_route_site "https://$name/" 2>/dev/null)" || return 1
+  [[ -n "$r" && "$r" != "$PUBLIC_SITE" && "$r" != "$name" ]] || return 1
+  printf '%s\n' "$r"
 }
 
 # ---------------------------------------------------------------------------
@@ -9557,6 +9613,20 @@ cmd_handoff() {
 # A URL WHERE A PROFILE NAME GOES (DIVE-4943 scope 5). `read https://…` picks its
 # own profile — the host's one login, or the public profile when there is none —
 # so an agent on a box with nothing connected can still use the browser at all.
+# THE PAGE ITS BROWSER IS ALREADY ON (DIVE-6247): `act <url>` for the page a
+# served browser was left on carries on there, with no reload. Before the host
+# routing below, which would open it cold in another profile (_flow_site).
+case "${1:-}" in
+  act)
+    # Not under --record: a routine replays from its start URL, so it keeps one.
+    if [[ "${2:-}" =~ ^https?:// && " ${*:3} " != *" --record="* ]] && _r="$(_flow_site "$2")"; then
+      printf '%s: %s is the page the %s browser is already on, so the steps carry on there, not reloaded. Re-opening a sign-in link in another browser loses the sign-up; next time give act just %s and no URL.\n' \
+        "$PROG" "${2:0:120}$( (( ${#2} > 120 )) && printf '…')" "$_r" "$_r" >&2
+      _v="$1"; shift 2
+      set -- "$_v" "$_r" "$@"
+    fi ;;
+esac
+
 case "${1:-}" in
   read|links|shot|snapshot|tree|act)
     if [[ "${2:-}" =~ ^https?:// ]]; then
@@ -9598,6 +9668,17 @@ case "${1:-}" in
         "$PROG" "$2" "$3" "$2" >&2
       _v="$1"; _u="$3"; shift 3
       set -- "$_v" "$PUBLIC_SITE" "$_u" "$@"
+    fi ;;
+esac
+
+# A HOST FOR A PROFILE NAME (DIVE-6247): `read mail.google.com <url>` and
+# `status mail.google.com` use the google.com login (_host_profile).
+case "${1:-}" in
+  read|links|shot|snapshot|tree|act|status)
+    if [[ -n "${2:-}" && "${2:-}" != -* && ! "${2:-}" =~ ^https?:// ]] && _r="$(_host_profile "$2")"; then
+      printf '%s: no %s profile of its own; the %s login answers for %s, so it is used.\n' "$PROG" "$2" "$_r" "$2" >&2
+      _v="$1"; shift 2
+      set -- "$_v" "$_r" "$@"
     fi ;;
 esac
 
