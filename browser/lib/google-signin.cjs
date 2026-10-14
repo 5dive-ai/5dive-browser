@@ -157,7 +157,8 @@ const WIDE_VERBS = /\b(manage|edit|delete|upload|download)\b/gi;
 // to access your Google Account" and the account) and that footer, with every
 // spelling of the app's name taken out. A layout with no header we know is
 // read whole, as before: the fallback is the stricter reading, never the looser.
-const LIST_END = /\b(by clicking allow|by continuing|make sure (?:that )?you trust|learn about the risks|you can (?:see|change|remove)|before using this app|review [^.]{0,40}privacy policy)\b/;
+// Footer phrases only Google's boilerplate says, never a scope's own wording.
+const LIST_END = /\b(by clicking allow|by continuing, google|make sure (?:that )?you trust|learn about the risks|you can change this and other|you can see or remove access|before using this app|review [^.]{0,40}privacy policy)\b/;
 function appNames(text) {
   const out = new Set(); let m;
   const pats = [/this will allow (.{1,80}?) to\b/g, /make sure (?:that )?you trust (.{1,80}?)(?:[.!]| learn\b|$)/g,
@@ -174,7 +175,13 @@ function listedScopes(text) {
     const rest = text.slice(from), e = rest.search(LIST_END);
     region = e > 0 ? rest.slice(0, e) : rest;
   }
-  for (const n of appNames(text)) region = region.split(n).join(' ');
+  // The name only where Google frames it ("<app> will be able to", "trust <app>"),
+  // never bare: an app named like a scope line ("See your Google Drive files")
+  // must not erase that line from the list.
+  for (const n of appNames(text)) {
+    const e = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    region = region.replace(new RegExp(`\\b(?:allow|trust|to|for) ${e}\\b|\\b${e}(?:'s| will| wants| may| can| to:)`, 'g'), ' ');
+  }
   return region;
 }
 

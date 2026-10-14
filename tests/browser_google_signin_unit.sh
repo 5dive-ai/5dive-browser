@@ -90,6 +90,10 @@ t 'G16d a visible box to tick per permission asks' 'ask wide-consent' \
   "$(g "$LC" "$(legacy 'Whimsical' "$BASIC3<li><input type=\"checkbox\" name=\"s\"><div>Manage your tasks</div></li>")")"
 t 'G16e a calendar scope in the URL asks even on a basic-looking screen' 'ask wide-consent' \
   "$(g "$AC/o/oauth2/auth?client_id=1&scope=openid%20email%20https://www.googleapis.com/auth/calendar" "$(legacy 'Whimsical' "$BASIC3")")"
+t 'G16g an app NAMED like a wide scope line does not erase that line' 'ask wide-consent' \
+  "$(g "$LC" "$(legacy 'See your Google Drive files' "<li><div>See your Google Drive files</div></li>$BASIC3")")"
+t 'G16h "Superhuman Docs will be able to" inside the list is the name, not Drive' 'allow basic-consent' \
+  "$(g "$LC" "$(legacy 'Superhuman Docs' "<li>Superhuman Docs will be able to:</li>$BASIC3")")"
 t 'G16f a hidden block that never closes is kept on the screen (the stricter reading)' 'ask wide-consent' \
   "$(g "$LC" "$(legacy 'Whimsical' "<li><div aria-hidden=\"true\">x</li><li>See your Google Drive files</li>")")"
 
