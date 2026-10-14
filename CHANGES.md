@@ -8,6 +8,35 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — round 3's sign-up misses: the consent's detail list, a lost chooser, a host for a profile (DIVE-6247), 1.41.0
+
+Round 3 of the Claude in Chrome head-to-head (1.40.0) still scored 0 of 6 Google sign-ups
+(marketing/reddit/2026-10-14-cic-vs-5dive-browser.md, round 3 verdict item 3). Four misses were ours:
+
+- **A consent is judged on its top-level scope lines only.** Every scope on Google's consent has
+  an expandable detail block ("This app wants permission to:"), and the basic profile scope's lists
+  "See your gender / See your preferred languages". 1.40.0 read "gender" there as wider access and
+  asked the owner on Tally's and Pitch's plain profile + email + openid consent. The detail blocks
+  are dropped now; a calendar, contacts or Drive scope is a top-level line of its own, so
+  Calendly's consent still asks. A block that never closes is kept (the stricter reading).
+- **A sign-up's page, named again, carries on in its own browser.** The agent named the chooser it
+  saw by its URL, with the two-kilobyte query cut or gone. A URL picks its profile by host, so
+  Whimsical's chooser opened cold in the google.com browser (Google's 400) and Coda's pick lost
+  Google's continue (myaccount.google.com). Each act or snapshot now writes down the page it left
+  (`.5dive-last-page` in the seat's store), and `act <url>` for that page, within 15 minutes and
+  while that browser is served, carries on there with no reload. On a sign-in page "that page"
+  includes the same URL with its query cut; anywhere else the URL must match exactly.
+- **Google's own error page is an error, not an empty chooser.** "400. That's an error." at the
+  chooser's path read as "no saved account, only Use another account". It now stops with exit 76
+  and says to start again from the site's own Google button.
+- **A provider button that says just "Google" is the Google button.** coda.io's sign-up lands on
+  id.superhuman.com, with buttons named Google, Microsoft and Apple; it is now handed back for that
+  one click, like "Continue with Google", unless a password box, code box or robot check is on it.
+- **A host named for a profile uses the login that answers for it.** `mail.google.com` had "no
+  profile" (round 3 R9) although the google.com login renders every google.com subdomain. A name
+  with no profile of its own that exactly one connected login answers for now means that login
+  (page verbs and `status`), and says so.
+
 ### Fixed — four guards that stopped round 2's Google sign-ups for nothing (DIVE-6241), 1.40.0
 
 lodar, 2026-10-14: "lets fix our browser again and rerun test only for our browser". Round 2 of the

@@ -185,6 +185,39 @@ function listedScopes(text) {
   return region;
 }
 
+// THE TOP-LEVEL SCOPE ITEMS, NOT THEIR DETAIL LISTS (DIVE-6247). Each scope on
+// Google's consent carries an expandable detail block, "This app wants
+// permission to:" and a list, and the basic profile scope's lists "See your
+// gender / See your preferred languages". Round 3 stopped Tally and Pitch at a
+// plain profile + email + openid consent for that one word. A detail block only
+// spells out the scope line above it, and a wider scope (calendar, contacts,
+// Drive) is a top-level line of its own, so dropping the blocks loses nothing.
+// The block is found by Google's own lead-in; a layout without it is read whole,
+// which is the stricter reading.
+const DETAIL_LEAD = /^\s*<p\b[^>]*>\s*this app wants permission to\b/i;
+function dropDetails(markup) {
+  const re = /<\/?([a-z][a-z0-9-]*)\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+  let out = '', last = 0, name = '', depth = 0, m;
+  while ((m = re.exec(markup))) {
+    const tag = m[0], n = m[1].toLowerCase(), closing = tag[1] === '/';
+    const leaf = VOID_TAGS.has(n) || /\/>$/.test(tag);
+    if (!name) {
+      if (closing || leaf || !DETAIL_LEAD.test(markup.slice(re.lastIndex, re.lastIndex + 200))) continue;
+      out += markup.slice(last, m.index); name = n; depth = 1;
+    } else if (n === name && !leaf) {
+      depth += closing ? -1 : 1;
+      if (depth === 0) { name = ''; last = re.lastIndex; out += ' '; }
+    }
+  }
+  // A block that never closes is kept, as stripHidden keeps one: less text on a
+  // consent screen is the direction that allows.
+  return name ? markup : out + markup.slice(last);
+}
+function scopeText(html) {
+  const t = dropDetails(visibleMarkup(html)).replace(/<[^>]+>/g, ' ');
+  return decode(t).replace(/[‘’]/g, "'").replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
 function scopeVerdict(u, text, html) {
   const wide = [];
   const scope = u && (u.searchParams.get('scope') || '');
@@ -220,6 +253,15 @@ function classify(url, html) {
   if (/\/challenge\//i.test(path) || /2-step verification|verification code|enter the code|check your phone|get a verification/.test(text)) {
     return r('stop', 'code', 'Google is asking for a verification code or a 2-step prompt');
   }
+  // GOOGLE'S OWN ERROR PAGE IS NOT A SIGN-IN STEP (DIVE-6247). Round 3's
+  // Whimsical attempt ended on "400. That's an error." at the chooser's path with
+  // the whole query gone, and it was read as a chooser with no saved account. It
+  // still stops (nothing on it may be clicked), but says what it is and the way
+  // back: the site's own Google button, never a Google link opened by hand.
+  const err = /\b([45]\d\d)\. that'?s an error\b/.exec(text);
+  if (err) {
+    return r('stop', 'error', `Google answered with an error page (${err[1]}), not a sign-in step: the Google link was opened without what the site's button put in it. Start again from the site's own Google button`);
+  }
   if (/\/(v3\/)?signin\/(v2\/)?identifier\b|\/addsession\b|\/signup\b|\/lifecycle\//i.test(path)) {
     return r('stop', 'add-account', 'Google is asking for an email address, which means adding an account here. A person does that once');
   }
@@ -228,7 +270,7 @@ function classify(url, html) {
   }
   if (/\/signin\/oauth\/(v2\/)?(consent|consentsummary)\b|\/o\/oauth2\/(v2\/)?consent\b/i.test(path)
       || /wants to access your google account|wants additional access/.test(text)) {
-    const wide = scopeVerdict(u, text, html);
+    const wide = scopeVerdict(u, scopeText(html), html);
     if (wide.length) return r('ask', 'wide-consent', `Google is asking to grant more than basic profile and email (${wide.slice(0, 3).join(', ')}). Ask the owner; never click Allow on it`);
     return r('allow', 'basic-consent', 'a consent screen for basic profile and email only');
   }
@@ -244,11 +286,33 @@ function classify(url, html) {
   }
   if (/\bcontinue as\b/.test(text) || (/\bsign in to\b/.test(text) && /\bwith google\b/.test(text))
       || /\/signin\/oauth\/(id|legacy)\b/i.test(path)) {
-    const wide = scopeVerdict(u, text.replace(/\bsign in to .*? with google\b/, ''), html);
+    const wide = scopeVerdict(u, scopeText(html).replace(/\bsign in to .*? with google\b/, ''), html);
     if (wide.length) return r('ask', 'wide-consent', `Google is asking to grant more than basic profile and email (${wide.slice(0, 3).join(', ')}). Ask the owner; never click Allow on it`);
     return r('allow', 'continue', 'Google\'s "Continue as …" confirm for a saved account');
   }
   return r('stop', 'unknown', 'a Google sign-in page this browser does not recognise, so it stops rather than guess');
+}
+
+// THE PAGE A BROWSER IS ALREADY ON, ASKED FOR AGAIN (DIVE-6247). An agent that
+// carries on a sign-up names the page it sees, and a Google sign-in URL is two
+// kilobytes long: round 3 named the chooser with its query cut short or gone,
+// and re-opening that lost the flow (a 400, or a pick with no way back to the
+// site). Same origin and path, and every parameter named carries the value the
+// page has (or the start of it, for one cut short): the same page. Only for a
+// sign-in page, where the query IS the flow; anywhere else the URL must match.
+const FLOW_PATH = /[/.](log-?in|sign-?in|signin|sign_in|signup|auth|oauth2?|sso|accountchooser|consent)([/?#.]|$)/i;
+function samePage(cur, want) {
+  let a, b;
+  try { a = new URL(cur); b = new URL(want); } catch (e) { return false; }
+  if (a.href === b.href) return true;
+  if (a.origin !== b.origin || a.pathname.replace(/\/+$/, '') !== b.pathname.replace(/\/+$/, '')) return false;
+  if (!GOOGLE_HOST.test(a.hostname) && !FLOW_PATH.test(a.pathname)) return false;
+  if (a.href.startsWith(b.href)) return true;
+  for (const [k, v] of b.searchParams) {
+    const have = a.searchParams.get(k);
+    if (have === null || !have.startsWith(v)) return false;
+  }
+  return true;
 }
 
 // BEFORE EACH STEP, in both loops. A goto leaves the page, and leaving is never
@@ -265,11 +329,13 @@ async function stepStop(page, s) {
   return v && v.verdict !== 'allow' ? { ...v, url } : null;
 }
 
-module.exports = { classify, isGooglePage, stepStop, visibleText, visibleMarkup, visibleInputs, attrsOf, STOP_PREFIX };
+module.exports = { classify, isGooglePage, stepStop, samePage, dropDetails, visibleText, visibleMarkup, visibleInputs, attrsOf, STOP_PREFIX };
 
 if (require.main === module) {
   // node google-signin.cjs <html-file> <url>  ->  one JSON line, or nothing when
   // the URL is not a Google sign-in page.
+  // node google-signin.cjs --same-page <url-the-browser-is-on> <url-asked-for>  ->  exit 0 or 1
+  if (process.argv[2] === '--same-page') process.exit(samePage(process.argv[3] || '', process.argv[4] || '') ? 0 : 1);
   const fs = require('fs');
   const [file, url] = process.argv.slice(2);
   let html = '';

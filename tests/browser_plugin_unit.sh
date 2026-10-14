@@ -5521,6 +5521,66 @@ t  'T32m mutant applied (both verdicts)' 2 "$(grep -cE "^  return \{ (challenge:
 t  'T32m MUTANT: tally.so is a challenge again' '75 0' "$(m32 "$MUT32MD/browser/bin/browser" tallym.test https://tallym.test/signup "$TSU")"
 t  'T32m MUTANT: the Pitch login page is refused again' '75 1' "$(m32 "$MUT32MD/browser/bin/browser" noadapter.test "$PLU" "$PLG")"
 
+# --- T32n round 3's misses, through act (DIVE-6247) --------------------------------
+# Round 3 (1.40.0) scored 0 of 6 sign-ups. Through act, on THIS tree and on 1.40.0:
+# Google's basic consent with its profile detail list ("See your gender") asked the
+# owner (Tally, Pitch); Google's 400 page at the bare chooser path read as a chooser
+# with no saved account (Whimsical); id.superhuman.com's "Google" button page was
+# refused (Coda); a host named for a profile (mail.google.com) had "no profile" (R9).
+# Fixtures: tests/fixtures/dive-6247/, real round-3 pages, trimmed.
+N32BASE="$TMP/n32base"; mkdir -p "$N32BASE"
+N32REF="${N32_BASE_REF:-518b98e9709f399ab885c3d9e387e4afe9476796}"   # 5dive-browser main before DIVE-6247 (1.40.0)
+git -C "$ROOT" cat-file -e "$N32REF^{commit}" 2>/dev/null || git -C "$ROOT" fetch -q --depth=1 origin "$N32REF" 2>/dev/null
+git -C "$ROOT" archive "$N32REF" browser | tar -x -C "$N32BASE" 2>/dev/null
+N32OLD="$N32BASE/browser/bin/browser"
+t  'T32n (setup) the 1.40.0 tree is staged and judges the whole consent list' 'yes no' \
+   "$([[ -x "$N32OLD" ]] && echo yes || echo no) $(grep -q dropDetails "$N32BASE/browser/lib/google-signin.cjs" 2>/dev/null && echo yes || echo no)"
+FX47="$ROOT/tests/fixtures/dive-6247"
+NLC='https://accounts.google.com/signin/oauth/legacy/consent?authuser=0&part=x'
+NPC="$(cat "$FX47/pitch-consent.html")"
+t  'T32n1 Pitch'"'"'s basic consent (round 3 G5): allowed, the click ran' '0 1' "$(m32 "$BROWSER" gconf.test "$NLC" "$NPC")"
+t  'T32n1 1.40.0: asked the owner (73), Allow never clicked' '73 0' "$(m32 "$N32OLD" gconf.test "$NLC" "$NPC")"
+tc 'T32n1 1.40.0: ...for "gender", a line of the detail list' 'gender' "$(m32err)"
+t  'T32n1 Tally'"'"'s (round 3 G2), on an unconfirmed site: allowed' '0 1' \
+   "$(m32 "$BROWSER" noadapter.test "$NLC" "$(cat "$FX47/tally-consent.html")")"
+t  'T32n1 NEGATIVE: Calendly'"'"'s calendar consent still asks, Allow never clicked' '73 0' \
+   "$(m32 "$BROWSER" gconf.test "$NLC" "$(cat "$FX47/calendly-consent.html")")"
+tc 'T32n1 NEGATIVE: ...naming the calendars' 'calendars' "$(m32err)"
+N400="$(cat "$FX47/chooser-400.html")"
+t  'T32n2 Google'"'"'s 400 at the bare chooser path (round 3 G3): stops, not ready (76)' '76 0' \
+   "$(m32 "$BROWSER" gconf.test https://accounts.google.com/v3/signin/accountchooser "$N400")"
+tc 'T32n2 ...and says it is an error page, the way back the site'"'"'s own button' 'error page (400)' "$(m32err)"
+t  'T32n2 1.40.0: a hard stop (75)' '75 0' "$(m32 "$N32OLD" gconf.test https://accounts.google.com/v3/signin/accountchooser "$N400")"
+tc 'T32n2 1.40.0: ...read as a chooser with no saved account' 'no saved account' "$(m32err)"
+t  'T32n2 NEGATIVE: the real chooser (round 3, "alex torn") is still allowed' '0 1' \
+   "$(m32 "$BROWSER" gconf.test 'https://accounts.google.com/v3/signin/accountchooser?client_id=1&continue=x' "$(cat "$FX47/whimsical-chooser.html")")"
+tc 'T32n2 NEGATIVE: ...and says to carry on in the same browser, with no URL' 'act gconf.test --steps' "$(m32err)"
+t  'T32n2 NEGATIVE: Google'"'"'s email box still stops (75)' '75 0' \
+   "$(m32 "$BROWSER" gconf.test 'https://accounts.google.com/v3/signin/identifier?flowName=x' "$(cat "$FX47/add-account.html")")"
+NSH="$(cat "$FX47/superhuman-signin.html")"
+NSU='https://id.noadapter.test/signin?oauth_client_type=MEDIATED_WEB&client_id=superhumanDocs'
+t  'T32n3 Coda'"'"'s sign-up landing on id.superhuman.com (round 3 G4): handed back' '0 1' "$(m32 "$BROWSER" noadapter.test "$NSU" "$NSH")"
+tc 'T32n3 ...for its Google button only, in the same browser' 'act noadapter.test --steps' "$(m32err)"
+t  'T32n3 1.40.0: refused as a sign-in page' '75 1' "$(m32 "$N32OLD" noadapter.test "$NSU" "$NSH")"
+t  'T32n3 NEGATIVE: the same page with a password box is still refused' '75 1' \
+   "$(m32 "$BROWSER" noadapter.test "$NSU" "${NSH/<\/form>/<input type=\"password\" name=\"pw\"></form>}")"
+# R9: a host named where a profile goes
+dg=$(FIVEDIVE_BROWSER_PROFILE_ROOT="$P31" mkprofile google.test "$LIVE_DOM")
+n32h() { : > "$PWREC"
+  run actenv env FIVEDIVE_BROWSER_NO_DAEMON=1 "$1" act "$2" "https://$2/mail/u/0/" --steps="$STAR" --out="$TMP/act32n"
+  printf '%s' "$ERR" > "$TMP/n32.err"
+  printf '%s %s' "$RC" "$(jq -rs '[.[]|select(.call=="launch")|.profile]|first // "none"' "$PWREC")"; }
+t  'T32n4 mail.google.test with no profile of its own (round 3 R9): the google.test login acts' "0 $dg" \
+   "$(n32h "$BROWSER" mail.google.test)"
+tc 'T32n4 ...and it says which login answered' 'the google.test login answers for mail.google.test' "$(cat "$TMP/n32.err")"
+t  'T32n4 1.40.0: "no profile", nothing launched' "69 none" "$(n32h "$N32OLD" mail.google.test)"
+tc 'T32n4 1.40.0: ...in round 3'"'"'s words' 'no profile for mail.google.test' "$(cat "$TMP/n32.err")"
+dd=$(FIVEDIVE_BROWSER_PROFILE_ROOT="$P31" mkprofile docs.google.test "$LIVE_DOM")
+t  'T32n4 NEGATIVE: a host WITH a profile of its own uses that one' "0 $dd" "$(n32h "$BROWSER" docs.google.test)"
+t  'T32n4 NEGATIVE: a host no login answers for gets the public profile, not google.test' "0 $P31/$SEAT/_public" \
+   "$(n32h "$BROWSER" mail.other.test)"
+rm -rf "$dd"
+
 # --- T32d several accounts on one site ----------------------------------------
 dw=$(FIVEDIVE_BROWSER_PROFILE_ROOT="$P31" mkprofile gh.test_work "$LIVE_DOM")
 FIVEDIVE_BROWSER_PROFILE_ROOT="$P31" mkprofile gh.test_personal "$LIVE_DOM" >/dev/null
@@ -5628,6 +5688,41 @@ t  'T32h ...the click reached the held page, and the held page was not reloaded'
    "$(tail -n +$((DREC_LINES+1)) "$DREC" | jq -rs '[([.[]|select(.call=="click")]|length), ([.[]|select(.call=="goto" and .kind=="first")]|length)]|join(" ")')"
 t  'T32h ...and the re-read came back over the socket' 'yes' \
    "$([[ -s "$TMP/act31h2/page.html" ]] && grep -q feed "$TMP/act31h2/page.html" && echo yes || echo no)"
+
+# --- T32o a sign-up's Google page, named again, carries on in ITS browser (DIVE-6247)
+# Round 3: Whimsical's chooser was up in the whimsical.com browser; the agent named
+# the chooser's URL (its query cut), the host routed it to ANOTHER profile, and that
+# browser opened it cold: Google's 400. Coda's pick went the same way and lost
+# Google's continue. The page an act leaves is written down (.5dive-last-page) and
+# `act <that page>` carries on there, with no goto.
+NCH='https://accounts.google.com/v3/signin/accountchooser?client_id=945160079396&redirect_uri=https%3A%2F%2Fwarmact.test%2Fcb&continue=https%3A%2F%2Faccounts.google.com%2Fsignin%2Foauth%2Flegacy%2Fconsent%3Fpart%3Dx'
+NCRUMB="$FIVEDIVE_BROWSER_PROFILE_ROOT/$SEAT/.5dive-last-page"
+t  'T32o (setup) the act above wrote where it left warmact.test' 'warmact.test' "$(cut -f1 "$NCRUMB" 2>/dev/null)"
+printf 'warmact.test\t%s\t%s\n' "$(date +%s)" "$NCH" > "$NCRUMB"
+DREC_LINES=$(wc -l < "$DREC"); LB32O="$(launches)"
+dwarm "$BROWSER" act "https://accounts.google.com/v3/signin/accountchooser?client_id=945160079396" --steps='[{"op":"click","selector":"#star"}]' --out="$TMP/act32o"
+t  'T32o the chooser named with its query cut: carried on in warmact.test'"'"'s browser' 0 "$RC"
+t  'T32o ...the click reached the held page, nothing reloaded it, nothing launched' "1 0 $LB32O" \
+   "$(tail -n +$((DREC_LINES+1)) "$DREC" | jq -rs '[([.[]|select(.call=="click")]|length), ([.[]|select(.call=="goto" and .kind=="first")]|length)]|join(" ")') $(launches)"
+tc 'T32o ...and it says so, with the way to skip the URL next time' 'already on, so the steps carry on there' "$ERR"
+# NEGATIVES: a stale note, another Google page, and the mutant all go where the host
+# says (no google login here: the public profile, cold), and never touch this browser.
+n32o() {  # <bin> <crumb-age-s> <url> -> "<clicks on the held browser> <launched in _public: yes|no>"
+  printf 'warmact.test\t%s\t%s\n' "$(( $(date +%s) - $2 ))" "$NCH" > "$NCRUMB"
+  local l; l=$(wc -l < "$DREC")
+  dwarm env FIVEDIVE_BROWSER_NO_DAEMON=1 "$1" act "$3" --steps='[{"op":"click","selector":"#star"}]' --out="$TMP/act32o2"
+  printf '%s %s' "$(tail -n +$((l+1)) "$DREC" | jq -rs '[.[]|select(.call=="click" and .kind=="first")]|length')" \
+    "$(tail -n +$((l+1)) "$DREC" | jq -rs '[.[]|select(.call=="launch")|.profile|endswith("/_public")]|any' | sed 's/true/yes/;s/false/no/')"; }
+t  'T32o NEGATIVE: a note older than 15 minutes is not followed' '0 yes' \
+   "$(n32o "$BROWSER" 2000 'https://accounts.google.com/v3/signin/accountchooser?client_id=945160079396')"
+t  'T32o NEGATIVE: another Google page is not the page it is on' '0 yes' \
+   "$(n32o "$BROWSER" 0 'https://accounts.google.com/signin/oauth/legacy/consent?part=x')"
+MUT32O="$TMP/browser-noflow"
+sed 's|_r="$(_flow_site "$2")"|_r="$(false)"|' "$BROWSER" > "$MUT32O"; chmod +x "$MUT32O"
+t  'T32o mutant applied' yes "$(cmp -s "$MUT32O" "$BROWSER" && echo no || echo yes)"
+t  'T32o MUTANT (no flow note): the cut chooser URL opens cold in another profile (round 3)' '0 yes' \
+   "$(n32o "$MUT32O" 0 'https://accounts.google.com/v3/signin/accountchooser?client_id=945160079396')"
+rm -f "$NCRUMB"
 env PATH="$SPATH" "$BROWSER" serve warmact.test --stop >/dev/null 2>&1
 
 # --- T33 the seat's own proxy (DIVE-4951) ---------------------------------------

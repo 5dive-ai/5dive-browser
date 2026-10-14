@@ -68,5 +68,22 @@ t 'N3e a sign-in page with no Google button: the refusal stands' 'none no-google
 t 'N3f a hidden password box (password managers) does not stop it' 'offer google-button' \
   "$(s "${LOGIN/<\/form>/<input type=\"password\" aria-hidden=\"true\" tabindex=\"-1\"></form>}")"
 
+# --- DIVE-6247: a provider button that says just "Google" ------------------------
+# coda.io's sign-up lands on id.superhuman.com: "Continue to Superhuman Docs" over
+# buttons named Google, Microsoft, Apple (round 3 G4, g-artifacts/coda.io.8nNtxfyZ).
+SH="$PWD/tests/fixtures/dive-6247/superhuman-signin.html"
+SHU='https://id.superhuman.com/signin?oauth_client_type=MEDIATED_WEB&client_id=superhumanDocs'
+t 'P4 id.superhuman.com (round 3 G4): handed back for its "Google" button (1.40.0: none)' 'offer google-button' "$(sf "$SH" "$SHU")"
+t 'P4b a link whose text is just Google, its logo beside it, counts' 'offer google-button' \
+  "$(s '<html><body><h1>Log in</h1><a href="/g"><svg><path d="M0"></path></svg> Google </a><a href="/m">Microsoft</a></body></html>')"
+t 'N4a NEGATIVE: "Google" inside a longer button (a privacy notice link) is not a sign-in button' 'none no-google' \
+  "$(s '<html><body><h1>Log in</h1><a href="/p">Google Privacy Policy</a><input type="email"></body></html>')"
+t 'N4b NEGATIVE: the Superhuman page with a password box stops' 'stop password' \
+  "$(s "$(sed 's|</form>|<input type="password" name="pw"></form>|' "$SH")" "$SHU")"
+t 'N4c NEGATIVE: ...with a robot check, stops' 'stop challenge' \
+  "$(s "$(sed 's|</body>|<div class="g-recaptcha"></div></body>|' "$SH")" "$SHU")"
+t 'N4d NEGATIVE: Whimsical'"'"'s sign-up page (a password box beside "Sign up with Google") still stops' 'stop password' \
+  "$(sf "$PWD/tests/fixtures/dive-6247/whimsical-signup.html" https://whimsical.com/signup)"
+
 printf 'page-check: %d pass, %d fail\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
