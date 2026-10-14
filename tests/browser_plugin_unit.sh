@@ -8103,9 +8103,21 @@ jq 'del(.probe.challenge_when_dom_matches)' "$PKGADP/reddit.com.json" > "$MUT48/
 t  'T48g (anchor) the mutant adapter has no challenge marker' '' \
    "$(jq -r '.probe.challenge_when_dom_matches // empty' "$MUT48/reddit.com.json")"
 printf '%s' "$R48_IN" > "$R48DIR/.fake-dom"
-run env FIVEDIVE_BROWSER_ADAPTER_DIR="$MUT48" "$BROWSER" status "$R48"
+# DIVE-6241: the default marker's match is now confirmed by lib/page-check.cjs,
+# which reads an invisible reCAPTCHA as no challenge. So the control runs on a
+# plugin copy WITHOUT the page check (the marker decides alone, as at DIVE-5285),
+# and T48i grades the page check on the same fixture.
+NOPC48="$TMP/t48-nopagecheck"; rm -rf "$NOPC48"; cp -r "$ROOT/browser" "$NOPC48"; rm -f "$NOPC48/lib/page-check.cjs"
+run env FIVEDIVE_BROWSER_ADAPTER_DIR="$MUT48" "$NOPC48/bin/browser" status "$R48"
 t  'T48g the pre-fix adapter reads the healthy session as a challenge' 75 "$RC"
 tc 'T48g ...CHALLENGE — the defect this row fixed'                     'CHALLENGE' "$OUT"
+run env FIVEDIVE_BROWSER_ADAPTER_DIR="$MUT48" "$BROWSER" status "$R48"
+t  'T48i with no adapter marker, the page check reads the invisible reCAPTCHA as no challenge (DIVE-6241)' 0 "$RC"
+tn 'T48i ...not CHALLENGE' 'CHALLENGE' "$OUT"
+printf '%s' "$R48_BLOCK" > "$R48DIR/.fake-dom"
+run env FIVEDIVE_BROWSER_ADAPTER_DIR="$MUT48" "$BROWSER" status "$R48"
+t  'T48i NEGATIVE: ...and still reads "Prove your humanity" as one' 75 "$RC"
+printf '%s' "$R48_IN" > "$R48DIR/.fake-dom"
 
 export FIVEDIVE_BROWSER_ADAPTER_DIR="$ADPOVERRIDE48"
 tc 'T48h CHANGES.md carries the entry' 'DIVE-5285' "$(cat "$ROOT/CHANGES.md")"

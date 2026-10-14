@@ -39,10 +39,12 @@ guards (marketing/reddit/2026-10-14-cic-vs-5dive-browser.md, findings 1, 3, 4, 6
   the CLI, 5dive-ai/5dive (DIVE-6241).
 
 Graded by `tests/browser_page_check_unit.sh` (25 checks on real tally.so and auth.pitch.com captures,
-trimmed, in `tests/fixtures/dive-6241/`), 12 more checks in `tests/browser_google_signin_unit.sh`
-(6 fail on 1.39.0), and T32m in `tests/browser_plugin_unit.sh`, which runs each act through
+trimmed, in `tests/fixtures/dive-6241/`), 14 more checks in `tests/browser_google_signin_unit.sh`
+(7 fail on 1.39.0), and T32m in `tests/browser_plugin_unit.sh`, which runs each act through
 `bin/browser` on this tree and on 1.39.0, with negative checks that still stop: a robot check, a
-two-factor code, a password box, a code box and a login page with no Google button.
+two-factor code, a password box, a code box and a login page with no Google button. T48i shows the page check
+also reads Reddit's invisible reCAPTCHA (DIVE-5285's case) as no challenge with no adapter marker, and still stops
+at "Prove your humanity".
 
 ### Changed — the agent may pick a saved Google account on a sign-up, and still stops at passwords and robot checks (DIVE-6228), 1.39.0
 
