@@ -53,6 +53,7 @@ const aria = require(path.join(__dirname, '..', 'lib', 'aria.cjs'));
 const proxy = require(path.join(__dirname, '..', 'lib', 'proxy.cjs'));
 const totp = require(path.join(__dirname, '..', 'lib', 'totp.cjs'));
 const downloads = require(path.join(__dirname, '..', 'lib', 'downloads.cjs'));
+const gsignin = require(path.join(__dirname, '..', 'lib', 'google-signin.cjs'));
 
 // DIVE-4587: Chrome keeps its crashpad DB under $XDG_CONFIG_HOME whatever
 // --user-data-dir says, and 5dive boxes share one XDG_CONFIG_HOME across every
@@ -851,6 +852,14 @@ async function planRequest(ctx, req, send, end) {
       // the other one, because the defect was that there are two of them.
       // One retry on a picked element when a ref matches nothing — the same call
       // as the one-shot driver's loop (lib/aria.cjs resolveOrRepick).
+      // GOOGLE'S SIGN-IN PAGES (DIVE-6228), before the step touches one: a password,
+      // a code, a robot check, adding an account or a wider grant stops the plan
+      // here, whatever the steps say. lib/google-signin.cjs, shared by both loops.
+      const gs = await gsignin.stepStop(page, s);
+      if (gs) {
+        send({ t: 'err', msg: gsignin.STOP_PREFIX.trim() + ' ' + JSON.stringify(gs) });
+        throw new Error(`${where}: not run. ${gs.why}`);
+      }
       const { sel, retry: r } = await aria.resolveOrRepick(page, s, i + 1, { timeoutMs: STEP_TIMEOUT });
       if (r) assertLease(req, where);
       retry = r;

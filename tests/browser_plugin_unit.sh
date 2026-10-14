@@ -5400,6 +5400,64 @@ run actenv env PWURL="https://noadapter.test/login?next=/x" FIVEDIVE_BROWSER_NO_
 t  'T32c a page that ENDS on a sign-in URL is refused after the fact' 75 "$RC"
 tc 'T32c ...naming the redirect' 'redirected to a sign-in' "$ERR"
 
+# --- T32g Google's sign-in pages, one answer each (DIVE-6228) ------------------
+# Round 1 of the Claude in Chrome head-to-head stopped every "Sign up with
+# Google" one click short: the generic guard refused Google's account chooser,
+# and only when the site's front page left the login unconfirmed (Jamie passed
+# on A4g, was refused on A4h). Each arm runs on THIS tree and on the pre-fix
+# tree (bin/browser + lib at the commit before this fix, staged in $G32BASE) and names both.
+# PINNED, not origin/main: once this merges, main IS the fixed tree. CI's checkout is
+# shallow, so the commit is fetched by sha when it is not here.
+G32BASE="$TMP/g32base"; mkdir -p "$G32BASE"
+G32REF="${G32_BASE_REF:-30ca244ea811f185aab5f37ce1332e020f927f0b}"   # 5dive-browser main before DIVE-6228 (1.38.0)
+git -C "$ROOT" cat-file -e "$G32REF^{commit}" 2>/dev/null || git -C "$ROOT" fetch -q --depth=1 origin "$G32REF" 2>/dev/null
+git -C "$ROOT" archive "$G32REF" browser | tar -x -C "$G32BASE" 2>/dev/null
+G32OLD="$G32BASE/browser/bin/browser"
+t  'T32g (setup) the pre-fix tree is staged and has no Google classifier' 'yes no' \
+   "$([[ -x "$G32OLD" ]] && echo yes || echo no) $([[ -e "$G32BASE/browser/lib/google-signin.cjs" ]] && echo yes || echo no)"
+# A site whose adapter CONFIRMS the login (the generic guard never runs there)
+# beside noadapter.test (it does). The verdict must not depend on which.
+FIVEDIVE_BROWSER_PROFILE_ROOT="$P31" mkprofile gconf.test "$LIVE_DOM" >/dev/null
+printf '{"site":"gconf.test","probe":{"url":"https://gconf.test/feed","logged_out_when_dom_matches":"action=\\"/login\\""}}\n' \
+  > "$FIVEDIVE_BROWSER_ADAPTER_DIR/gconf.test.json"
+GAC='https://accounts.google.com'
+GCHOOSER='<html><body><h1>Choose an account</h1><div>to continue to Tactiq</div><div data-identifier="alex.test@gmail.com" data-authuser="0">Alex alex.test@gmail.com</div><div>Use another account</div><input type="password" name="hiddenPassword" aria-hidden="true" tabindex="-1"></body></html>'
+GPW='<html><body><h1>Welcome</h1><input type="password" name="Passwd" autocomplete="current-password"></body></html>'
+GROBOT='<html><head><title>Verify you are human</title></head><body><iframe src="https://www.google.com/recaptcha/api2/anchor?k=x"></iframe><div>Confirm you are not a robot</div></body></html>'
+GWIDE='<html><body><h1>Jamie wants to access your Google Account</h1><ul><li>See and download your contacts</li><li>View events on all your calendars</li></ul><button>Allow</button></body></html>'
+# g32 <bin> <site> <landed url> <html> -> "<exit> <clicks that reached the page>"
+g32() { : > "$PWREC"
+  run actenv env PWURL="$3" PWHTML="$4" FIVEDIVE_BROWSER_NO_DAEMON=1 "$1" act "https://$2/signup" --steps="$STAR" --out="$TMP/act32g"
+  printf '%s %s' "$RC" "$(jq -rs '[.[]|select(.call=="click")]|length' "$PWREC")"; }
+G32CH="$GAC/v3/signin/accountchooser?client_id=1"
+t  'T32g1 the chooser with a saved account, unconfirmed site: allowed, the click ran'   '0 1'  "$(g32 "$BROWSER" noadapter.test "$G32CH" "$GCHOOSER")"
+tc 'T32g1 ...and it says why, and to pick only the account the task names' 'Pick only the saved account' "$ERR"
+t  'T32g1 ...the same page on a confirmed site: the same answer'                       '0 1'  "$(g32 "$BROWSER" gconf.test "$G32CH" "$GCHOOSER")"
+t  'T32g1 PRE-FIX: the chooser is refused on the unconfirmed site'                     '75 1' "$(g32 "$G32OLD" noadapter.test "$G32CH" "$GCHOOSER")"
+t  'T32g1 PRE-FIX: ...and passed on the confirmed one (the inconsistency)'             '0 1'  "$(g32 "$G32OLD" gconf.test "$G32CH" "$GCHOOSER")"
+G32PW="$GAC/v3/signin/challenge/pwd?TL=1"
+t  'T32g2 a password page: refused, and the click never reached it'                    '75 0' "$(g32 "$BROWSER" gconf.test "$G32PW" "$GPW")"
+tc 'T32g2 ...naming the password' 'asking for a password' "$ERR"
+t  'T32g2 ...the same on an unconfirmed site'                                          '75 0' "$(g32 "$BROWSER" noadapter.test "$G32PW" "$GPW")"
+t  'T32g2 PRE-FIX: on a confirmed site the password page went through, click and all'  '0 1'  "$(g32 "$G32OLD" gconf.test "$G32PW" "$GPW")"
+G32RB="$GAC/v3/signin/challenge/recaptcha?TL=1"
+t  'T32g3 a robot check: refused, the click never reached it'                          '75 0' "$(g32 "$BROWSER" gconf.test "$G32RB" "$GROBOT")"
+tc 'T32g3 ...and it points at the owner, never a solve' 'connect-request gconf.test --challenge' "$ERR"
+t  'T32g3 PRE-FIX: on a confirmed site the robot check went through'                   '0 1'  "$(g32 "$G32OLD" gconf.test "$G32RB" "$GROBOT")"
+G32WD="$GAC/signin/oauth/v2/consentsummary?authuser=0"
+t  'T32g4 a consent asking for calendar and contacts: asks the owner (73), Allow never clicked' '73 0' "$(g32 "$BROWSER" gconf.test "$G32WD" "$GWIDE")"
+tc 'T32g4 ...naming what it wants' 'contacts' "$ERR"
+t  'T32g4 ...the same on an unconfirmed site'                                          '73 0' "$(g32 "$BROWSER" noadapter.test "$G32WD" "$GWIDE")"
+t  'T32g4 PRE-FIX: on a confirmed site the wide consent went through, click and all'   '0 1'  "$(g32 "$G32OLD" gconf.test "$G32WD" "$GWIDE")"
+t  'T32g4 PRE-FIX: on an unconfirmed site it was a plain sign-in refusal (75), not an ask' '75 1' "$(g32 "$G32OLD" noadapter.test "$G32WD" "$GWIDE")"
+# the mutant: the guard no longer asks the classifier first
+MUT32GG="$TMP/browser-nogoogle"
+sed 's|if \[\[ -n "\$u" \]\] && _google_page_guard "\$f" "\$u"; then return 0; fi|:|' "$BROWSER" > "$MUT32GG"; chmod +x "$MUT32GG"
+t  'T32g mutant applied' yes "$(cmp -s "$MUT32GG" "$BROWSER" && echo no || echo yes)"
+t  'T32g MUTANT (no Google guard): the chooser is refused again on the unconfirmed site' '75 1' "$(g32 "$MUT32GG" noadapter.test "$G32CH" "$GCHOOSER")"
+t  'T32g MUTANT (no Google guard): the password page on a confirmed site exits 0 again'  '0 0'  "$(g32 "$MUT32GG" gconf.test "$G32PW" "$GPW")"
+rm -f "$FIVEDIVE_BROWSER_ADAPTER_DIR/gconf.test.json"
+
 # --- T32d several accounts on one site ----------------------------------------
 dw=$(FIVEDIVE_BROWSER_PROFILE_ROOT="$P31" mkprofile gh.test_work "$LIVE_DOM")
 FIVEDIVE_BROWSER_PROFILE_ROOT="$P31" mkprofile gh.test_personal "$LIVE_DOM" >/dev/null

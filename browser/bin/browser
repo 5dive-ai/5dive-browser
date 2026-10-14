@@ -2093,8 +2093,13 @@ GENERIC_SIGNIN_URL='[/.](log-?in|sign-?in|signin|sign_in|auth|sso|session|accoun
 # the page the agent asked for can still redirect to a sign-in, and handing that
 # back as evidence is the one thing the guard exists to stop.
 _signin_guard() {
-  (( _GENERIC_UNCONFIRMED )) || return 0
   local f="$1" u="${2:-}"
+  # GOOGLE'S OWN PAGES FIRST, AND FOR EVERY SITE (DIVE-6228). The generic check
+  # below only runs when the site's front page left the login unconfirmed, so
+  # the same account chooser was refused on one try and passed on the next.
+  # lib/google-signin.cjs answers from the page alone.
+  if [[ -n "$u" ]] && _google_page_guard "$f" "$u"; then return 0; fi
+  (( _GENERIC_UNCONFIRMED )) || return 0
   if [[ -n "$u" ]] && grep -qiE "$GENERIC_SIGNIN_URL" <<<"$u"; then
     die "$E_COLD" "the page redirected to a sign-in ($u). Refusing rather than handing back the sign-in page as if it were the page you asked for; no evidence was written. If this account should be signed in, a person logs in again: 5dive browser auth $_PG_SITE"
   fi
@@ -2102,6 +2107,44 @@ _signin_guard() {
     die "$E_COLD" "the page that came back is a sign-in form, not the page you asked for. Refusing; no evidence was written. If this account should be signed in, a person logs in again: 5dive browser auth $_PG_SITE"
   fi
   return 0
+}
+
+# _google_page_guard <html-file> <url> — 1 when the page is not one of Google's
+# sign-in pages (the generic guard decides), 0 when it is and may be handed
+# back; it dies otherwise. Allowed: the account chooser with a signed-in saved
+# account, "Continue as …", a consent screen for basic profile and email.
+# Stopped (75): a password, a code or 2-step prompt, a robot check, adding an
+# account, a page it does not recognise. Asked (73): a consent screen wanting
+# more than basic profile and email.
+GOOGLE_SIGNIN_URL='^https?://(accounts\.google\.[a-z.]+([:/?#]|$)|(www\.)?google\.[a-z.]+/sorry([/?#]|$))'
+_google_die() {  # <verdict-json>
+  local v="$1" kind why verdict
+  kind=$(jq -r '.kind // "unknown"' <<<"$v" 2>/dev/null); why=$(jq -r '.why // ""' <<<"$v" 2>/dev/null)
+  verdict=$(jq -r '.verdict // "stop"' <<<"$v" 2>/dev/null)
+  local site="${_PG_SITE:-<site>}"
+  if [[ "$verdict" == ask ]]; then
+    die "$E_NEEDS_OWNER" "STOP, ask your owner: $why. Nothing was granted. Tell them what the app wants; if they say yes, they click it themselves: 5dive browser handoff $site --reason=\"Google asks to grant $site more access\""
+  fi
+  case "$kind" in
+    robot) die "$E_COLD" "STOP: $why. Ask your owner to clear it, then carry on after their Done: 5dive browser connect-request $site --challenge --url=<the page you asked for>" ;;
+    *)     die "$E_COLD" "STOP: $why ($kind). This is a hard stop for an agent; hand the window to your owner: 5dive browser handoff $site --reason=\"Google sign-in needs you ($kind)\"" ;;
+  esac
+}
+_google_page_guard() {
+  local f="$1" u="$2" v
+  grep -qiE "$GOOGLE_SIGNIN_URL" <<<"$u" || return 1
+  local lib="$_SELF_DIR/../lib/google-signin.cjs"
+  if ! _have node || [[ ! -r "$lib" ]]; then
+    die "$E_COLD" "the page is Google's sign-in ($u) and node is not here to read which one it is, so it stops. 5dive browser setup installs node."
+  fi
+  v=$(node "$lib" "$f" "$u" 2>/dev/null | head -1)
+  [[ -n "$v" ]] || return 1
+  if [[ "$(jq -r '.verdict' <<<"$v" 2>/dev/null)" == allow ]]; then
+    printf '%s: Google sign-in page, allowed: %s. Pick only the saved account the task names; a password, a code, a robot check or a wider grant stops.\n' \
+      "$PROG" "$(jq -r '.why' <<<"$v")" >&2
+    return 0
+  fi
+  _google_die "$v"
 }
 
 # THE SIGN-IN WORDS, FOR A PAGE WITH NO DOM TO READ (DIVE-5388). A window
@@ -6729,6 +6772,11 @@ cmd_act() {
   cat "$errf" >&2
   _shot_restore
   _lease_release
+
+  # A GOOGLE PAGE THE STEP LOOP STOPPED ON (DIVE-6228): the same verdict the
+  # guard below gives, and the same exit, whether or not a step ran first.
+  local gstop; gstop=$(sed -n 's/.*5dive-google-stop: //p' "$errf" 2>/dev/null | tail -1)
+  if [[ -n "$gstop" ]] && (( drc == 70 )); then _google_die "$gstop"; fi
 
   if (( drc == 70 )); then
     die "$E_UNAVAILABLE" "the executor refused before it ran a single step, so nothing happened on the page (its own reason is above)."
