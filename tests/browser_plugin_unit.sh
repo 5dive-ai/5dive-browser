@@ -5428,34 +5428,39 @@ GWIDE='<html><body><h1>Jamie wants to access your Google Account</h1><ul><li>See
 # g32 <bin> <site> <landed url> <html> -> "<exit> <clicks that reached the page>"
 g32() { : > "$PWREC"
   run actenv env PWURL="$3" PWHTML="$4" FIVEDIVE_BROWSER_NO_DAEMON=1 "$1" act "https://$2/signup" --steps="$STAR" --out="$TMP/act32g"
+  printf '%s' "$ERR" > "$TMP/g32.err"   # g32 runs in $(...): its ERR does not come back
   printf '%s %s' "$RC" "$(jq -rs '[.[]|select(.call=="click")]|length' "$PWREC")"; }
+g32err() { cat "$TMP/g32.err" 2>/dev/null; }
 G32CH="$GAC/v3/signin/accountchooser?client_id=1"
 t  'T32g1 the chooser with a saved account, unconfirmed site: allowed, the click ran'   '0 1'  "$(g32 "$BROWSER" noadapter.test "$G32CH" "$GCHOOSER")"
-tc 'T32g1 ...and it says why, and to pick only the account the task names' 'Pick only the saved account' "$ERR"
+tc 'T32g1 ...and it says why, and to pick only the account the task names' 'Pick only the saved account' "$(g32err)"
 t  'T32g1 ...the same page on a confirmed site: the same answer'                       '0 1'  "$(g32 "$BROWSER" gconf.test "$G32CH" "$GCHOOSER")"
 t  'T32g1 PRE-FIX: the chooser is refused on the unconfirmed site'                     '75 1' "$(g32 "$G32OLD" noadapter.test "$G32CH" "$GCHOOSER")"
 t  'T32g1 PRE-FIX: ...and passed on the confirmed one (the inconsistency)'             '0 1'  "$(g32 "$G32OLD" gconf.test "$G32CH" "$GCHOOSER")"
 G32PW="$GAC/v3/signin/challenge/pwd?TL=1"
 t  'T32g2 a password page: refused, and the click never reached it'                    '75 0' "$(g32 "$BROWSER" gconf.test "$G32PW" "$GPW")"
-tc 'T32g2 ...naming the password' 'asking for a password' "$ERR"
+tc 'T32g2 ...naming the password' 'asking for a password' "$(g32err)"
 t  'T32g2 ...the same on an unconfirmed site'                                          '75 0' "$(g32 "$BROWSER" noadapter.test "$G32PW" "$GPW")"
 t  'T32g2 PRE-FIX: on a confirmed site the password page went through, click and all'  '0 1'  "$(g32 "$G32OLD" gconf.test "$G32PW" "$GPW")"
 G32RB="$GAC/v3/signin/challenge/recaptcha?TL=1"
 t  'T32g3 a robot check: refused, the click never reached it'                          '75 0' "$(g32 "$BROWSER" gconf.test "$G32RB" "$GROBOT")"
-tc 'T32g3 ...and it points at the owner, never a solve' 'connect-request gconf.test --challenge' "$ERR"
+tc 'T32g3 ...and it points at the owner, never a solve' 'connect-request gconf.test --challenge' "$(g32err)"
 t  'T32g3 PRE-FIX: on a confirmed site the robot check went through'                   '0 1'  "$(g32 "$G32OLD" gconf.test "$G32RB" "$GROBOT")"
 G32WD="$GAC/signin/oauth/v2/consentsummary?authuser=0"
 t  'T32g4 a consent asking for calendar and contacts: asks the owner (73), Allow never clicked' '73 0' "$(g32 "$BROWSER" gconf.test "$G32WD" "$GWIDE")"
-tc 'T32g4 ...naming what it wants' 'contacts' "$ERR"
+tc 'T32g4 ...naming what it wants' 'contacts' "$(g32err)"
 t  'T32g4 ...the same on an unconfirmed site'                                          '73 0' "$(g32 "$BROWSER" noadapter.test "$G32WD" "$GWIDE")"
 t  'T32g4 PRE-FIX: on a confirmed site the wide consent went through, click and all'   '0 1'  "$(g32 "$G32OLD" gconf.test "$G32WD" "$GWIDE")"
 t  'T32g4 PRE-FIX: on an unconfirmed site it was a plain sign-in refusal (75), not an ask' '75 1' "$(g32 "$G32OLD" noadapter.test "$G32WD" "$GWIDE")"
-# the mutant: the guard no longer asks the classifier first
-MUT32GG="$TMP/browser-nogoogle"
-sed 's|if \[\[ -n "\$u" \]\] && _google_page_guard "\$f" "\$u"; then return 0; fi|:|' "$BROWSER" > "$MUT32GG"; chmod +x "$MUT32GG"
-t  'T32g mutant applied' yes "$(cmp -s "$MUT32GG" "$BROWSER" && echo no || echo yes)"
-t  'T32g MUTANT (no Google guard): the chooser is refused again on the unconfirmed site' '75 1' "$(g32 "$MUT32GG" noadapter.test "$G32CH" "$GCHOOSER")"
-t  'T32g MUTANT (no Google guard): the password page on a confirmed site exits 0 again'  '0 0'  "$(g32 "$MUT32GG" gconf.test "$G32PW" "$GPW")"
+# the mutant: the classifier recognises no Google page, so neither the guard nor
+# the step loops ever ask it. A copy of the whole plugin, because bin/browser
+# finds its executor and lib beside itself.
+MUT32GD="$TMP/g32mut"; mkdir -p "$MUT32GD"; cp -r "$ROOT/browser" "$MUT32GD/"
+sed -i 's|  if (!isGooglePage(url)) return null;|  return null;|' "$MUT32GD/browser/lib/google-signin.cjs"
+t  'T32g mutant applied (both call sites)' 2 "$(grep -c '^  return null;$' "$MUT32GD/browser/lib/google-signin.cjs")"
+MUT32GG="$MUT32GD/browser/bin/browser"
+t  'T32g MUTANT (no Google classifier): the chooser is refused again on the unconfirmed site' '75 1' "$(g32 "$MUT32GG" noadapter.test "$G32CH" "$GCHOOSER")"
+t  'T32g MUTANT (no Google classifier): the password page on a confirmed site is clicked again' '0 1' "$(g32 "$MUT32GG" gconf.test "$G32PW" "$GPW")"
 rm -f "$FIVEDIVE_BROWSER_ADAPTER_DIR/gconf.test.json"
 
 # --- T32d several accounts on one site ----------------------------------------
