@@ -1,11 +1,27 @@
 # 5dive browser
 
-Persistent human-authenticated browser sessions for Claude Code and the 5dive CLI. You log into a
-site **once, by hand**; the agent is granted the session and never the credentials, and
-deterministic adapters decide where to click. A security challenge is a hard stop that asks for a
-person — the plugin never solves one.
+**Your agent needs your logged-in accounts. It should never have your passwords.**
 
-## Run it on your own server
+5dive browser gives agents on Claude Code and the 5dive CLI persistent, human-authenticated browser
+sessions. You sign in to a site once, by hand, in a real Chrome on your own server. Your agent gets
+that session and never the password. A robot check (a CAPTCHA, an "unusual activity" page) is a hard
+stop that hands the window to you, and before a step that pays, the agent asks you first.
+
+```
+ 1. You sign in once, by hand     Chrome on your server, reached over VNC through SSH.
+                                  The session is saved in a profile on the box.
+          │
+          ▼
+ 2. Your agent uses the session   "check my GitHub notifications": it opens the page
+                                  signed in as you. It never sees the password.
+          │
+          ├─ a robot check?       Hard stop. You get the steps to its live window.
+          ├─ about to pay?        It asks you first, with a screenshot.
+          ▼
+ 3. The next run                  Still signed in. No new sign-in, no password.
+```
+
+## Try it on your own server
 
 Tested on fresh Ubuntu 24.04 (2 vCPU / 4 GB) at OVH and Hetzner. You need a sudo user and your own
 Claude or OpenAI subscription or API key.
@@ -58,6 +74,56 @@ the VNC server and its bridge bind to `127.0.0.1`, and the only way in is your S
 - github.com, reddit.com, x.com, google.com, booking.com, tiktok.com and web.telegram.org ship a
   sign-in check. Other sites are checked at their home page, so a home page that always shows a
   login form reads as logged out.
+
+**4. Ask it something only your account can see.** Message your agent (on Telegram, if you paired
+it in `init`):
+
+> Check my GitHub notifications and tell me which ones need a reply from me.
+
+What you should notice:
+
+- It answers from **your** notifications, signed in as you. You typed your password into Chrome,
+  never into a chat, a config file or a prompt.
+- Ask again tomorrow and it does not ask you to sign in again. The session stays on the box
+  across runs for as long as the site keeps you signed in.
+- Ask it to buy something and it stops before paying and asks you, with a screenshot of what it is
+  about to pay.
+
+## Good at
+
+Jobs a sandboxed browser cannot do, because they need **your** account:
+
+- Reading what is waiting for you: GitHub notifications, an inbox, the messages on a site with no
+  API, and telling you what needs you.
+- Posting a reply, an issue or a comment under your account. It runs and is logged; set the
+  `careful` policy (below) and the agent asks you before each one.
+- Filling in a form behind a login: a supplier portal, an admin panel, a booking.
+- Getting an export out of a dashboard you are signed in to: a click on Download hands the agent
+  the file.
+- Filling a cart and stopping at the payment for your yes.
+- Doing the same job every day: record the steps once, and later runs replay them without
+  re-reading every page.
+
+## How it compares
+
+| | 5dive browser | Playwright MCP | Claude in Chrome | browser-use | Browserbase |
+|---|---|---|---|---|---|
+| Signed-in sessions persist across runs | Yes | Yes, a persistent profile by default | Yes, it is your own Chrome | Yes, if you reuse a profile | Yes, with a persisted Context |
+| You sign in by hand; the model never sees the password | Yes | Yes, in the headed browser | Yes | Yes, by reusing a profile | Yes, through live view |
+| A robot check stops and hands off to a person | Yes, it is never solved | Not documented | Yes, it pauses for you | Not documented | No, it solves CAPTCHAs by default (can be turned off) |
+| Asks you before paying, by default | Yes, with a screenshot | Not documented | Partly: asks before financial sites | Not documented | Not documented |
+| Runs on your own server | Yes (Debian, Ubuntu) | Yes | No, it needs your desktop Chrome | Yes | No, a hosted cloud |
+
+The second row is a tie, and that is the point: every tool here can keep the password away from
+the model. What differs is what happens around the session: who handles a robot check, whether
+paying waits for you, and whether it runs on a box you own while your laptop is closed.
+
+Checked against each project's own docs on 2026-10-14
+([Playwright MCP](https://github.com/microsoft/playwright-mcp),
+[Claude in Chrome](https://code.claude.com/docs/en/chrome),
+[browser-use](https://docs.browser-use.com/customize/examples/sensitive-data),
+[Browserbase](https://docs.browserbase.com/platform/identity/captcha-solving)). If a cell is out
+of date, open an issue and we will fix it.
 
 ## What your agent gets
 
