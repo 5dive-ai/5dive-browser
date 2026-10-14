@@ -8,6 +8,29 @@ that file stays where it is.
 
 ## Unreleased
 
+### Changed — the agent may pick a saved Google account on a sign-up, and still stops at passwords and robot checks (DIVE-6228), 1.39.0
+
+lodar, 2026-10-14: "let the agent pick an already-saved Google account, but still stop at passwords
+and robot checks". Round 1 of the Claude in Chrome head-to-head (DIVE-6214) stopped 5dive-browser
+one click short on 6 of 6 "Sign up with Google" tasks: the generic sign-in guard read Google's
+account chooser as a sign-in form. It was not even consistent: that guard only runs when the
+site's own front page left the login unconfirmed, so Jamie's chooser passed on one try and was
+refused on the next.
+
+- **`lib/google-signin.cjs` answers each Google sign-in page from the page alone** (URL and HTML),
+  for every site, before the generic guard. Allowed: the account chooser listing a signed-in saved
+  account, the "Sign in to <app> with Google / Continue as …" confirm, and a consent screen for basic
+  profile and email only. Stopped (exit 75): a password field, a verification code or any 2-step
+  prompt, a robot check, adding an account (Google's email box, or a chooser with no signed-in
+  account), Google refusing the browser, and any accounts.google.com page it does not recognise.
+  Asked (exit 73): a consent screen wanting more than basic profile and email (calendar, contacts,
+  Drive, a box per extra permission, a wider `scope=`), and Google's unverified-app warning.
+- **Both step loops ask it BEFORE each step on a Google page**, so a password is never typed and a
+  wider grant is never clicked, whatever the steps say. A `goto` is not checked: leaving is never
+  the danger.
+- Harness: `tests/browser_google_signin_unit.sh` (the classifier, 26 arms) and T32g in
+  `browser_plugin_unit.sh`, which runs each act arm on this tree and on the pre-fix commit (30ca244) and names both.
+
 ### Added — opt-in login links for a self-hosted box (DIVE-6219), 1.38.0
 
 lodar, 2026-10-14: "should it be a free option for oss 5dive cli since we dont ship domains on oss

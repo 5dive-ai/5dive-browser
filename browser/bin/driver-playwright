@@ -53,6 +53,7 @@ const aria = require(path.join(__dirname, '..', 'lib', 'aria.cjs'));
 const proxy = require(path.join(__dirname, '..', 'lib', 'proxy.cjs'));
 const totp = require(path.join(__dirname, '..', 'lib', 'totp.cjs'));
 const downloads = require(path.join(__dirname, '..', 'lib', 'downloads.cjs'));
+const gsignin = require(path.join(__dirname, '..', 'lib', 'google-signin.cjs'));
 
 // DO NOT DELETE THIS. It is not dead code — it is the fix for DIVE-4587, and the
 // full mechanism is written out at the top of bin/browser. In one paragraph:
@@ -585,6 +586,14 @@ async function main() {
       // A ref that matches nothing gets ONE retry on a picked element, never for a
       // step that pays, posts, sends or deletes (lib/aria.cjs resolveOrRepick).
       // The pick can take reflex seconds, so the lease is read again before a retry.
+      // GOOGLE'S SIGN-IN PAGES (DIVE-6228), before the step touches one: a password,
+      // a code, a robot check, adding an account or a wider grant stops the plan
+      // here, whatever the steps say. lib/google-signin.cjs, shared by both loops.
+      const gs = await gsignin.stepStop(page, s);
+      if (gs) {
+        process.stderr.write(gsignin.STOP_PREFIX + JSON.stringify(gs) + '\n');
+        throw new Error(`${where}: not run. ${gs.why}`);
+      }
       const { sel, retry: r } = await aria.resolveOrRepick(page, s, i + 1, { timeoutMs: STEP_TIMEOUT });
       if (r) assertLease(where);
       retry = r;

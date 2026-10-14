@@ -129,6 +129,19 @@ An authenticator-app 2FA prompt is the one exception, and only on a site whose o
 seed on the box: `run` types the code itself, and `5dive browser totp fill <site> [<url>]` does
 it on demand. Neither shows you the code. With no seed saved, it stops like any challenge.
 
+**"Sign up / Sign in with Google" when the browser already holds a Google login.** Google's own
+pages get one fixed answer each, whatever site led there:
+
+- **You may click:** the account chooser, to pick the saved account the task names (never another
+  one); the "Sign in to <app> with Google" / "Continue as …" confirm; a consent screen that asks
+  only for basic profile and email. Carry on with `act` and no URL; the page you are on is kept.
+- **Hard stop (exit 75), hand it over:** a password field, a verification code or 2-step prompt, a
+  robot check, Google asking for an email address (adding an account), a chooser whose account is
+  signed out. `5dive browser handoff <site>` (a robot check: `connect-request <site> --challenge`).
+- **Ask your owner (exit 73):** a consent screen that wants more than basic profile and email
+  (calendar, contacts, Drive, ticking boxes). Tell them what it wants. Never click Allow on it; if
+  they say yes, they click it themselves through `handoff`.
+
 **Blocked from a server IP** ("Request blocked by network security", "suspicious network"):
 some sites block server IPs; `5dive browser proxy set <url>` sends this box's browser through
 your own proxy. That is the owner's proxy and the owner's call — tell them, and use only a URL
