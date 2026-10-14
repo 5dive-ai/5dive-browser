@@ -141,8 +141,11 @@ const WIDE_WORDS = new RegExp('\\b(' + [
   'fitness', 'health', 'payments?', 'purchases?', 'google ads', 'analytics', 'cloud platform', 'admin',
   'groups', 'google chat', 'google meet', 'classroom', 'google keep', 'books', 'google forms', 'apps script',
   'blogger', 'search console', 'tag manager', 'business profile', 'on your behalf', 'edit, create',
-  'and delete', 'additional access', 'manage', 'edit', 'delete', 'upload', 'download',
-].join('|') + ')\\b', 'i');
+  'and delete', 'additional access',
+].join('|') + ')\\b', 'gi');
+// What a scope DOES, for a listed line whose data has no word above. Only a
+// fallback, so the owner is told what the app wants ("contacts"), not a verb.
+const WIDE_VERBS = /\b(manage|edit|delete|upload|download)\b/gi;
 
 // THE SCOPES GOOGLE LISTS, AND NOTHING ELSE ON THE SCREEN (DIVE-6241). Round 2
 // of the head-to-head refused Allow on Coda's consent, which asks for profile,
@@ -180,8 +183,9 @@ function scopeVerdict(u, text, html) {
   const scope = u && (u.searchParams.get('scope') || '');
   for (const s of scope.split(/[\s+,]+/).filter(Boolean)) if (!BASIC_SCOPES.has(s)) wide.push(s);
   // The account's own address (…@gmail.com) is on every one of these screens.
-  const w = listedScopes(text).replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g, ' ').match(WIDE_WORDS);
-  if (w) wide.push(`"${w[0]}" on the screen`);
+  const listed = listedScopes(text).replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g, ' ');
+  const w = [...new Set(listed.match(WIDE_WORDS) || listed.match(WIDE_VERBS) || [])];
+  if (w.length) wide.push(`"${w.slice(0, 3).join('", "')}" on the screen`);
   // Google's granular consent puts a checkbox beside every scope beyond the
   // basic ones; the basic ones have none. A box inside a hidden block is beside nothing.
   if (visibleInputs(visibleMarkup(html), (a) => (a.type || '').toLowerCase() === 'checkbox').length) wide.push('a box to tick per extra permission');

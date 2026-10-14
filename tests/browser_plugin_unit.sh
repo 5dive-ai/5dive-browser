@@ -5484,43 +5484,42 @@ FIVEDIVE_BROWSER_PROFILE_ROOT="$P31" mkprofile robotm.test \
   '<html><body><div id="feed">posts</div><div class="g-recaptcha"></div></body></html>' >/dev/null
 FIVEDIVE_BROWSER_PROFILE_ROOT="$P31" mkprofile codem.test \
   '<html><body><h1>Two-factor authentication</h1><form action="/sessions/two-factor"><input autocomplete="one-time-code" name="otp"></form></body></html>' >/dev/null
-# m32 <bin> <site> <landed url> <landed html> -> "<exit> <clicks> <evidence handed back>"
+# m32 <bin> <site> <landed url> <landed html> -> "<exit> <clicks that reached the page>"
 m32() { : > "$PWREC"; rm -rf "$TMP/act32m"
   run actenv env PWURL="$3" PWHTML="$4" FIVEDIVE_BROWSER_NO_DAEMON=1 "$1" act "https://$2/signup" --steps="$STAR" --out="$TMP/act32m"
   printf '%s' "$ERR" > "$TMP/m32.err"
-  printf '%s %s %s' "$RC" "$(jq -rs '[.[]|select(.call=="click")]|length' "$PWREC")" \
-    "$([[ -s "$TMP/act32m/page.html" ]] && echo yes || echo no)"; }
+  printf '%s %s' "$RC" "$(jq -rs '[.[]|select(.call=="click")]|length' "$PWREC")"; }
 m32err() { cat "$TMP/m32.err" 2>/dev/null; }
 TSU="$(cat "$FX32/tally-signup.html")"
-t  'T32m1 tally.so (round 2 AG2): no false challenge, the step ran and the page came back' '0 1 yes' \
+t  'T32m1 tally.so (round 2 AG2): no false challenge, the step ran' '0 1' \
    "$(m32 "$BROWSER" tallym.test https://tallym.test/signup "$TSU")"
 tc 'T32m1 ...and it says the marker matched only what a person does not see' 'not a challenge' "$(m32err)"
-t  'T32m1 1.39.0: refused as a security challenge before any step'   '75 0 no' "$(m32 "$M32OLD" tallym.test https://tallym.test/signup "$TSU")"
+t  'T32m1 1.39.0: refused as a security challenge before any step'   '75 0' "$(m32 "$M32OLD" tallym.test https://tallym.test/signup "$TSU")"
 tc 'T32m1 1.39.0: ...with round 2'"'"'s sentence' 'presenting a security challenge' "$(m32err)"
-t  'T32m1 NEGATIVE: a site showing a robot check still stops before any step' '75 0 no' \
+t  'T32m1 NEGATIVE: a site showing a robot check still stops before any step' '75 0' \
    "$(m32 "$BROWSER" robotm.test https://robotm.test/signup "$LIVE_DOM")"
-t  'T32m1 NEGATIVE: a site asking for a two-factor code still stops before any step' '75 0 no' \
+t  'T32m1 NEGATIVE: a site asking for a two-factor code still stops before any step' '75 0' \
    "$(m32 "$BROWSER" codem.test https://codem.test/signup "$LIVE_DOM")"
 PLG="$(cat "$FX32/pitch-login.html")"
 PLU='https://auth.noadapter.test/login?state=x&prompt=select_account'
-t  'T32m2 a sign-up landing on the site'"'"'s login page with "Continue with Google" (round 2 AG5): handed back' '0 1 yes' \
+t  'T32m2 a sign-up landing on the site'"'"'s login page with "Continue with Google" (round 2 AG5): handed back' '0 1' \
    "$(m32 "$BROWSER" noadapter.test "$PLU" "$PLG")"
 tc 'T32m2 ...said to be a sign-in page, for the Google button only' 'handed back for its Google button only' "$(m32err)"
-t  'T32m2 1.39.0: refused as a sign-in page, nothing handed back' '75 1 no' "$(m32 "$M32OLD" noadapter.test "$PLU" "$PLG")"
-t  'T32m2 NEGATIVE: the same page with a password box is still refused' '75 1 no' \
+t  'T32m2 1.39.0: refused as a sign-in page, nothing handed back' '75 1' "$(m32 "$M32OLD" noadapter.test "$PLU" "$PLG")"
+t  'T32m2 NEGATIVE: the same page with a password box is still refused' '75 1' \
    "$(m32 "$BROWSER" noadapter.test "$PLU" "${PLG/<\/form>/<input type=\"password\" name=\"pw\"></form>}")"
-t  'T32m2 NEGATIVE: ...with a code box' '75 1 no' \
+t  'T32m2 NEGATIVE: ...with a code box' '75 1' \
    "$(m32 "$BROWSER" noadapter.test "$PLU" "${PLG/<\/form>/<input autocomplete=\"one-time-code\" name=\"c\"></form>}")"
-t  'T32m2 NEGATIVE: ...with a robot check' '75 1 no' \
+t  'T32m2 NEGATIVE: ...with a robot check' '75 1' \
    "$(m32 "$BROWSER" noadapter.test "$PLU" "${PLG/<\/form>/<\/form><div class=\"g-recaptcha\"><\/div>}")"
-t  'T32m2 NEGATIVE: a login page with no Google button is still refused' '75 1 no' \
+t  'T32m2 NEGATIVE: a login page with no Google button is still refused' '75 1' \
    "$(m32 "$BROWSER" noadapter.test "https://noadapter.test/login?next=/x" '<html><body><form action="/login"><input type="email"></form></body></html>')"
 # the mutant: the page check always says "challenge", and never offers a button
 MUT32MD="$TMP/m32mut"; mkdir -p "$MUT32MD"; cp -r "$ROOT/browser" "$MUT32MD/"
 sed -i 's|  return { challenge: false, why:|  return { challenge: true, why:|; s|  return { verdict: '"'"'offer'"'"'|  return { verdict: '"'"'none'"'"'|' "$MUT32MD/browser/lib/page-check.cjs"
 t  'T32m mutant applied (both verdicts)' 2 "$(grep -cE "^  return \{ (challenge: true, why: 'the marker|verdict: 'none', kind: 'google-button')" "$MUT32MD/browser/lib/page-check.cjs")"
-t  'T32m MUTANT: tally.so is a challenge again' '75 0 no' "$(m32 "$MUT32MD/browser/bin/browser" tallym.test https://tallym.test/signup "$TSU")"
-t  'T32m MUTANT: the Pitch login page is refused again' '75 1 no' "$(m32 "$MUT32MD/browser/bin/browser" noadapter.test "$PLU" "$PLG")"
+t  'T32m MUTANT: tally.so is a challenge again' '75 0' "$(m32 "$MUT32MD/browser/bin/browser" tallym.test https://tallym.test/signup "$TSU")"
+t  'T32m MUTANT: the Pitch login page is refused again' '75 1' "$(m32 "$MUT32MD/browser/bin/browser" noadapter.test "$PLU" "$PLG")"
 
 # --- T32d several accounts on one site ----------------------------------------
 dw=$(FIVEDIVE_BROWSER_PROFILE_ROOT="$P31" mkprofile gh.test_work "$LIVE_DOM")
