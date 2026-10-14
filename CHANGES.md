@@ -8,6 +8,38 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — opt-in login links for a self-hosted box (DIVE-6219), 1.38.0
+
+lodar, 2026-10-14: "should it be a free option for oss 5dive cli since we dont ship domains on oss
+5dive?", then "yes it user opts in", "yes can give user options" and "paid 5dive users have no such
+problem so dont break what works". A self-hosted box had no domain and no relay, so an owner's
+Connect tap there could only fail at "the relay did not accept the login link".
+
+- **`sudo 5dive browser login-link enable --via=ip|domain|sslip|proxy`** turns it on. With no
+  `--via` it lists the choices, each with its trade-off from the row's safety review. `ip` is
+  recommended: a Let's Encrypt certificate for the box's own IP (short-lived profile, Caddy 2.11+),
+  so no third party is in the login path. `sslip` is a fallback (its operator could redirect the
+  name; its shared certificate quota fails at random). `proxy` is for an HTTPS front the owner
+  already runs, such as Tailscale Funnel behind NAT. A Cloudflare quick tunnel is refused by name,
+  because Cloudflare ends the TLS. `status` and `disable` complete the verb.
+- **What it installs:** this plugin's own small server (`lib/login-link-server.py`, standard library
+  only, not shelld) on `127.0.0.1:3111`, run as the box seat, and Caddy from its signed apt source as
+  the HTTPS front. The front forwards `/browser/viewer/*` and nothing else: every other path is a
+  404, and Caddy's admin endpoint is off. The page redeems nothing on GET (a link preview cannot
+  spend the link), a redeem must come from the page on the link's own origin, the nonce reaches
+  `viewer-redeem` on stdin as before, the websocket token is one-use, and neither the nonce nor the
+  password is ever logged. `enable` grades a real certificate before it says on, and turns itself
+  off again if there is none after two minutes.
+- **A hosted box is unchanged.** With `FIVE_DOMAIN` set the link host is `FIVE_DOMAIN` and the bind
+  goes to shelld, even with a login-link config planted on the box. `login-link` there prints one
+  line and refuses `enable`, and the plugin's usage never shows the option. A hosted relay's refusal
+  keeps its exact words; a self-hosted one now names `sudo 5dive browser login-link`.
+- **With it on,** `handoff` on a self-hosted box sends the same Connect button and link a hosted box
+  does, instead of the SSH steps. With it off, both behave as before.
+- **Harness:** `tests/browser_login_link_unit.sh` (hosted, self-hosted off and on, the `enable`
+  choices and the front's config, and the server over loopback against a fake `viewer-redeem` and a
+  fake websocket bridge).
+
 ### Changed — the browser stack installs at `sudo 5dive browser setup`, never inside a hire (DIVE-6112), 1.37.0
 
 lodar, 2026-10-12, after DIVE-6089: "realy hiring does all installs? ... is it good decision?",

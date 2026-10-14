@@ -424,6 +424,8 @@ usage() {
   gets a profile of its own (it is a SECOND account); a second Google account is
   a second group.
 USAGE
+  # DIVE-6219: a hosted box never sees this option.
+  _connect_has_front || printf '\n  SELF-HOSTED BOX: login links are off until the owner opts in.\n  sudo 5dive browser login-link   # the choices, each with its trade-off\n'
 }
 
 # ---------------------------------------------------------------- profile store
@@ -8086,6 +8088,340 @@ _connect_has_front() {
   grep -q '^FIVE_DOMAIN=.' "$CONNECT_PROVISIONING_ENV"
 }
 
+# ----------------------------------- login link on a self-hosted box (DIVE-6219)
+#
+# A HOSTED BOX IS NOT TOUCHED BY ANY OF THIS. Its link host is its 5dive domain
+# and its relay is shelld, exactly as before: every path below is reached only
+# when provisioning.env names no FIVE_DOMAIN, and `login-link enable` refuses on
+# a box that has one (lodar, 2026-10-14: "paid 5dive users have no such problem
+# so dont break what works").
+#
+# A self-hosted box has neither the domain nor the relay, so a Connect tap could
+# only fail at "the relay did not accept". This is the OPT-IN way to give it
+# both (off by default; lodar: "yes it user opts in"): a small server of this
+# plugin's own (lib/login-link-server.py) on 127.0.0.1, behind an HTTPS front
+# that forwards it /browser/viewer/* and 404s everything else. The owner picks
+# HOW the box is reached (lodar: "yes can give user options"); each choice is
+# shown with its one-line trade-off from the DIVE-6219 safety review:
+#   ip      a free certificate for the box's own IP address (Let's Encrypt). No
+#           third party in the login path. Needs a public IPv4 and ports 80+443.
+#           THE RECOMMENDED ONE.
+#   domain  your own domain. You trust only your own DNS. Needs an A record.
+#   sslip   <ip>.sslip.io. Works anywhere ip does, but the free DNS service's
+#           operator could point the name at itself and read the login, and its
+#           shared certificate quota fails at random. A fallback, not a default.
+#   proxy   you already serve HTTPS (Tailscale Funnel, which also works behind
+#           NAT, or your own nginx/Caddy): forward /browser/viewer/ to the local
+#           port and name the host. Nothing is installed on 80/443.
+# NOT offered: a Cloudflare quick tunnel. Cloudflare ends the TLS, so it would
+# see the link and every keystroke typed through it.
+LINK_CONF=/etc/5dive/browser-link.env
+LINK_STATE=/var/lib/5dive/browser-link
+LINK_LIB=/usr/local/lib/5dive/browser-link
+LINK_SYSTEMD_DIR=/etc/systemd/system
+LINK_UNIT=5dive-browser-link
+LINK_TLS_UNIT=5dive-browser-link-tls
+LINK_PORT_DEFAULT=3111
+LINK_CADDY_IP_MIN=2.11   # 2.10 could not get an IPv4 certificate from Let's Encrypt (caddy#7399)
+LINK_SEAM=0
+# TEST SEAMS, honoured only WITHOUT root, like the connect seams above: they
+# point an unprivileged caller at its own files, install nothing and start
+# nothing, so none of them can grant anything.
+if [[ $EUID -ne 0 && -n "${FIVEDIVE_BROWSER_LINK_CONF:-}" ]]; then
+  LINK_SEAM=1
+  LINK_CONF="$FIVEDIVE_BROWSER_LINK_CONF"
+  LINK_STATE="${FIVEDIVE_BROWSER_LINK_STATE:-$LINK_STATE}"
+  LINK_LIB="${FIVEDIVE_BROWSER_LINK_LIB:-$LINK_LIB}"
+  LINK_SYSTEMD_DIR="${FIVEDIVE_BROWSER_LINK_SYSTEMD_DIR:-$LINK_SYSTEMD_DIR}"
+fi
+
+_link_get() { sed -n "s/^$1=//p" "$LINK_CONF" 2>/dev/null | head -1; }
+_link_host() { local h; h=$(_link_get LINK_HOST); [[ "$h" =~ ^[A-Za-z0-9.-]{1,253}$ ]] && printf '%s\n' "$h"; }
+# On only on a box with no 5dive domain, and only with a usable host.
+_link_on() { ! _connect_has_front && [[ -f "$LINK_CONF" && -n "$(_link_host)" ]]; }
+
+# Root writes the bind the tap minted; the server (the box seat) reads it. A bind
+# is not the secret (the nonce is, and only its hash is kept); it is what makes
+# the ticket redeemable by this box's link and nothing else.
+_link_register_bind() {  # <site> <bind> <expires epoch>
+  local d="${LINK_STATE:?}/binds" g="" f
+  mkdir -p "$d" || return 1
+  if [[ $EUID -eq 0 ]]; then
+    g=$(id -gn "$BOX_SEAT" 2>/dev/null) || return 1
+    chown "root:$g" "$d" && chmod 0750 "$d" || return 1
+  fi
+  f="$d/$1"
+  ( umask 027; printf 'bind=%s\nexpires_at=%s\n' "$2" "$3" > "$f.$$" ) || return 1
+  if [[ -n "$g" ]]; then chown "root:$g" "$f.$$" || return 1; fi
+  mv -f "$f.$$" "$f"
+}
+
+# The box's public IPv4, from its own interfaces — the same filter the SSH
+# handoff uses. Empty behind NAT, which is the answer: no IP option works there.
+_link_public_ipv4() {
+  if (( LINK_SEAM )) && [[ -n "${FIVEDIVE_BROWSER_LINK_IP+x}" ]]; then printf '%s\n' "$FIVEDIVE_BROWSER_LINK_IP"; return 0; fi
+  ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 \
+    | grep -vE '^(10\.|127\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.)' | head -1
+}
+
+_link_choices() {
+  cat <<'TXT'
+Pick how your phone reaches this box's login screen (all are off until you pick one):
+
+  --via=ip                    RECOMMENDED. A free certificate for this box's own IP address
+                              (Let's Encrypt). No third party sees the login. Needs a public
+                              IPv4 address and ports 80 and 443 open to the internet.
+  --via=domain --host=<name>  Your own domain, pointed at this box (an A record). You trust
+                              only your own DNS. Needs ports 80 and 443 open.
+  --via=sslip                 <ip>.sslip.io, a free name service. Works where ip works, but
+                              the service's operator could redirect the name and read what
+                              you type, and its shared certificate quota fails at random.
+                              Use it only if ip does not work.
+  --via=proxy --host=<name>   You already serve HTTPS here, e.g. Tailscale Funnel (which also
+                              works behind NAT) or your own nginx or Caddy. Forward
+                              /browser/viewer/ to http://127.0.0.1:3111 and name the host.
+                              Nothing is installed on ports 80 or 443.
+
+Behind NAT with no public IP, only proxy (Tailscale Funnel) or a domain you forward works.
+A Cloudflare quick tunnel is not offered: Cloudflare would see every keystroke.
+
+  sudo 5dive browser login-link enable --via=ip
+TXT
+}
+
+# The whole HTTPS front: the viewer paths go to the local server, everything else
+# is a 404, and there is no admin endpoint at all.
+_link_caddyfile() {  # <mode> <host> <port>
+  local mode="$1" host="$2" port="$3"
+  printf '# Written by `5dive browser login-link enable` (DIVE-6219). Re-run it to change this.\n{\n\tadmin off\n'
+  [[ "$mode" == ip ]] && printf '\tdefault_sni %s\n' "$host"   # a client never sends an IP as SNI
+  printf '}\n\nhttps://%s {\n' "$host"
+  [[ "$mode" == ip ]] && printf '\ttls {\n\t\tissuer acme {\n\t\t\tprofile shortlived\n\t\t}\n\t}\n'
+  printf '\t@viewer path /browser/viewer/*\n\thandle @viewer {\n\t\treverse_proxy 127.0.0.1:%s\n\t}\n\thandle {\n\t\trespond 404\n\t}\n}\n' "$port"
+}
+
+_link_units() {  # <server|tls> <port>
+  if [[ "$1" == server ]]; then
+    cat <<UNIT
+# Written by \`5dive browser login-link enable\` (DIVE-6219).
+[Unit]
+Description=5dive browser login link (self-hosted box): the viewer server on 127.0.0.1:$2
+After=network.target
+
+[Service]
+User=$BOX_SEAT
+EnvironmentFile=$LINK_CONF
+Environment=LINK_BIND_DIR=$LINK_STATE/binds
+ExecStart=/usr/bin/python3 -I $LINK_LIB/login-link-server.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  else
+    cat <<UNIT
+# Written by \`5dive browser login-link enable\` (DIVE-6219).
+[Unit]
+Description=5dive browser login link (self-hosted box): HTTPS for /browser/viewer/ only
+After=network-online.target $LINK_UNIT.service
+Wants=network-online.target
+
+[Service]
+User=caddy
+Group=caddy
+StateDirectory=$LINK_TLS_UNIT
+Environment=HOME=/var/lib/$LINK_TLS_UNIT XDG_DATA_HOME=/var/lib/$LINK_TLS_UNIT XDG_CONFIG_HOME=/var/lib/$LINK_TLS_UNIT
+ExecStart=/usr/bin/caddy run --config $LINK_STATE/Caddyfile --adapter caddyfile
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  fi
+}
+
+_link_caddy_version() { caddy version 2>/dev/null | sed -n 's/^v\([0-9]*\.[0-9]*\).*/\1/p' | head -1; }
+_link_ver_ge() { [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" == "$2" ]]; }
+
+# Caddy from its own signed apt source (the distro's is too old for IP
+# certificates). The package starts a stock caddy.service on port 80; that one is
+# stopped and disabled only when THIS run installed it, never a Caddy the owner had.
+_link_install_caddy() {  # <minimum major.minor>
+  local v; v=$(_link_caddy_version)
+  if [[ -n "$v" ]]; then
+    _link_ver_ge "$v" "$1" && return 0
+    dpkg -s caddy >/dev/null 2>&1 || { _stack_warn "this box has Caddy $v, older than $1, and not from apt: upgrade it, or use --via=proxy"; return 1; }
+  fi
+  _have apt-get || { _stack_warn "no apt-get here: install Caddy >= $1 yourself, then re-run"; return 1; }
+  local had=0; dpkg -s caddy >/dev/null 2>&1 && had=1
+  _stack_say "installing Caddy (its signed apt source, dl.cloudsmith.io/public/caddy/stable)..."
+  _stack_repo caddy-stable-archive-keyring https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+      'https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main' \
+    && _stack_apt_update && _stack_apt install caddy || true
+  (( had )) || systemctl disable --now caddy.service >/dev/null 2>&1 || true
+  v=$(_link_caddy_version)
+  [[ -n "$v" ]] && _link_ver_ge "$v" "$1" && { _stack_say "installed Caddy $v"; return 0; }
+  _stack_warn "could not install Caddy >= $1 (have: ${v:-none})"
+  return 1
+}
+
+_link_port_busy() {  # <port> -> 0 when something already listens there
+  [[ -n "$(ss -Hltn "sport = :$1" 2>/dev/null)" ]]
+}
+
+cmd_login_link() {
+  local sub="${1:-status}"; shift || true
+  if _connect_has_front; then
+    # A hosted box: one line, and the option does not exist here.
+    local d; d=$(sed -n 's/^FIVE_DOMAIN=//p' "$CONNECT_PROVISIONING_ENV" 2>/dev/null | head -1)
+    case "$sub" in
+      status|-h|--help|help) printf 'login links on this box use its 5dive domain%s; there is nothing to set up.\n' "${d:+ ($d)}"; return 0 ;;
+    esac
+    die "$E_USAGE" "this box has its 5dive domain${d:+ ($d)}, so its login links already work; there is nothing to set up. Nothing changed."
+  fi
+  case "$sub" in
+    -h|--help|help)
+      printf '5dive browser login-link status | enable --via=<ip|domain|sslip|proxy> [--host=<name>] [--port=<n>] | disable\n\n'
+      printf 'Lets the agents on this self-hosted box send you a link to log in to a site\nin its browser. Off until you turn it on.\n\n'
+      _link_choices ;;
+    status)  _link_status ;;
+    enable)  _link_enable "$@" ;;
+    disable) _link_disable ;;
+    *) die "$E_USAGE" "login-link: status, enable or disable" ;;
+  esac
+}
+
+_link_status() {
+  if ! _link_on; then
+    printf 'login links: off. A Connect request cannot send a link from this box.\n\n'
+    _link_choices
+    return 0
+  fi
+  local mode host; mode=$(_link_get LINK_MODE); host=$(_link_host)
+  printf 'login links: on, via %s — https://%s/browser/viewer/...\n' "$mode" "$host"
+  if (( ! LINK_SEAM )); then
+    printf '  server: %s\n' "$(systemctl is-active "$LINK_UNIT" 2>/dev/null || echo inactive)"
+    [[ "$mode" == proxy ]] || printf '  https:  %s\n' "$(systemctl is-active "$LINK_TLS_UNIT" 2>/dev/null || echo inactive)"
+  fi
+  printf 'Turn off: sudo 5dive browser login-link disable\n'
+}
+
+_link_enable() {
+  [[ $EUID -eq 0 ]] || (( LINK_SEAM )) || die "$E_PERM" "login-link installs a service. Run: sudo 5dive browser login-link enable --via=ip"
+  local via="" host="" port="$LINK_PORT_DEFAULT" ip="" a
+  for a in "$@"; do
+    case "$a" in
+      --via=*)  via="${a#*=}" ;;
+      --host=*) host="${a#*=}"; host="${host,,}" ;;
+      --port=*) port="${a#*=}" ;;
+      *) die "$E_USAGE" "unknown: $a (see: 5dive browser login-link --help)" ;;
+    esac
+  done
+  if [[ -z "$via" ]]; then _link_choices >&2; exit "$E_USAGE"; fi
+  [[ "$port" =~ ^[0-9]{4,5}$ ]] && (( port >= 1024 && port <= 65535 )) || die "$E_USAGE" "--port must be 1024-65535"
+  case "$via" in
+    ip|sslip)
+      [[ -z "$host" ]] || die "$E_USAGE" "--via=$via makes its own host name; --host is for domain or proxy"
+      ip=$(_link_public_ipv4)
+      [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] \
+        || die "$E_UNAVAILABLE" "this box has no public IPv4 address on its interfaces (it is behind NAT, or only has IPv6), so --via=$via cannot work. Use --via=proxy with Tailscale Funnel, or --via=domain with a domain whose 80 and 443 reach this box."
+      if [[ "$via" == ip ]]; then host="$ip"; else host="${ip//./-}.sslip.io"; fi ;;
+    domain|proxy)
+      [[ "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]] \
+        || die "$E_USAGE" "--via=$via needs --host=<a domain name>, e.g. --host=box.example.com" ;;
+    cloudflare|trycloudflare|tunnel)
+      die "$E_USAGE" "a Cloudflare quick tunnel is not offered: Cloudflare ends the TLS, so it would see the login link and every keystroke. Use --via=proxy with Tailscale Funnel instead." ;;
+    *) die "$E_USAGE" "--via must be ip, domain, sslip or proxy" ;;
+  esac
+
+  local front=1; [[ "$via" == proxy ]] && front=0
+  if (( ! LINK_SEAM )); then
+    # Re-enabling replaces our own front; anything ELSE on 80/443 is the owner's.
+    systemctl stop "$LINK_TLS_UNIT" "$LINK_UNIT" >/dev/null 2>&1 || true
+    if (( front )); then
+      _link_port_busy 443 && die "$E_UNAVAILABLE" "something already listens on port 443 here. Stop it, or use --via=proxy and forward /browser/viewer/ to 127.0.0.1:$port from it. Nothing changed."
+      _link_port_busy 80 && die "$E_UNAVAILABLE" "something already listens on port 80 here (the certificate check needs it). Stop it, or use --via=proxy. Nothing changed."
+    fi
+    _link_port_busy "$port" && die "$E_UNAVAILABLE" "port $port is taken on this box; pick another with --port=<n>. Nothing changed."
+    _have python3 || die "$E_UNAVAILABLE" "python3 is not on this box; the login-link server needs it"
+    if [[ ! -f /usr/share/novnc/core/rfb.js ]]; then
+      _stack_say "installing noVNC (apt), the login screen's viewer..."
+      _stack_apt_update; _stack_apt install novnc || true
+      [[ -f /usr/share/novnc/core/rfb.js ]] || die "$E_UNAVAILABLE" "could not install noVNC (apt-get install novnc). Nothing was turned on."
+    fi
+    if (( front )); then
+      local min=2.0; [[ "$via" == ip ]] && min="$LINK_CADDY_IP_MIN"
+      _link_install_caddy "$min" || die "$E_UNAVAILABLE" "no usable Caddy, so there is no HTTPS front. Nothing was turned on."
+    fi
+  fi
+
+  local self_lib; self_lib="$(cd "$(dirname "$(readlink -f "$0")")/../lib" && pwd)"
+  mkdir -p "$LINK_LIB/login-link" "$LINK_STATE/binds" "${LINK_CONF%/*}" "$LINK_SYSTEMD_DIR" || die "$E_UNAVAILABLE" "cannot create $LINK_LIB or $LINK_STATE"
+  # A copy, not a path into the plugin: `5dive plugin upgrade` replaces the
+  # plugin's directory, and a unit pointing into it would die with it.
+  install -m 0644 "$self_lib/login-link-server.py" "$LINK_LIB/login-link-server.py" \
+    && install -m 0644 "$self_lib/login-link/page.js" "$LINK_LIB/login-link/page.js" \
+    || die "$E_UNAVAILABLE" "could not copy the login-link server into $LINK_LIB"
+  ( umask 022; printf '# Written by `5dive browser login-link enable` (DIVE-6219).\nLINK_MODE=%s\nLINK_HOST=%s\nLINK_PORT=%s\n' "$via" "$host" "$port" > "$LINK_CONF" )
+  _link_units server "$port" > "$LINK_SYSTEMD_DIR/$LINK_UNIT.service"
+  if (( front )); then
+    _link_caddyfile "$via" "$host" "$port" > "$LINK_STATE/Caddyfile"
+    _link_units tls "$port" > "$LINK_SYSTEMD_DIR/$LINK_TLS_UNIT.service"
+  else
+    rm -f "${LINK_STATE:?}/Caddyfile" "${LINK_SYSTEMD_DIR:?}/${LINK_TLS_UNIT:?}.service"
+  fi
+  if [[ $EUID -eq 0 ]]; then
+    local g; g=$(id -gn "$BOX_SEAT" 2>/dev/null) || die "$E_UNAVAILABLE" "no box seat '$BOX_SEAT' on this box"
+    chown root:root "$LINK_STATE" && chmod 0755 "$LINK_STATE"
+    chown "root:$g" "$LINK_STATE/binds" && chmod 0750 "$LINK_STATE/binds"
+  fi
+
+  if (( ! LINK_SEAM )); then
+    systemctl daemon-reload
+    systemctl enable --now "$LINK_UNIT" >/dev/null 2>&1 || { _link_disable >/dev/null 2>&1; die "$E_UNAVAILABLE" "the login-link server did not start (journalctl -u $LINK_UNIT). It was turned off again."; }
+    if (( front )); then
+      systemctl enable --now "$LINK_TLS_UNIT" >/dev/null 2>&1 || { _link_disable >/dev/null 2>&1; die "$E_UNAVAILABLE" "the HTTPS front did not start (journalctl -u $LINK_TLS_UNIT). It was turned off again."; }
+      # Graded where it ENDS: a real certificate (curl verifies it) and the
+      # front's own 404 for a path that is not a viewer.
+      local code="" i
+      printf '  waiting for the certificate for %s (up to 2 minutes)...\n' "$host"
+      for i in $(seq 40); do
+        code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "https://$host/" 2>/dev/null) || code=""
+        [[ "$code" == 404 ]] && break
+        sleep 3
+      done
+      if [[ "$code" != 404 ]]; then
+        _link_disable >/dev/null 2>&1
+        die "$E_UNAVAILABLE" "no valid certificate for https://$host after 2 minutes, so login links stay off (a link that does not open is worse than none). Check that ports 80 and 443 reach this box from the internet; the log: journalctl -u $LINK_TLS_UNIT.$([[ "$via" == ip ]] && printf ' If the IP certificate keeps failing, --via=sslip is the fallback.')"
+      fi
+    fi
+  fi
+  printf 'login links: on, via %s — https://%s/browser/viewer/...\n' "$via" "$host"
+  case "$via" in
+    ip)     printf '  the certificate is for this box'"'"'s own IP; no third party is in the login path.\n' ;;
+    domain) printf '  served under your own domain; only your DNS is trusted.\n' ;;
+    sslip)  printf '  note: sslip.io'"'"'s operator could redirect this name and read a login. --via=ip avoids that.\n' ;;
+    proxy)  printf '  your HTTPS front must forward /browser/viewer/ (and nothing else) to http://127.0.0.1:%s.\n' "$port" ;;
+  esac
+  printf 'An agent'"'"'s `5dive browser connect-request <site>` now sends a working link. Turn off: sudo 5dive browser login-link disable\n'
+}
+
+_link_disable() {
+  [[ $EUID -eq 0 ]] || (( LINK_SEAM )) || die "$E_PERM" "Run: sudo 5dive browser login-link disable"
+  if (( ! LINK_SEAM )); then
+    systemctl disable --now "$LINK_TLS_UNIT" "$LINK_UNIT" >/dev/null 2>&1 || true
+  fi
+  rm -f "${LINK_SYSTEMD_DIR:?}/${LINK_UNIT:?}.service" "${LINK_SYSTEMD_DIR:?}/${LINK_TLS_UNIT:?}.service" "${LINK_CONF:?}" "${LINK_STATE:?}/Caddyfile"
+  rm -rf "${LINK_STATE:?}/binds"
+  (( LINK_SEAM )) || systemctl daemon-reload >/dev/null 2>&1 || true
+  printf 'login links: off. Caddy and noVNC stay installed; nothing listens for login links.\n'
+}
+
 # Whose window is it? The caller's own profile first, then the box login it is
 # brokered to — _resolve_site's order, read from root's side.
 _connect_window_owner() {  # <caller> <site>
@@ -8192,7 +8528,11 @@ _connect_request() {  # <caller> <site> <reason> [challenge <url> | handoff]
     kind=login url=""
   fi
   reason=$(printf '%s' "$reason" | tr -d '\000-\037\177' | cut -c1-"$CONNECT_REASON_MAX")
-  if [[ "$kind" == handoff ]] && ! _connect_has_front; then
+  # DIVE-6219: with login links on, a self-hosted handoff sends the Connect button
+  # like a hosted box, but only to a seat whose owner can tap it; otherwise the
+  # SSH steps, which print when nobody is paired, are still the path.
+  if [[ "$kind" == handoff ]] && ! _connect_has_front \
+     && { ! _link_on || ! _connect_channel "$caller" || [[ "$CONNECT_TG_TYPE" != claude || -z "$CONNECT_TG_OWNERS" ]]; }; then
     _connect_handoff_ssh "$caller" "$site" "$reason"; return
   fi
   _connect_channel "$caller" \
@@ -8336,13 +8676,24 @@ _connect_tap() {  # <caller> <code> <sender>
 
   token=$(sed -n 's/^CONNECTORD_TOKEN=//p' "$CONNECT_CONNECTORD_ENV" 2>/dev/null | head -1)
   host=$(sed -n 's/^FIVE_DOMAIN=//p' "$CONNECT_PROVISIONING_ENV" 2>/dev/null | head -1)
-  if [[ -z "$token" || ! "$host" =~ ^[A-Za-z0-9.-]+$ ]] \
+  if [[ -z "$host" ]] && _link_on; then
+    # DIVE-6219: a self-hosted box the owner opted in. Its own login-link server
+    # is the relay, and the bind goes to it as a root-written file instead of to
+    # shelld. A box with FIVE_DOMAIN never reaches this branch.
+    host=$(_link_host)
+    if ! _link_register_bind "$site" "$bind" "$exp"; then
+      _connect_as_box viewer-revoke "$site" >/dev/null 2>&1 || true
+      die "$E_UNAVAILABLE" "the box's login-link server could not take the login link; nothing was sent"
+    fi
+  elif [[ -z "$token" || ! "$host" =~ ^[A-Za-z0-9.-]+$ ]] \
      || ! printf 'header = "authorization: Bearer %s"\n' "$token" \
           | curl -sS -f --max-time 10 --config - -X POST -H 'content-type: application/json' \
               --data "$(jq -nc --arg s "$site" --arg b "$bind" --argjson e "$exp" '{site:$s,bind:$b,expiresAt:$e}')" \
               "$CONNECT_SHELLD_URL/shell/browser-viewer-bind" >/dev/null 2>&1; then
     # A ticket whose bind was never registered can only ever be refused.
     _connect_as_box viewer-revoke "$site" >/dev/null 2>&1 || true
+    # DIVE-6219: a self-hosted box is told how to opt in; a hosted box's words are unchanged.
+    _connect_has_front || die "$E_UNAVAILABLE" "the box's relay did not accept the login link; nothing was sent. This self-hosted box has login links off; its owner can turn them on: sudo 5dive browser login-link"
     die "$E_UNAVAILABLE" "the box's relay did not accept the login link; nothing was sent"
   fi
 
@@ -8508,7 +8859,8 @@ if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
     # `adblock` joins `setup` here: it writes the MACHINE-WIDE chrome policy
     # file, which is root's. Dropping to the seat would turn it into a refusal.
     # `config` too: the drive default is one box-wide file (DIVE-5338).
-    setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|totp|-h|--help|help|"") ;;
+    # `login-link` (DIVE-6219) installs box-wide services and writes /etc.
+    setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|totp|login-link|-h|--help|help|"") ;;
     *)
       # DIVE-4813: usually the caller, and for a brokered `serve` the owner.
       _drop="$(_root_drop_target "${SUDO_USER}" "$@")"
@@ -9215,6 +9567,7 @@ case "${1:-}" in
   viewer-redeem) shift; cmd_viewer_redeem "$@" ;;
   viewer-revoke) shift; cmd_viewer_revoke "$@" ;;
   connect-request) shift; cmd_connect_request "$@" ;;
+  login-link) shift; cmd_login_link "$@" ;;
   handoff) shift; cmd_handoff "$@" ;;
   # Not in usage: the privileged half, reached only as `sudo -n … browser _connect`.
   _connect) shift; cmd_connect_priv "$@" ;;

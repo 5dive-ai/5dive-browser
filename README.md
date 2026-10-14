@@ -57,6 +57,27 @@ When an agent needs you in the middle of a job (a sign-in, a robot check), `5div
 sends you these same steps for its live window, already filled in, on Telegram if the agent is
 paired. Otherwise it prints them.
 
+**Optional: a login link instead of SSH.** If you would rather tap a link on your phone, turn on
+login links. They are off until you do, and the command lists the choices with their trade-offs:
+
+```sh
+sudo 5dive browser login-link                   # the choices
+sudo 5dive browser login-link enable --via=ip   # recommended: a free certificate for the box's own IP
+```
+
+| `--via` | What it is | Trade-off |
+|---|---|---|
+| `ip` (recommended) | A Let's Encrypt certificate for the box's own IP address | No third party sees the login. Needs a public IPv4 address and ports 80 and 443 open |
+| `domain --host=<name>` | Your own domain, pointed at the box | You trust only your own DNS. Needs ports 80 and 443 open |
+| `sslip` | `<ip>.sslip.io`, a free name service | The service's operator could redirect the name and read what you type, and its shared certificate quota fails at random. Use it only if `ip` does not work |
+| `proxy --host=<name>` | Your own HTTPS front, e.g. Tailscale Funnel (works behind NAT) | Forward `/browser/viewer/` to `http://127.0.0.1:3111`. Nothing is installed on 80 or 443 |
+
+A Cloudflare quick tunnel is not offered: Cloudflare would see every keystroke. Once a login link is
+on, an agent's `connect-request` and `handoff` send you a one-time link for the live window, and
+port 443 answers only `/browser/viewer/*` (everything else is a 404). `sudo 5dive browser
+login-link disable` turns it off. A box 5dive hosts already has its own domain and does not need
+any of this.
+
 **3. Let the agent use it.**
 
 ```sh
@@ -65,7 +86,8 @@ sudo -u $A 5dive browser snapshot https://github.com/notifications   # what the 
 ```
 
 From then on the agent opens pages through that session itself. Nothing listens on the internet:
-the VNC server and its bridge bind to `127.0.0.1`, and the only way in is your SSH tunnel.
+the VNC server and its bridge bind to `127.0.0.1`, and the only way in is your SSH tunnel (or,
+if you turned it on, a one-time login link).
 
 - A read that says "logged out": sign in again and wait longer before `--stop`. A site that signs
   you out when the browser closes will not stay signed in; tick "remember me".

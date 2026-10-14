@@ -57,6 +57,10 @@ If `connect-request` refuses because the seat has no paired owner, its Telegram 
 cannot relay the tap, or it has no grant, fall back to the owner's own path, the shipped
 flow below.
 
+On a self-hosted box (no 5dive domain) the owner's tap is refused with "login links off"
+unless the owner turned them on. That is the owner's choice, not yours: tell them once
+that `sudo 5dive browser login-link` lists the options, and never run it yourself.
+
 <!-- 5dive:connect-site-flow:begin -->
 ## The shipped flow
 
