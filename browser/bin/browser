@@ -1980,6 +1980,24 @@ _site_challenge_marker() {
   local m; m=$([[ -f "$a" ]] && jq -r '.probe.challenge_when_dom_matches // empty' "$a")
   echo "${m:-(g-recaptcha|hcaptcha|cf-challenge|/checkpoint/challenge|two-factor|verify-your-identity)}"
 }
+# THE DEFAULT MARKER NAMES A CANDIDATE, THE PAGE DECIDES (DIVE-6241). It is a
+# grep of the whole document, and a document is mostly script data: tally.so
+# ships "login.two-factor-step.title" in its i18n table on the front page, so
+# every probe of it read CHALLENGE while the same profile rendered it normally
+# (round 2 of the head-to-head, AG2). lib/page-check.cjs looks for what a person
+# would see: a robot widget, a challenge title, a code box, a challenge URL.
+# An adapter's own marker was written for that site and still decides alone.
+# No node, or no lib: the marker decides, as it always did (fail closed).
+_challenge_confirmed() {  # <site> <html-file> [<url>] -> 0 = a challenge
+  local site="$1" f="$2" u="${3:-}" a v
+  a="$(_adapter_path "$site")"
+  [[ -f "$a" ]] && [[ -n "$(jq -r '.probe.challenge_when_dom_matches // empty' "$a" 2>/dev/null)" ]] && return 0
+  _have node && [[ -r "$_SELF_DIR/../lib/page-check.cjs" ]] || return 0
+  v=$(node "$_SELF_DIR/../lib/page-check.cjs" challenge "$f" "$u" 2>/dev/null | head -1)
+  [[ "$(jq -r '.challenge' <<<"$v" 2>/dev/null)" == false ]] || return 0
+  printf '%s: %s: the challenge marker matched, but not a challenge: %s.\n' "$PROG" "$site" "$(jq -r '.why' <<<"$v")" >&2
+  return 1
+}
 
 # Liveness. Sessions die on the SITE's schedule, not ours — device checks, 2FA
 # re-prompts, "unusual activity" interstitials — so a profile that worked Monday
@@ -2101,11 +2119,31 @@ _signin_guard() {
   if [[ -n "$u" ]] && _google_page_guard "$f" "$u"; then return 0; fi
   (( _GENERIC_UNCONFIRMED )) || return 0
   if [[ -n "$u" ]] && grep -qiE "$GENERIC_SIGNIN_URL" <<<"$u"; then
+    _signin_google_offer "$f" "$u" && return 0
     die "$E_COLD" "the page redirected to a sign-in ($u). Refusing rather than handing back the sign-in page as if it were the page you asked for; no evidence was written. If this account should be signed in, a person logs in again: 5dive browser auth $_PG_SITE"
   fi
   if [[ -s "$f" ]] && grep -qiE "$GENERIC_SIGNIN_MARKER" "$f"; then
+    _signin_google_offer "$f" "$u" && return 0
     die "$E_COLD" "the page that came back is a sign-in form, not the page you asked for. Refusing; no evidence was written. If this account should be signed in, a person logs in again: 5dive browser auth $_PG_SITE"
   fi
+  return 0
+}
+
+# A SIGN-UP THAT LANDS ON THE SITE'S OWN LOGIN PAGE (DIVE-6241). pitch.com's
+# Sign up goes to auth.pitch.com/login, which signs you in OR creates the
+# account, and its way in is "Continue with Google". Refusing that page stopped
+# the agent one click before Google's own pages, which lib/google-signin.cjs
+# already judges one by one. So it is handed back, said to be a sign-in page,
+# when lib/page-check.cjs finds that button on it and no password box, no code
+# box and no robot check; any of those and the refusal stands. No node or no
+# lib: it stands too.
+_signin_google_offer() {  # <html-file> [<url>] -> 0 = hand it back for the Google button
+  local f="$1" u="${2:-}" v
+  [[ -s "$f" ]] && _have node && [[ -r "$_SELF_DIR/../lib/page-check.cjs" ]] || return 1
+  v=$(node "$_SELF_DIR/../lib/page-check.cjs" signin "$f" "$u" 2>/dev/null | head -1)
+  [[ "$(jq -r '.verdict' <<<"$v" 2>/dev/null)" == offer ]] || return 1
+  printf '%s: this is %s'"'"'s own sign-in page%s, handed back for its Google button only: %s. Click that and nothing else here; a password, a code or a robot check stops.\n' \
+    "$PROG" "${_PG_SITE:-the site}" "${u:+ ($u)}" "$(jq -r '.why' <<<"$v")" >&2
   return 0
 }
 
@@ -2346,7 +2384,10 @@ _probe() {
     # markup, so testing logged-out first would classify an interrogated live
     # session as a dead one and send the user to re-authenticate a session that
     # is fine.
-    if grep -qiE "$challenge" "$dom"; then verdict=challenge; break; fi
+    if grep -qiE "$challenge" "$dom" \
+       && _challenge_confirmed "$site" "$dom" "$(sed -n 's/^5dive-probe-final-url: //p' "$dom.err" 2>/dev/null | tail -1)"; then
+      verdict=challenge; break
+    fi
     if [[ -n "$marker" ]] && grep -qiE "$marker" "$dom"; then verdict=expired; break; fi
     if [[ -n "$positive" ]] && grep -qiE "$positive" "$dom"; then verdict=authenticated; break; fi
     # Nothing yet. A warm probe has already spent the whole budget inside the
@@ -3906,7 +3947,7 @@ _challenge_hint() {  # <html> <landed url> [<asked url>]
     "$PROG" "$(cut -c1-80 <<<"$title")" "$host" "${u:-<the page>}" >&2
 }
 _render_is_challenge() {  # <site> <html>
-  grep -qiE "$(_site_challenge_marker "$1")" "$2" 2>/dev/null && return 0
+  grep -qiE "$(_site_challenge_marker "$1")" "$2" 2>/dev/null && _challenge_confirmed "$1" "$2" 2>/dev/null && return 0
   grep -qiE "$CHALLENGE_TITLE_MARKER" <<<"$(_render_title "$2")"
 }
 # Run as <seat>: root drops, a seat is already itself.

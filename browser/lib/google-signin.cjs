@@ -53,12 +53,42 @@ function decode(s) {
 // What a person could read: scripts, styles, templates and hidden blocks out,
 // tags out. Google ships most of its page as script data, and a word in there
 // (an invisible reCAPTCHA loader, a scope list for another step) is not on screen.
+// A hidden block goes WITH EVERYTHING INSIDE IT (DIVE-6241): the old lazy regex
+// stopped at the first closing tag of the same name, so a hidden <div> holding
+// a nested <div> leaked the rest of its text onto the "screen".
+function visibleMarkup(html) {
+  return stripHidden(String(html || '').replace(/<(script|style|noscript|template)\b[\s\S]*?<\/\1\s*>/gi, ' '));
+}
 function visibleText(html) {
-  const t = String(html || '')
-    .replace(/<(script|style|noscript|template)\b[\s\S]*?<\/\1\s*>/gi, ' ')
-    .replace(/<([a-z0-9]+)\b[^>]*\b(?:hidden|aria-hidden=["']?true["']?|style=["'][^"']*display\s*:\s*none[^"']*["'])[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ');
+  const t = visibleMarkup(html).replace(/<[^>]+>/g, ' ');
   return decode(t).replace(/[‘’]/g, "'").replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+function hiddenTag(tag) {
+  const a = attrsOf(tag);
+  return 'hidden' in a || a['aria-hidden'] === 'true' || /display\s*:\s*none|visibility\s*:\s*hidden/i.test(a.style || '');
+}
+// Drops each hidden element and its whole subtree, counting nesting. An element
+// that never closes is KEPT: dropping to the end of the page could drop a scope
+// list, and less text on a consent screen is the direction that allows.
+function stripHidden(html) {
+  const re = /<\/?([a-z][a-z0-9-]*)\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+  let out = '', last = 0, name = '', depth = 0, from = -1, m;
+  while ((m = re.exec(html))) {
+    const tag = m[0], n = m[1].toLowerCase(), closing = tag[1] === '/';
+    const leaf = VOID_TAGS.has(n) || /\/>$/.test(tag);
+    if (from < 0) {
+      if (closing || !hiddenTag(tag)) continue;
+      out += html.slice(last, m.index);
+      if (leaf) { last = re.lastIndex; continue; }
+      from = m.index; name = n; depth = 1;
+    } else if (n === name && !leaf) {
+      depth += closing ? -1 : 1;
+      if (depth === 0) { from = -1; last = re.lastIndex; out += ' '; }
+    }
+  }
+  return from >= 0 ? out + html.slice(from) : out + html.slice(last);
 }
 
 function attrsOf(tag) {
@@ -112,18 +142,60 @@ const WIDE_WORDS = new RegExp('\\b(' + [
   'groups', 'google chat', 'google meet', 'classroom', 'google keep', 'books', 'google forms', 'apps script',
   'blogger', 'search console', 'tag manager', 'business profile', 'on your behalf', 'edit, create',
   'and delete', 'additional access',
-].join('|') + ')\\b', 'i');
+].join('|') + ')\\b', 'gi');
+// What a scope DOES, for a listed line whose data has no word above. Only a
+// fallback, so the owner is told what the app wants ("contacts"), not a verb.
+const WIDE_VERBS = /\b(manage|edit|delete|upload|download)\b/gi;
+
+// THE SCOPES GOOGLE LISTS, AND NOTHING ELSE ON THE SCREEN (DIVE-6241). Round 2
+// of the head-to-head refused Allow on Coda's consent, which asks for profile,
+// email and openid only, because the app is called "Superhuman Docs" and the
+// whole screen was read: "docs" is a Drive word. The app's name is the
+// publisher's to choose, and the footer ("By clicking Allow…", "Make sure you
+// trust…") is Google's boilerplate on every consent. So the words are read
+// only between the list's header ("This will allow <app> to:", or "<app> wants
+// to access your Google Account" and the account) and that footer, with every
+// spelling of the app's name taken out. A layout with no header we know is
+// read whole, as before: the fallback is the stricter reading, never the looser.
+// Footer phrases only Google's boilerplate says, never a scope's own wording.
+const LIST_END = /\b(by clicking allow|by continuing, google|make sure (?:that )?you trust|learn about the risks|you can change this and other|you can see or remove access|before using this app|review [^.]{0,40}privacy policy)\b/;
+function appNames(text) {
+  const out = new Set(); let m;
+  const pats = [/this will allow (.{1,80}?) to\b/g, /make sure (?:that )?you trust (.{1,80}?)(?:[.!]| learn\b|$)/g,
+    /sign in to (.{1,80}?) with google\b/g, /(?:^|google |choose an account )(.{1,60}?) wants (?:to access|access to|additional access)\b/g];
+  for (const re of pats) while ((m = re.exec(text))) { const n = m[1].trim(); if (n && n !== 'google') out.add(n); }
+  return [...out].sort((x, y) => y.length - x.length);
+}
+function listedScopes(text) {
+  let from = -1, m;
+  if ((m = /this will allow .{1,80}? to:?/.exec(text))) from = m.index + m[0].length;
+  else if ((m = /wants (?:to access|access to|additional access to) your google account/.exec(text))) from = m.index + m[0].length;
+  let region = text;
+  if (from >= 0) {
+    const rest = text.slice(from), e = rest.search(LIST_END);
+    region = e > 0 ? rest.slice(0, e) : rest;
+  }
+  // The name only where Google frames it ("<app> will be able to", "trust <app>"),
+  // never bare: an app named like a scope line ("See your Google Drive files")
+  // must not erase that line from the list.
+  for (const n of appNames(text)) {
+    const e = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    region = region.replace(new RegExp(`\\b(?:allow|trust|to|for) ${e}\\b|\\b${e}(?:'s| will| wants| may| can| to:)`, 'g'), ' ');
+  }
+  return region;
+}
 
 function scopeVerdict(u, text, html) {
   const wide = [];
   const scope = u && (u.searchParams.get('scope') || '');
   for (const s of scope.split(/[\s+,]+/).filter(Boolean)) if (!BASIC_SCOPES.has(s)) wide.push(s);
   // The account's own address (…@gmail.com) is on every one of these screens.
-  const w = text.replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g, ' ').match(WIDE_WORDS);
-  if (w) wide.push(`"${w[0]}" on the screen`);
+  const listed = listedScopes(text).replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g, ' ');
+  const w = [...new Set(listed.match(WIDE_WORDS) || listed.match(WIDE_VERBS) || [])];
+  if (w.length) wide.push(`"${w.slice(0, 3).join('", "')}" on the screen`);
   // Google's granular consent puts a checkbox beside every scope beyond the
-  // basic ones; the basic ones have none.
-  if (visibleInputs(html, (a) => (a.type || '').toLowerCase() === 'checkbox').length) wide.push('a box to tick per extra permission');
+  // basic ones; the basic ones have none. A box inside a hidden block is beside nothing.
+  if (visibleInputs(visibleMarkup(html), (a) => (a.type || '').toLowerCase() === 'checkbox').length) wide.push('a box to tick per extra permission');
   return wide;
 }
 
@@ -193,7 +265,7 @@ async function stepStop(page, s) {
   return v && v.verdict !== 'allow' ? { ...v, url } : null;
 }
 
-module.exports = { classify, isGooglePage, stepStop, visibleText, STOP_PREFIX };
+module.exports = { classify, isGooglePage, stepStop, visibleText, visibleMarkup, visibleInputs, attrsOf, STOP_PREFIX };
 
 if (require.main === module) {
   // node google-signin.cjs <html-file> <url>  ->  one JSON line, or nothing when

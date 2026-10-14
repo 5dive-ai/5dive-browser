@@ -23,6 +23,10 @@ jobs:
       # code, robot check, adding an account stop; a wider grant asks). Pure node.
       - name: google sign-in classifier harness
         run: bash tests/browser_google_signin_unit.sh
+      # DIVE-6241: a challenge needs a page check, and a login page offering
+      # "Continue with Google" is handed back for that button. Pure node, real captures.
+      - name: page check harness
+        run: bash tests/browser_page_check_unit.sh
       # DIVE-6089: setup installs a missing box stack. apt, npm, curl, gpg faked on
       # a sandbox PATH, so the runner's own chrome, Xvfb and node are invisible.
       - name: setup stack harness

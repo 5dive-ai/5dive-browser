@@ -8,6 +8,44 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — four guards that stopped round 2's Google sign-ups for nothing (DIVE-6241), 1.40.0
+
+lodar, 2026-10-14: "lets fix our browser again and rerun test only for our browser". Round 2 of the
+Claude in Chrome head-to-head: ours 0 of 6 Google sign-ups, and four of the six misses were our own
+guards (marketing/reddit/2026-10-14-cic-vs-5dive-browser.md, findings 1, 3, 4, 6).
+
+- **A consent screen is judged on the scopes Google lists, not on the whole screen.** Coda's
+  consent asks for profile, email and openid only, but its app is named "Superhuman Docs", and
+  "docs" is a Drive word. The words are now read only in the list ("This will allow <app> to:" down
+  to the "By clicking Allow" footer), with every spelling of the app's name taken out. A hidden
+  block now drops with everything nested in it; the old pattern stopped at the first closing tag
+  and could leak hidden text onto the "screen", or drop visible text after a hidden block that never
+  closed. Calendar, contacts and Drive scopes still ask the owner, and so does a box to tick per
+  permission or a wider `scope=` in the URL. Whimsical's page HTML was not kept, so its exact
+  trigger is not known; its screen text now passes, and so do the two hidden-markup shapes that
+  could have caused it.
+- **The default challenge marker names a candidate, and the page decides** (`lib/page-check.cjs`).
+  tally.so read as "presenting a security challenge" because its front page carries
+  `login.two-factor-step.title` in script data. A challenge now needs something a person would see:
+  a robot widget or frame not marked invisible, a challenge title, a one-time-code box, or a
+  challenge URL. An adapter's own `challenge_when_dom_matches` still decides alone, and with no node
+  the marker decides as before.
+- **A sign-up that lands on the site's own login page is handed back when that page offers
+  "Continue with Google"** and shows no password box, no code box and no robot check (pitch.com's
+  Sign up goes to auth.pitch.com/login). It says it is a sign-in page, for the Google button only.
+  Any of those three and the refusal stands; Google's own pages after the click are judged by
+  `lib/google-signin.cjs` as before.
+- The install path (`5dive plugin add browser` installed the registry's 1.32.0 mirror) is fixed in
+  the CLI, 5dive-ai/5dive (DIVE-6241).
+
+Graded by `tests/browser_page_check_unit.sh` (25 checks on real tally.so and auth.pitch.com captures,
+trimmed, in `tests/fixtures/dive-6241/`), 14 more checks in `tests/browser_google_signin_unit.sh`
+(7 fail on 1.39.0), and T32m in `tests/browser_plugin_unit.sh`, which runs each act through
+`bin/browser` on this tree and on 1.39.0, with negative checks that still stop: a robot check, a
+two-factor code, a password box, a code box and a login page with no Google button. T48i shows the page check
+also reads Reddit's invisible reCAPTCHA (DIVE-5285's case) as no challenge with no adapter marker, and still stops
+at "Prove your humanity".
+
 ### Changed — the agent may pick a saved Google account on a sign-up, and still stops at passwords and robot checks (DIVE-6228), 1.39.0
 
 lodar, 2026-10-14: "let the agent pick an already-saved Google account, but still stop at passwords

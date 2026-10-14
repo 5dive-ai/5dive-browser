@@ -138,6 +138,8 @@ pages get one fixed answer each, whatever site led there:
 - **Hard stop (exit 75), hand it over:** a password field, a verification code or 2-step prompt, a
   robot check, Google asking for an email address (adding an account), a chooser whose account is
   signed out. `5dive browser handoff <site>` (a robot check: `connect-request <site> --challenge`).
+- **A sign-up that lands on the site's own login page** with "Continue with Google" on it comes
+  back with a note saying so. Click that button and nothing else on that page.
 - **Ask your owner (exit 73):** a consent screen that wants more than basic profile and email
   (calendar, contacts, Drive, ticking boxes). Tell them what it wants. Never click Allow on it; if
   they say yes, they click it themselves through `handoff`.

@@ -58,5 +58,44 @@ t 'G12 a page that is not Google is not this file'"'"'s' 'none' "$(g 'https://ap
 t 'G12b nor is the rest of google.com' 'none' "$(g 'https://mail.google.com/mail/u/0/' "$PW")"
 t 'G13 Google refusing the browser stops' 'stop rejected' "$(g "$AC/v3/signin/rejected?x=1" '<html><body>Couldn'"'"'t sign you in. This browser or app may not be secure.</body></html>')"
 
+# --- DIVE-6241: judge only the scopes Google lists --------------------------------
+# Round 2 refused Allow on two consents that ask for profile + email + openid only
+# (shots A-coda.io-last-page, AG3-whimsical-consent-basic-profile; the text below is
+# transcribed from them, in Google's "This will allow <app> to:" layout). Coda's app
+# is named "Superhuman Docs", and "docs" is a Drive word. Whimsical's page HTML was
+# not kept, so its trigger is not recoverable; G15b grades the one the screen does
+# not show (a hidden info box nested inside a hidden block).
+legacy() {  # legacy <app> <scope lines as <li>…</li>> [extra markup before the footer]
+  printf '%s' "<html><head><title>Sign in - Google Accounts</title></head><body><div>Google</div><h1><a href=\"#\">$1</a> wants to access your Google Account</h1><div>atorn864@gmail.com</div><div>This will allow <a href=\"#\">$1</a> to:</div><ul>$2</ul>${3:-}<div>By clicking Allow, you allow this app and Google to use your information in accordance with their respective terms of service and privacy policies. You can change this and other Account Permissions at any time.</div><button>Deny</button><button>Allow</button></body></html>"; }
+BASIC3="<li><div>See your personal info, including any personal info you've made publicly available</div><div role=\"button\" aria-label=\"More info\"></div></li><li><div>See your primary Google Account email address</div></li><li><div>Associate you with your personal info on Google</div></li>"
+LC="$AC/signin/oauth/legacy/consent?authuser=0&part=x"
+t 'G14 Coda ("Superhuman Docs") asking profile, email and openid only is allowed' 'allow basic-consent' "$(g "$LC" "$(legacy 'Superhuman Docs' "$BASIC3")")"
+t 'G14b ...on the OAuth URL that names exactly those scopes too' 'allow basic-consent' \
+  "$(g "$AC/o/oauth2/auth?client_id=1&scope=openid%20email%20profile" "$(legacy 'Superhuman Docs' "$BASIC3")")"
+t 'G14c an app name full of wide words, asking basic only, is allowed' 'allow basic-consent' \
+  "$(g "$LC" "$(legacy 'Drive Calendar Contacts Photos' "$BASIC3")")"
+t 'G15 Whimsical asking basic only is allowed' 'allow basic-consent' "$(g "$LC" "$(legacy 'Whimsical' "$BASIC3")")"
+HIDDENINFO='<div aria-hidden="true"><div class="info"><div>About this access</div></div><div>Whimsical will see the files and calendars you share</div></div>'
+t 'G15b a hidden info box, nested, is not on the screen' 'allow basic-consent' "$(g "$LC" "$(legacy 'Whimsical' "$BASIC3" "$HIDDENINFO")")"
+t 'G15c ...and neither is a box to tick inside a hidden block' 'allow basic-consent' \
+  "$(g "$LC" "$(legacy 'Whimsical' "$BASIC3" '<div hidden><div><input type="checkbox" name="s"></div></div>')")"
+# what must still ask (the negative arms)
+CAL="<li><div>See, edit, share, and permanently delete all the calendars you can access using Google Calendar</div></li>$BASIC3"
+t 'G16 Calendly asking for every calendar still asks (round 2 AG6, the correct ask)' 'ask wide-consent' "$(g "$LC" "$(legacy 'Calendly' "$CAL")")"
+t 'G16b "Superhuman Docs" asking for Drive files asks' 'ask wide-consent' \
+  "$(g "$LC" "$(legacy 'Superhuman Docs' "<li><div>See, edit, create, and delete only the specific Google Drive files you use with this app</div></li>$BASIC3")")"
+t 'G16c a contacts scope asks, whatever the app is called' 'ask wide-consent' \
+  "$(g "$LC" "$(legacy 'Whimsical' "<li><div>See and download your contacts</div></li>$BASIC3")")"
+t 'G16d a visible box to tick per permission asks' 'ask wide-consent' \
+  "$(g "$LC" "$(legacy 'Whimsical' "$BASIC3<li><input type=\"checkbox\" name=\"s\"><div>Manage your tasks</div></li>")")"
+t 'G16e a calendar scope in the URL asks even on a basic-looking screen' 'ask wide-consent' \
+  "$(g "$AC/o/oauth2/auth?client_id=1&scope=openid%20email%20https://www.googleapis.com/auth/calendar" "$(legacy 'Whimsical' "$BASIC3")")"
+t 'G16g an app NAMED like a wide scope line does not erase that line' 'ask wide-consent' \
+  "$(g "$LC" "$(legacy 'See your Google Drive files' "<li><div>See your Google Drive files</div></li>$BASIC3")")"
+t 'G16h "Superhuman Docs will be able to" inside the list is the name, not Drive' 'allow basic-consent' \
+  "$(g "$LC" "$(legacy 'Superhuman Docs' "<li>Superhuman Docs will be able to:</li>$BASIC3")")"
+t 'G16f a hidden block that never closes is kept on the screen (the stricter reading)' 'ask wide-consent' \
+  "$(g "$LC" "$(legacy 'Whimsical' "<li><div aria-hidden=\"true\">x</li><li>See your Google Drive files</li>")")"
+
 printf 'google-signin: %d pass, %d fail\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
