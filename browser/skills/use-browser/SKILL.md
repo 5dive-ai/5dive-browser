@@ -146,9 +146,18 @@ pages get one fixed answer each, whatever site led there:
 - **A sign-up that lands on the site's own login page** with "Continue with Google" (or a button
   that says just "Google") on it comes back with a note saying so. Click that button and nothing
   else on that page, again with `act <site>` and no URL.
-- **Ask your owner (exit 73):** a consent screen that wants more than basic profile and email
-  (calendar, contacts, Drive, ticking boxes). Tell them what it wants. Never click Allow on it; if
+- **The site's own terms step** ("I agree to the Terms of Use / Privacy Policy" box + Continue,
+  e.g. Pitch's "We take your privacy seriously"): tick it and continue, `act <site>` and no URL.
+  Agreeing to the terms of the account the job names IS the sign-up, not a grant. Leave optional
+  boxes (newsletters, marketing) unticked.
+- **Ask your owner (exit 73):** a Google consent screen that wants more than basic profile and
+  email (calendar, contacts, Drive, extra scope boxes to tick). Tell them what it wants. Never click Allow on it; if
   they say yes, they click it themselves through `handoff`.
+
+**Do not ask about sign-up housekeeping** when the job says "sign up": a required workspace or
+team name the job did not give takes a neutral default (the page's placeholder, or "My
+Workspace"), and a session on the site for another account than the one the job names is signed
+out first. Say what you did in your report.
 
 **Blocked from a server IP** ("Request blocked by network security", "suspicious network"):
 some sites block server IPs; `5dive browser proxy set <url>` sends this box's browser through
@@ -162,7 +171,9 @@ and the refusal names both. **Ask the owner which one, never guess**, then name 
 ## Stuck on a captcha: ask the owner to clear it, then carry on (DIVE-5200)
 
 A CAPTCHA, a "verify you are human" or a "Just a moment…" check is a hard stop. You never
-solve it and never look for a way round it. But you do not give up the task either: ask the
+solve it and never look for a way round it. A "Just a moment…" usually clears by itself, so the
+browser already watches it for up to 30 s in the same page load before it says STOP; once it has,
+do not sleep and snapshot again: a fresh load starts the check over. But you do not give up the task either: ask the
 person, wait, and finish the job yourself.
 
 ```bash

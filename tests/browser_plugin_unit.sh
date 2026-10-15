@@ -5521,6 +5521,30 @@ t  'T32m mutant applied (both verdicts)' 2 "$(grep -cE "^  return \{ (challenge:
 t  'T32m MUTANT: tally.so is a challenge again' '75 0' "$(m32 "$MUT32MD/browser/bin/browser" tallym.test https://tallym.test/signup "$TSU")"
 t  'T32m MUTANT: the Pitch login page is refused again' '75 1' "$(m32 "$MUT32MD/browser/bin/browser" noadapter.test "$PLU" "$PLG")"
 
+# --- T32p round 5's terms step, through act (DIVE-6317) ----------------------------
+# pitch.com sends a new Google sign-up to login.pitch.com/consent-and-privacy: one
+# "I agree to the Terms" box and Continue. Its "login." host made the generic URL
+# guard refuse it as a sign-in page (round 5 G5, G5r). On THIS tree and on 1.41.0.
+M32PBASE="$TMP/m32pbase"; mkdir -p "$M32PBASE"
+M32PREF="${M32P_BASE_REF:-7065b352255ee013106b065f2e70c11d46dfadca}"   # 5dive-browser main before DIVE-6317 (1.41.0)
+git -C "$ROOT" cat-file -e "$M32PREF^{commit}" 2>/dev/null || git -C "$ROOT" fetch -q --depth=1 origin "$M32PREF" 2>/dev/null
+git -C "$ROOT" archive "$M32PREF" browser | tar -x -C "$M32PBASE" 2>/dev/null
+M32POLD="$M32PBASE/browser/bin/browser"
+t  'T32p (setup) the 1.41.0 tree is staged' yes "$([[ -x "$M32POLD" ]] && echo yes || echo no)"
+PTH="$(cat "$ROOT/tests/fixtures/dive-6317/pitch-terms.html")"
+PTU='https://login.noadapter.test/consent-and-privacy?t=auth.noadapter.test&state=x'
+t  'T32p1 the site'"'"'s terms step on a login. host (round 5 G5): handed back' '0 1' \
+   "$(m32 "$BROWSER" noadapter.test "$PTU" "$PTH")"
+tc 'T32p1 ...said to be the terms step, to tick and continue' 'own terms step of a sign-up' "$(m32err)"
+t  'T32p1 1.41.0: refused as a sign-in page' '75 1' "$(m32 "$M32POLD" noadapter.test "$PTU" "$PTH")"
+tc 'T32p1 1.41.0: ...with round 5'"'"'s sentence' 'the page redirected to a sign-in' "$(m32err)"
+t  'T32p1 NEGATIVE: the same page with a password box is still refused' '75 1' \
+   "$(m32 "$BROWSER" noadapter.test "$PTU" "${PTH/<button type=\"submit\">/<input type=\"password\" name=\"pw\"><button type=\"submit\">}")"
+t  'T32p1 NEGATIVE: ...with a robot check' '75 1' \
+   "$(m32 "$BROWSER" noadapter.test "$PTU" "${PTH/<\/form>/<div class=\"g-recaptcha\"><\/div><\/form>}")"
+t  'T32p1 NEGATIVE: a login page with a newsletter box only is still refused' '75 1' \
+   "$(m32 "$BROWSER" noadapter.test "$PTU" '<html><body><form action="/login"><input type="email"><label><input type="checkbox"> Send me news</label></form></body></html>')"
+
 # --- T32n round 3's misses, through act (DIVE-6247) --------------------------------
 # Round 3 (1.40.0) scored 0 of 6 sign-ups. Through act, on THIS tree and on 1.40.0:
 # Google's basic consent with its profile detail list ("See your gender") asked the

@@ -880,6 +880,34 @@ async function waitForVisible(page, target, { timeoutMs = 30000, pollMs = 250 } 
   }
 }
 
+// CLOUDFLARE'S "Just a moment..." IS A WAIT FIRST, AND A STOP ONLY IF IT STAYS
+// (DIVE-6317). Round 5 stopped gamma.app at the first sight of that title. A
+// real Chrome usually gets past it on its own in 5-15 s, in the SAME page load:
+// a fresh load starts the check over, so an agent's `sleep 20` and a second
+// snapshot measured nothing. So right after a goto, while the title is one of
+// these self-clearing interstitials, the page is watched for up to `timeoutMs`
+// (FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS, default 30 s). It never clicks: if the
+// title is still there at the end, the caller's existing hard stop applies.
+// Only the titles that clear by themselves: "Attention Required" and "Access
+// denied" are blocks, and waiting on them buys nothing.
+const INTERSTITIAL_TITLE = /(just a moment|checking your browser|one moment,? please)/i;
+const INTERSTITIAL_WAIT_MS = Number(process.env.FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS || 30000);
+async function waitInterstitial(page, { timeoutMs = INTERSTITIAL_WAIT_MS, pollMs = 1000 } = {}) {
+  const titleNow = async () => { try { return String(await page.title()); } catch (e) { return null; } };
+  let t = await titleNow();
+  if (t === null || !INTERSTITIAL_TITLE.test(t)) return null;
+  const first = t;
+  let waited = 0;
+  while (waited < timeoutMs) {
+    const step = Math.min(pollMs, Math.max(1, timeoutMs - waited));
+    await page.waitForTimeout(step);
+    waited += step;
+    t = await titleNow();            // null: mid-navigation, which is the check clearing
+    if (t !== null && !INTERSTITIAL_TITLE.test(t)) return { title: first, cleared: true, waited_ms: waited };
+  }
+  return { title: first, cleared: false, waited_ms: waited };
+}
+
 // `--expect` as an EARLY EXIT, never as the verdict. bin/browser still greps
 // what comes back (grep -E, one engine, like the probe's markers), so a pattern
 // JS reads differently only costs the full window, never a wrong answer.
@@ -1075,4 +1103,5 @@ module.exports = { INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSel
   STEP_FAILED_PREFIX, failedStep,
   redirectWhy, checkLanding, E_REDIRECTED,
   _payloadIn, cleanText, cleanPayload,
+  INTERSTITIAL_TITLE, waitInterstitial,
   waitForVisible, _visibleIn, _textIn, _scopeIn };

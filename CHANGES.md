@@ -8,6 +8,27 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — round 5's two stops: "Just a moment…" at first sight, a sign-up's terms step read as a sign-in (DIVE-6317), 1.42.0
+
+Round 5 of the Claude in Chrome head-to-head (1.41.0) scored 3 of 6 Google sign-ups. Two of the
+misses were ours:
+
+- **Cloudflare's "Just a moment…" is watched before it is a stop.** snapshot, read on a served
+  browser, and every act goto now keep the page open for up to 30 s
+  (`FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS`) while its title is a self-clearing interstitial ("Just a
+  moment", "Checking your browser"), and go on as soon as it clears. A `--wait-for` behind one that
+  never cleared is skipped, and the STOP then says how long the browser watched it and that a
+  reload starts the check over. Blocks ("Attention Required", "Access denied") are not waited on,
+  and nothing is ever clicked. Round 5's Gamma page did NOT clear within 30 s in the same load
+  (its own `--wait-for` held it that long), so this does not by itself get past Gamma.
+- **A sign-up's own terms step is handed back.** pitch.com sends a new Google account to
+  login.pitch.com/consent-and-privacy, one "I agree to the Terms of Use…" box and Continue. Its
+  `login.` host made the generic URL guard refuse it as a sign-in, and the agent told the owner to
+  log in. A page with a visible box next to words agreeing to terms or a privacy policy, and no
+  password box, code box or robot check, is now handed back with a note to tick it and continue.
+  The skill says the same, and that a sign-up's required workspace name takes a neutral default
+  and a stale session for another account is signed out, without asking.
+
 ### Fixed — round 3's sign-up misses: the consent's detail list, a lost chooser, a host for a profile (DIVE-6247), 1.41.0
 
 Round 3 of the Claude in Chrome head-to-head (1.40.0) still scored 0 of 6 Google sign-ups
