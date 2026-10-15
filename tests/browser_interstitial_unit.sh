@@ -20,7 +20,8 @@ w() { node -e '
     title: async () => { const v = titles[Math.min(i++, titles.length - 1)]; if (v === "THROW") throw new Error("navigating"); return v; },
     waitForTimeout: async (ms) => { clock += ms; },
   };
-  aria.waitInterstitial(page, { timeoutMs: Number(timeoutMs), pollMs: 1000 })
+  // "default": the shipped bound, as the executors call it (no timeoutMs).
+  aria.waitInterstitial(page, timeoutMs === "default" ? { pollMs: 1000 } : { timeoutMs: Number(timeoutMs), pollMs: 1000 })
     .then((r) => console.log(JSON.stringify(r) + " clock=" + clock));
 ' "$@"; }
 
@@ -38,6 +39,18 @@ t 'I5 "Checking your browser before accessing" is the same interstitial' 'true' 
   "$(w 5000 'Checking your browser before accessing x' 'X' | sed 's/ clock=.*//' | jq -r '.cleared')"
 t 'I6 NEGATIVE: "Attention Required!" (a block) is not waited on' 'null clock=0' "$(w 30000 'Attention Required! | Cloudflare')"
 t 'I7 NEGATIVE: "Access denied" is not waited on' 'null clock=0' "$(w 30000 'Access denied')"
+
+# DIVE-6334: round 6's Gamma did not clear in 30 s from cic-arm-a. A challenge
+# that holds for 45 s and then clears is waited out by the SHIPPED bound (1.42.1:
+# 30 s, so not cleared), and one that never clears is still bounded, at 90 s.
+held() { local n="$1" a=(); for ((k = 0; k < n; k++)); do a+=('Just a moment...'); done; a+=('Gamma'); w default "${a[@]}"; }
+t 'I13 a challenge held 45 s then cleared: the default bound waits it out' \
+  '{"title":"Just a moment...","cleared":true,"waited_ms":45000} clock=45000' "$(held 45)"
+t 'I14 one that never clears: stops at the 90 s default, then the STOP (handoff) applies' \
+  '{"title":"Just a moment...","cleared":false,"waited_ms":90000} clock=90000' "$(w default 'Just a moment...')"
+t 'I15 FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS still sets the bound' \
+  '{"title":"Just a moment...","cleared":false,"waited_ms":20000} clock=20000' \
+  "$(FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS=20000 w default 'Just a moment...')"
 
 # Every executor goto calls it: the two snapshot paths, render, and both act gotos.
 t 'I8 driver-playwright calls it after its snapshot goto and its act goto' 2 "$(grep -c 'aria.waitInterstitial(page)' browser/bin/driver-playwright)"

@@ -8,6 +8,36 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — round 6's mid-form drops: an act keeps the seat's own login open, and "Just a moment…" is watched for 90 s (DIVE-6334), 1.43.0
+
+Round 6 of the Google sign-up benchmark (1.42.1, cic-arm-a) reached 4 of 6, but two sign-ups
+dropped mid-form and Gamma still stopped at Cloudflare.
+
+- **An act keeps the page on the seat's own login.** Before this, an act on a logged-in site
+  ran in a one-off Chrome that closed when the act returned. That broke two flows:
+  - Calendly: after "Continue with Google" the hand-back said "carry on in this same browser,
+    with no URL". The next act with no URL was refused with "no served calendly.com browser
+    holding a page", which the agent reported as a lost lease.
+  - Pitch: each act checked the login in a separate cold headless Chrome. On Pitch's
+    onboarding pages that check hung to its 38 s cap 7 times across two runs ("probe timed
+    out … Refusing"). Every retry after a 15–20 s sleep went through.
+
+  The public profile already kept its page this way (DIVE-5817). An act on the seat's own
+  login now does the same: the first act starts a served browser on the act's page, later
+  acts land in it, and the login check runs in a tab of that browser. The kept browser is
+  **private** to the seat. It uses the in-profile 0700 socket, with no broker and no box
+  offer, so an act never widens who can use a login. An explicit `serve` replaces it and
+  shares the login as before. It is not used for a box login (always served already), a
+  group's shared login, or an input-mode site. The idle sweep stops it.
+  `FIVEDIVE_BROWSER_ACT_KEEP=0` turns it off.
+- **"Just a moment…" is watched for up to 90 s, not 30 s** (`FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS`).
+  The wait still ends at the first look where the challenge has gone, still never clicks, and
+  the STOP after it still hands the page to the owner (`connect-request --challenge`). Measured
+  2026-10-15: a plain Chrome on the CI box (also a datacenter IP) was never shown the challenge
+  on gamma.app/signup, so it loaded straight away. Round 6's challenge therefore came from
+  cic-arm-a's IP or from the automated browser, not from a slow clear. The longer wait may
+  not get past Gamma; the handoff is what does.
+
 ### Fixed — a probe no longer leaves a Chrome cache in ~/.cache each time it checks the browser (DIVE-6327), 1.42.1
 
 Each box running the plugin was filling its disk by about 0.6G a day. chill-gorge had 473

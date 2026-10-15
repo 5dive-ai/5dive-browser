@@ -4827,11 +4827,12 @@ _serve_running() {  # _serve_running <dir> -> echoes display, 0 if live
 _kv() { [[ -f "$1" ]] && sed -n "s/^$2=//p" "$1" | head -1; }
 
 cmd_serve() {
-  local site="" stop=0 login=0 start_url=""
+  local site="" stop=0 login=0 start_url="" private=0
   while (($#)); do
     case "$1" in
       --stop) stop=1 ;;
       --login) login=1 ;;
+      --private) private=1 ;;  # an act's own kept browser (DIVE-6334): see _act_keep_page
       --url=*) start_url="${1#*=}" ;;
       -h|--help) usage; return 0 ;;
       -*) die "$E_USAGE" "unknown flag: $1" ;;
@@ -5039,6 +5040,14 @@ cmd_serve() {
       ! _serve_running "$dir" >/dev/null \
         || die "$E_UNAVAILABLE" "$site is served by the session daemon and it did not stop, so it cannot be re-served as plain Chrome for a login. Nothing was changed; try again, or: 5dive browser serve $site --stop"
       printf '%s: %s was held by the automated session; re-serving it as plain Chrome for a person to sign in.\n' "$PROG" "$site" >&2
+    elif (( ! private && ! login )) && [[ "$(_kv "$(_serve_pidfile "$dir")" private)" == 1 ]] \
+         && ! _viewer_live "$dir"; then
+      # THE OWNER'S SERVE IS NOT ANSWERED BY AN ACT'S PRIVATE ONE (DIVE-6334). An
+      # act keeps its page in a browser only this seat can reach; a deliberate
+      # `serve` is what offers a login to the box, so it replaces that one.
+      ( cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
+      ! _serve_running "$dir" >/dev/null \
+        || die "$E_UNAVAILABLE" "$site is held by an act's own browser and it did not stop, so it cannot be served for the box. Try again, or: 5dive browser serve $site --stop"
     elif (( ! login )) && [[ "$(_kv "$(_serve_pidfile "$dir")" login)" == 1 ]] \
          && ! _viewer_live "$dir" && _retry_possible; then
       # AND BACK AGAIN WHEN THE PERSON HAS GONE. A plain serve left up after
@@ -5107,7 +5116,8 @@ cmd_serve() {
     # security rule that switches on a string comparison is one rename away from
     # being off.
     local dsock dbroker=""
-    dsock="$(_serve_sock_path "$site" "$dir")"
+    # A PRIVATE serve keeps the old in-profile 0700 socket: no broker, no offer.
+    if (( private )); then dsock="$dir/.5dive-session.sock"; else dsock="$(_serve_sock_path "$site" "$dir")"; fi
     [[ "$dsock" == "$dir/"* ]] || dbroker=--broker
     rm -f "$dsock"
     # The start URL is the cold path's last argument below, handed to the daemon
@@ -5147,8 +5157,9 @@ cmd_serve() {
   if [[ -n "$dpid" ]]; then
     ( umask 077; printf 'display=%s\nxvfb_pid=%s\ndaemon_pid=%s\nsock=%s\nstarted_at=%s\n' \
         "$disp" "$xpid" "$dpid" "$dsock" "$(date -u +%s)" > "$(_serve_pidfile "$dir")"
-      (( input )) && printf 'drive=input\n' >> "$(_serve_pidfile "$dir")" )
-    _rv_offer_write "$(_seat)" "$site" "$( (( input )) && printf input)"
+      (( input )) && printf 'drive=input\n' >> "$(_serve_pidfile "$dir")"
+      (( private )) && printf 'private=1\n' >> "$(_serve_pidfile "$dir")" )
+    (( private )) || _rv_offer_write "$(_seat)" "$site" "$( (( input )) && printf input)"
     if (( input )); then
       printf 'serving %s on :%s (input mode — plain Chrome with no automation channel; agents act through the screen, keyboard and mouse, and a person'"'"'s view is the same window)\n' "$site" "$disp"
     else
@@ -6667,23 +6678,59 @@ _policy_log() {  # <site> <stderr-file> <page> <screenshot>
 # starts one ON the act's page, and every later act lands in it (warm path, and the
 # daemon does not reload the page it is already on). The idle sweep stops it like
 # any served browser. Best effort: where no daemon can run, the act runs cold as
-# before and says the page will not survive it. FIVEDIVE_BROWSER_PUBLIC_KEEP=0 off.
-_act_keep_public() {  # <site> <url>; runs with the lease held, before _page_open
-  _is_public "$1" || return 0
-  [[ "${FIVEDIVE_BROWSER_PUBLIC_KEEP:-1}" == 1 ]] || return 0
+# before and says the page will not survive it.
+#
+# AND SO DOES THE SEAT'S OWN LOGIN (DIVE-6334). Round 6 lost two sign-ups mid-form
+# to the same one-off Chrome. Calendly: the Google hand-back says "carry on in this
+# same browser, with no URL", and the no-URL act found no browser holding the page
+# ("no served calendly.com browser"), which the agent reported as a lost lease.
+# Pitch: every act opened the profile cold, so its login check was a separate
+# headless Chrome, and right after the previous call's Chrome that check hung to
+# its 38 s cap 7 times in two runs ("probe timed out ... Refusing"); each retry
+# after a 15-20 s sleep went through. A served browser removes both: the page
+# survives the act, and the check runs in a tab of the browser already holding the
+# profile. Only a profile THIS seat owns and drives through the DOM: a box login
+# (brokered) is always served already, a group's shared login is not one seat's to
+# hold, and an input-mode site is not served as the automated browser here, because
+# a DOM step would then be refused. And it is PRIVATE (`serve --private`): the
+# in-profile 0700 socket, no broker and no box offer. A deliberate `serve` is what
+# shares a login with other seats; an act must not widen who can use one, and that
+# serve replaces this one.
+# FIVEDIVE_BROWSER_ACT_KEEP=0 turns off the logged-in half,
+# FIVEDIVE_BROWSER_PUBLIC_KEEP=0 the public one.
+_act_keep_page() {  # <site> <url>; runs with the lease held, before _page_open
+  local kind="" priv=""
+  if _is_public "$1"; then
+    kind="the public profile"
+    [[ "${FIVEDIVE_BROWSER_PUBLIC_KEEP:-1}" == 1 ]] || return 0
+  else
+    [[ "${FIVEDIVE_BROWSER_ACT_KEEP:-1}" == 1 ]] || return 0
+    (( ! _SITE_BROKERED )) || return 0
+    [[ ! -L "${_SITE_DIR%/}" ]] || return 0   # a group's shared login: not one seat's to hold
+    [[ "$(_site_drive "$1")" == cdp ]] || return 0
+    kind="$1"; priv=--private
+  fi
   _daemon_live "$_SITE_DIR" && return 0
   _retry_possible || return 0
-  local why
+  local why was=0
+  _serve_running "$_SITE_DIR" >/dev/null && was=1
   # A SUBSHELL, because cmd_serve reports failure by dying (see _retry_serve).
-  why=$( ( cmd_serve "$1" --url="$2" >/dev/null ) 2>&1 ) || true
+  why=$( ( cmd_serve "$1" --url="$2" $priv >/dev/null ) 2>&1 ) || true
   if _daemon_live "$_SITE_DIR"; then
-    printf '%s: started a served browser for the public profile, so the next act on this page continues where this one stops. It stops after %ss unused, or: 5dive browser serve %s --stop\n' \
-      "$PROG" "${FIVEDIVE_BROWSER_IDLE_S:-$EVICT_IDLE_DEFAULT}" "$1" >&2
+    printf '%s: started a served browser for %s, so the next act on this page continues where this one stops. It stops after %ss unused, or: 5dive browser serve %s --stop\n' \
+      "$PROG" "$kind" "${FIVEDIVE_BROWSER_IDLE_S:-$EVICT_IDLE_DEFAULT}" "$1" >&2
     return 0
   fi
+  # A serve THIS call started whose daemon did not come up falls back to a plain
+  # browser nobody can drive (see cmd_serve); every later call would only stop it
+  # again, so it is not kept. One that was already up (a person's login view) is
+  # never touched here.
+  if [[ -n "$priv" ]] && (( ! was )) && _serve_running "$_SITE_DIR" >/dev/null; then
+    ( cmd_serve "$1" --stop >/dev/null 2>&1 ) || true
+  fi
   why="$(printf '%s\n' "$why" | grep -v '^$' | tail -n1 | sed "s/^$PROG: //" | cut -c1-300)"
-  printf '%s: no served browser for the public profile (%s), so this act runs in a one-off browser and the next act opens the page again.\n' \
-    "$PROG" "${why:-it gave no reason}" >&2
+  printf '%s: no served browser for %s (%s), so this act runs in a one-off browser and the next act opens the page again.\n' \
+    "$PROG" "$kind" "${why:-it gave no reason}" >&2
 }
 
 cmd_act() {
@@ -6769,7 +6816,7 @@ cmd_act() {
   if [[ -n "$url" ]]; then
     _lease_take "$site" "$_SITE_DIR" "act" "$wait"
     trap '_lease_and_serve_release' EXIT
-    _act_keep_public "$site" "$url"
+    _act_keep_page "$site" "$url"
     _page_open "$site" "$url"
   else
     _daemon_live "$_SITE_DIR" || die "$E_USAGE" "no URL, and no served $site browser holding a page to continue on. Give act the URL to start from."
