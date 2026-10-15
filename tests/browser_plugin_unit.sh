@@ -1128,8 +1128,9 @@ if [[ -n "$FOREIGN" ]]; then
   tc 'T9h ...and actually classified the session' 'authenticated' "$OUT"
   # DIVE-5638: no longer unset (that left the crash dir at a $HOME/.config the
   # seat may not be able to write) — Chrome gets this launch's own 0700 dir.
+  # DIVE-6327: its .config, so no throwaway profile sits inside the config home.
   t  'T9h ...because Chrome was handed its own per-launch crash dir, not the shared one' \
-     yes "$(grep -qxE "/tmp/\.5dive-browser-$EUID/[0-9]+\.[0-9]+" "$TMP/xdg-seen.txt" 2>/dev/null && echo yes || echo no)"
+     yes "$(grep -qxE "/tmp/\.5dive-browser-$EUID/[0-9]+\.[0-9]+/\.config" "$TMP/xdg-seen.txt" 2>/dev/null && echo yes || echo no)"
 fi
 
 # ============================================ T7 the shipped example adapter is real
@@ -3818,7 +3819,7 @@ WPID="$(dkv "$WDIR/.5dive-serve" daemon_pid)"
 t  'T25a ...the context was opened headed, in THIS profile' "false $WDIR" \
    "$(jq -rs '[.[]|select(.call=="launch")]|last|"\(.headless) \(.profile)"' "$DREC")"
 t  'T25a ...with the daemon'"'"'s own per-launch crash dir under it, not the shared one (DIVE-4587, DIVE-5638)' yes \
-   "$(jq -rs '[.[]|select(.call=="launch")]|last|.xdg' "$DREC" | grep -qxE "/tmp/\.5dive-browser-$EUID/[0-9]+\.[0-9]+" && echo yes || echo no)"
+   "$(jq -rs '[.[]|select(.call=="launch")]|last|.xdg' "$DREC" | grep -qxE "/tmp/\.5dive-browser-$EUID/[0-9]+\.[0-9]+/\.config" && echo yes || echo no)"
 
 # --- T25b a daemon that will not come up must not be advertised ---------------
 env PATH="$SPATH" "$BROWSER" serve warm.test --stop >/dev/null 2>&1
