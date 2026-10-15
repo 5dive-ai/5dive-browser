@@ -8,6 +8,23 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a probe no longer leaves a Chrome cache in ~/.cache each time it checks the browser (DIVE-6327), 1.42.1
+
+Each box running the plugin was filling its disk by about 0.6G a day. chill-gorge had 473
+`~/.cache/tmp.*` dirs (3.1G), and they were most of the reason that box got down to 4% free.
+Chrome on Linux stores a profile's disk cache under `$XDG_CACHE_HOME` whenever the profile
+sits inside `$XDG_CONFIG_HOME`. Since 1.32.3 every launch set `XDG_CONFIG_HOME` to its own
+per-launch dir, which is also where `mktemp -d` puts the plugin's throwaway profiles. So each
+throwaway launch (the probe's about:blank check after a page fails, `capture`'s signed-out read)
+wrote its cache to `~/.cache/tmp.X`, and removing the profile never removed it.
+
+- The per-launch crash dir is now `<per-launch dir>/.config`. No throwaway profile is inside
+  it, so Chrome keeps the cache in the profile and it is removed along with the profile.
+- On startup the plugin also removes the caches older versions left behind. It only removes
+  a dir that is the seat's own, has a `tmp.XXXXXXXXXX` or Playwright temp-profile name, holds
+  nothing but `Default/` with Chrome cache dirs in it, and has not changed for an hour.
+  Anything else in the cache home is left alone.
+
 ### Fixed — round 5's two stops: "Just a moment…" at first sight, a sign-up's terms step read as a sign-in (DIVE-6317), 1.42.0
 
 Round 5 of the Claude in Chrome head-to-head (1.41.0) scored 3 of 6 Google sign-ups. Two of the
