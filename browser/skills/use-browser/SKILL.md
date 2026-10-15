@@ -125,6 +125,10 @@ back as evidence. On a site with no adapter it proceeds otherwise, and says that
 confirmed the login. If you hit the sign-in refusal on a page that must be the owner's account,
 switch to the `connect-site` skill. Never type the owner's password yourself, and never try to
 get past a CAPTCHA or other challenge.
+**Claude in Chrome, only when the stop names it.** If this agent has Claude in Chrome connected
+(opt-in, `5dive browser claude status`), the sign-in stop starts with "This agent has Claude in
+Chrome". Then, and only then, finish that one sign-in step with your Claude in Chrome tools and come
+back here for the rest of the task. Never reach for Claude in Chrome for anything else.
 An authenticator-app 2FA prompt is the one exception, and only on a site whose owner saved its
 seed on the box: `run` types the code itself, and `5dive browser totp fill <site> [<url>]` does
 it on demand. Neither shows you the code. With no seed saved, it stops like any challenge.
