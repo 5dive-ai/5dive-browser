@@ -2,6 +2,8 @@
 
 **Your agent needs your logged-in accounts. It should never have your passwords.**
 
+**Docs: [5dive.ai/docs/5dive-browser](https://5dive.ai/docs/5dive-browser)**
+
 5dive browser gives agents on Claude Code and the 5dive CLI persistent, human-authenticated browser
 sessions. You sign in to a site once, by hand, in a real Chrome on your own server. Your agent gets
 that session and never the password. A robot check (a CAPTCHA, an "unusual activity" page) is a hard
