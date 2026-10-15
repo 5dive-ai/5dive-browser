@@ -82,11 +82,12 @@ function challenge(html, url) {
 }
 
 // signin(html, url) -> { verdict: 'offer'|'stop'|'none', kind, why }
-//   offer  the page offers "Continue with Google" and asks for nothing the agent
-//          must not give: hand it back for that one click.
+//   offer  the page offers "Continue with Google" (kind google-button), or is the
+//          site's terms step (kind terms), and asks for nothing the agent must
+//          not give: hand it back for that one click.
 //   stop   it offers the button but also shows a password box, a code box or a
 //          robot check: still the hard stop.
-//   none   no Google button: the generic sign-in refusal stands.
+//   none   no Google button and no terms box: the generic sign-in refusal stands.
 const GOOGLE_BUTTON = /\b(continue|sign ?in|sign ?up|log ?in|login|signup|register|get started)\s+(with|using|via)\s+google\b/;
 // A PROVIDER BUTTON NAMED ONLY "Google" (DIVE-6247): coda.io's sign-up lands on
 // id.superhuman.com, "Continue to Superhuman Docs" over three buttons that say
@@ -101,17 +102,38 @@ function googleOnlyButton(markup) {
   }
   return false;
 }
+// THE SITE'S OWN TERMS STEP OF A SIGN-UP (DIVE-6317). After Google's consent,
+// pitch.com sends a new account to login.pitch.com/consent-and-privacy: "We take
+// your privacy seriously", one box that reads "I agree to the Terms of Use,
+// Privacy Policy, and Data Processing Agreement", and Continue. Its host starts
+// with "login.", so the generic URL guard refused it as a sign-in page and told
+// the agent the owner had to log in, twice in round 5. Ticking the site's own
+// terms box while creating the account the job names IS the sign-up; it is not a
+// grant like a Google scope, and it is not one of the owner's four (pay, publish,
+// send, delete). It is handed back as `terms` when a box a person can see sits
+// next to words agreeing to terms or a privacy policy, and no password box, code
+// box or robot check is on the page.
+const TERMS_AGREE = /\bi (?:have read and |hereby )?(?:agree|accept|consent)\b[^.]{0,120}?\b(terms|privacy policy|conditions|data processing agreement)\b/;
+function termsBox(markup, text) {
+  const m = text.match(TERMS_AGREE);
+  if (!m) return '';
+  const box = visibleInputs(markup, (a) => (a.type || '').toLowerCase() === 'checkbox').length
+    || /<[a-z][a-z0-9-]*\b[^>]*\brole=["']?checkbox\b/i.test(markup);
+  return box ? m[0].slice(0, 100) : '';
+}
 function signin(html, url) {
   const text = visibleText(html);
   const markup = visibleMarkup(html);
   const m = text.match(GOOGLE_BUTTON);
   const b = m ? `"${m[0]}"` : googleOnlyButton(markup) ? 'a button that says just "Google"' : '';
-  if (!b) return { verdict: 'none', kind: 'no-google', why: 'the page offers no "Continue with Google"' };
+  const terms = b ? '' : termsBox(markup, text);
+  if (!b && !terms) return { verdict: 'none', kind: 'no-google', why: 'the page offers no "Continue with Google" and no terms box to agree to' };
   if (visibleInputs(markup, (a) => (a.type || '').toLowerCase() === 'password').length) {
     return { verdict: 'stop', kind: 'password', why: 'the page shows a password box' };
   }
   const c = challenge(html, url);
   if (c.challenge) return { verdict: 'stop', kind: 'challenge', why: c.why };
+  if (terms) return { verdict: 'offer', kind: 'terms', why: `the page is the site's terms step, a box by "${terms}", and shows no password box, code box or robot check` };
   return { verdict: 'offer', kind: 'google-button', why: `the page offers ${b} and shows no password box, code box or robot check` };
 }
 

@@ -657,8 +657,9 @@ async function renderRequest(ctx, req, send, end) {
       try { await page.setViewportSize({ width: w, height: h }); } catch (e) { /* headed ctx may refuse */ }
     }
     await page.goto(req.url, { waitUntil: 'domcontentloaded' });
+    const inter = await aria.waitInterstitial(page);   // DIVE-6317, as snapshot
     // `read --wait-for` on a brokered seat (DIVE-4983), the same wait snapshot has.
-    const waited = req.wait_for
+    const waited = req.wait_for && !(inter && !inter.cleared)
       ? await aria.waitForVisible(page, String(req.wait_for), { timeoutMs: STEP_TIMEOUT }) : null;
     await page.waitForTimeout(Number(req.wait) || Number(process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS || 1200));
     const buf = await page.screenshot({ fullPage: !!req.full });
@@ -668,6 +669,7 @@ async function renderRequest(ctx, req, send, end) {
       png: Buffer.isBuffer(buf) ? buf.toString('base64') : Buffer.from(String(buf)).toString('base64'),
       html,
       ...(waited ? { wait_for: waited } : {}),
+      ...(inter ? { interstitial: inter } : {}),
     }) + '\n' });
     end(0);
   } catch (e) {
@@ -745,8 +747,11 @@ async function snapshotRequest(ctx, req, send, end) {
     const page = await pageOf(ctx);
     assertLease(req, 'snapshot');
     await page.goto(req.url, { waitUntil: 'domcontentloaded' });
+    // A Cloudflare "Just a moment..." clears in this same load, or not at all
+    // (DIVE-6317). A --wait-for behind one that never cleared would only wait again.
+    const inter = await aria.waitInterstitial(page);
     // --wait-for (DIVE-4983), exactly as the cold driver's snapshotMode does it.
-    const waited = req.wait_for
+    const waited = req.wait_for && !(inter && !inter.cleared)
       ? await aria.waitForVisible(page, String(req.wait_for), { timeoutMs: STEP_TIMEOUT }) : null;
     await page.waitForTimeout(settleOf(req, TREE_SETTLE_MS));
     const snap = await aria.snapshot(page, { interactiveOnly: !!req.interactive });
@@ -767,6 +772,7 @@ async function snapshotRequest(ctx, req, send, end) {
       html_inline: inline ? (snap.html || '') : undefined,
       png_b64: png,
       ...(waited ? { wait_for: waited } : {}),
+      ...(inter ? { interstitial: inter } : {}),
     }) + '\n' });
     end(0);
   } catch (e) {
@@ -896,6 +902,8 @@ async function planRequest(ctx, req, send, end) {
             break;
           }
           await page.goto(s.url, { waitUntil: 'domcontentloaded' });
+          const inter = await aria.waitInterstitial(page);   // DIVE-6317
+          if (inter) send({ t: 'log', line: `  ${where}: "${inter.title}" ${inter.cleared ? `cleared by itself after ${inter.waited_ms} ms` : `was still there after ${inter.waited_ms} ms`}` });
           const ms = settleOf(req, RUN_SETTLE_MS);
           if (ms > 0) await page.waitForTimeout(ms);
           break;

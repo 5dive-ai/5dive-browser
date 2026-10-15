@@ -2142,6 +2142,12 @@ _signin_google_offer() {  # <html-file> [<url>] -> 0 = hand it back for the Goog
   [[ -s "$f" ]] && _have node && [[ -r "$_SELF_DIR/../lib/page-check.cjs" ]] || return 1
   v=$(node "$_SELF_DIR/../lib/page-check.cjs" signin "$f" "$u" 2>/dev/null | head -1)
   [[ "$(jq -r '.verdict' <<<"$v" 2>/dev/null)" == offer ]] || return 1
+  # DIVE-6317: or the site's own terms step, e.g. login.pitch.com's "I agree to the Terms".
+  if [[ "$(jq -r '.kind' <<<"$v" 2>/dev/null)" == terms ]]; then
+    printf '%s: this is %s'"'"'s own terms step of a sign-up%s, handed back for it: %s. Ticking the site'"'"'s "I agree to the Terms" box and pressing its Continue is part of the sign-up the job names, not a grant: do that and nothing else here, in this same browser with no URL (5dive browser act %s --steps='"'"'[…]'"'"'). Leave optional boxes (newsletters, marketing) unticked; a password, a code, a robot check or a payment stops.\n' \
+      "$PROG" "${_PG_SITE:-the site}" "${u:+ ($u)}" "$(jq -r '.why' <<<"$v")" "${_PG_SITE:-<site>}" >&2
+    return 0
+  fi
   printf '%s: this is %s'"'"'s own sign-in page%s, handed back for its Google button only: %s. Click that and nothing else here, in this same browser with no URL (5dive browser act %s --steps='"'"'[…]'"'"'); a password, a code or a robot check stops.\n' \
     "$PROG" "${_PG_SITE:-the site}" "${u:+ ($u)}" "$(jq -r '.why' <<<"$v")" "${_PG_SITE:-<site>}" >&2
   return 0
@@ -3939,14 +3945,21 @@ _render_title() { { grep -oiE '<title[^>]*>[^<]{1,200}' "$1" 2>/dev/null || true
 # ("Just a moment…", "Verify you are human", …): a submission form that merely
 # embeds an invisible reCAPTCHA is not a stop, and must not send the owner a
 # link to nothing. A hint on stderr, never a refusal: the render is unchanged.
-_challenge_hint() {  # <html> <landed url> [<asked url>]
-  local f="$1" u="${2:-}" host title
+#
+# DIVE-6317: a "Just a moment..." is first WAITED on, in the same page load, by
+# the executor (lib/aria.cjs waitInterstitial); the 4th argument is how long. A
+# STOP that says so is a measured one, and tells the agent that a second
+# snapshot starts the check over rather than waiting it out.
+_challenge_hint() {  # <html> <landed url> [<asked url>] [<ms waited on it>]
+  local f="$1" u="${2:-}" waited="${4:-}" host title
   [[ -n "$u" ]] || u="${3:-}"
   [[ -s "$f" ]] || return 0
   title="$(_render_title "$f")"
   grep -qiE "$CHALLENGE_TITLE_MARKER" <<<"$title" || return 0
   host="${u#*://}"; host="${host%%/*}"; host="${host%%\?*}"; host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
   [[ -n "$host" && "$host" != "$u" ]] || host="<site>"
+  [[ "$waited" =~ ^[0-9]+$ ]] && printf '%s: the browser watched "%s" for %s s in this same page load and it did not clear by itself. Loading the page again starts the check over, so a second snapshot will not get past it either.\n' \
+    "$PROG" "$(cut -c1-80 <<<"$title")" "$(( waited / 1000 ))" >&2
   printf '%s: STOP — this page is a security check ("%s"), not the page you asked for. 5dive never solves one. Ask your owner to clear it, wait for their Done, then re-run this step: 5dive browser connect-request %s --challenge --url=%s  (A flat block with nothing to click, such as "access denied" or a 403, is the site refusing this box'"'"'s IP, and a person cannot clear that one either.)\n' \
     "$PROG" "$(cut -c1-80 <<<"$title")" "$host" "${u:-<the page>}" >&2
 }
@@ -6362,7 +6375,8 @@ cmd_snapshot() {
   [[ -s "$stage/page.html" ]] || die "$E_UNAVAILABLE" "the capture produced no document; no evidence files were written"
   _page_crumb "$site" "$(jq -r '.url // ""' <<<"$payload" 2>/dev/null)"
   _signin_guard "$stage/page.html" "$(jq -r '.url // ""' <<<"$payload" 2>/dev/null)"
-  _challenge_hint "$stage/page.html" "$(jq -r '.url // ""' <<<"$payload" 2>/dev/null)" "$url"
+  _challenge_hint "$stage/page.html" "$(jq -r '.url // ""' <<<"$payload" 2>/dev/null)" "$url" \
+    "$(jq -r 'if .interstitial.cleared == false then .interstitial.waited_ms else "" end' <<<"$payload" 2>/dev/null)"
 
   # tree.json is the refs, written from the same payload the walk returned — so
   # "what I can click" and "what the page said" are one observation on disk.

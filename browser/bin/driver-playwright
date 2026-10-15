@@ -378,9 +378,12 @@ async function snapshotMode(plan) {
     page.setDefaultTimeout(STEP_TIMEOUT);
     assertLease('snapshot');
     await page.goto(plan.url, { waitUntil: 'domcontentloaded' });
+    // A Cloudflare "Just a moment..." clears in this same load, or not at all
+    // (DIVE-6317). A --wait-for behind one that never cleared would only wait again.
+    const inter = await aria.waitInterstitial(page);
     // --wait-for (DIVE-4983): the page says it is ready, bounded by the step
     // timeout; the settle below then gives the rest of it a moment, as before.
-    const waited = plan.wait_for
+    const waited = plan.wait_for && !(inter && !inter.cleared)
       ? await aria.waitForVisible(page, String(plan.wait_for), { timeoutMs: STEP_TIMEOUT }) : null;
     // NEVER network idle, for the reason written above treeMode: a live web app
     // long-polls and never idles, and waiting for it is what makes a read hang.
@@ -398,6 +401,7 @@ async function snapshotMode(plan) {
       html_bytes: Buffer.byteLength(snap.html || ''),
       png: plan.shot || null,
       ...(waited ? { wait_for: waited } : {}),
+      ...(inter ? { interstitial: inter } : {}),
     };
   } catch (e) {
     die(E_NOTHING_RAN, `could not capture ${plan.url}: ${e.message}`);
@@ -625,10 +629,13 @@ async function main() {
         } : null,
       });
       switch (s.op) {
-        case 'goto':
+        case 'goto': {
           await page.goto(s.url, { waitUntil: 'domcontentloaded' });
+          const inter = await aria.waitInterstitial(page);   // DIVE-6317
+          if (inter) process.stderr.write(`  ${where}: "${inter.title}" ${inter.cleared ? `cleared by itself after ${inter.waited_ms} ms` : `was still there after ${inter.waited_ms} ms`}\n`);
           if (RUN_SETTLE_MS > 0) await page.waitForTimeout(RUN_SETTLE_MS);
           break;
+        }
         case 'fill':     await on((x, timeout) => page.fill(x, s.value, { timeout })); break;
         case 'type':     await aria.typeKeys(page, sel, s.value, s.delay_ms, { timeoutMs: STEP_TIMEOUT }); break;
         case 'click':    await on((x, timeout) => page.click(x, { timeout })); break;

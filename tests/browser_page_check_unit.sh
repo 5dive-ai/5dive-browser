@@ -85,5 +85,28 @@ t 'N4c NEGATIVE: ...with a robot check, stops' 'stop challenge' \
 t 'N4d NEGATIVE: Whimsical'"'"'s sign-up page (a password box beside "Sign up with Google") still stops' 'stop password' \
   "$(sf "$PWD/tests/fixtures/dive-6247/whimsical-signup.html" https://whimsical.com/signup)"
 
+# --- DIVE-6317: the site's own terms step of a sign-up ----------------------------
+# Round 5 G5/G5r: after Google's consent, pitch.com lands a new account on
+# login.pitch.com/consent-and-privacy, one "I agree to the Terms" box and Continue.
+# Its "login." host made the generic URL guard refuse it as a sign-in, twice.
+# The fixture is RECONSTRUCTED from the node list round 5 walked (see its header).
+PT="$PWD/tests/fixtures/dive-6317/pitch-terms.html"
+PTU='https://login.pitch.com/consent-and-privacy?t=auth.pitch.com&email=atorn864%40gmail.com&state=x'
+t 'P5 (fixture) the Pitch terms URL is one the generic sign-in URL guard catches' yes \
+  "$(grep -qiE "$(sed -n "s/^GENERIC_SIGNIN_URL='\(.*\)'$/\1/p" browser/bin/browser)" <<<"$PTU" && echo yes || echo no)"
+t 'P5a login.pitch.com/consent-and-privacy (round 5 G5): handed back as the terms step (1.41.0: none)' 'offer terms' "$(sf "$PT" "$PTU")"
+t 'P5b "I accept the Terms of Service" with a role=checkbox counts' 'offer terms' \
+  "$(s '<html><body><div role="checkbox" aria-checked="false"></div><span>I accept the Terms of Service</span><button>Next</button></body></html>')"
+t 'N5a NEGATIVE: terms words with no box to tick (a footer) are not a terms step' 'none no-google' \
+  "$(s '<html><body><form action="/login"><input type="email"></form><p>By continuing, I agree to the Terms of Use.</p></body></html>')"
+t 'N5b NEGATIVE: a box for a newsletter only is not a terms step' 'none no-google' \
+  "$(s '<html><body><label><input type="checkbox"> Send me product news</label><button>Continue</button></body></html>')"
+t 'N5c NEGATIVE: the terms page with a password box stops' 'stop password' \
+  "$(s "$(sed 's|<button type="submit">|<input type="password" name="pw"><button type="submit">|' "$PT")" "$PTU")"
+t 'N5d NEGATIVE: ...with a robot check, stops' 'stop challenge' \
+  "$(s "$(sed 's|</form>|<div class="g-recaptcha"></div></form>|' "$PT")" "$PTU")"
+t 'N5e NEGATIVE: ...with a code box, stops' 'stop challenge' \
+  "$(s "$(sed 's|</form>|<input autocomplete="one-time-code" name="otp"></form>|' "$PT")" "$PTU")"
+
 printf 'page-check: %d pass, %d fail\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
