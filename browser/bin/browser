@@ -9149,7 +9149,19 @@ _tmp_claim() {  # give THIS process (BASHPID, so a background subshell too) its 
       # reports die with the launch, which is what we want of them anyway. The
       # node launchers keep it only when the marker matches (they delete a
       # shared value they did not get from us).
-      export XDG_CONFIG_HOME="$d" FIVEDIVE_BROWSER_CHROME_CONFIG="$d"
+      #
+      # DIVE-6327: A SUBDIRECTORY, NOT $d ITSELF. On Linux Chrome puts a
+      # profile's disk cache at $XDG_CACHE_HOME + the --user-data-dir taken
+      # relative to $XDG_CONFIG_HOME, when it is under it. Every throwaway
+      # profile here is `mktemp -d`, i.e. $TMPDIR/tmp.X = $d/tmp.X, so with
+      # XDG_CONFIG_HOME=$d its cache went to ~/.cache/tmp.X, which no `rm -rf`
+      # of the profile reaches (473 dirs, 3.1G on chill-gorge, ~0.6G/day from
+      # the probe timers). Under $d/.config no profile we make is inside the
+      # config home, so Chrome keeps the cache in the profile and it goes with
+      # it. Never XDG_CACHE_HOME: Playwright finds its browsers through it.
+      local c="$d/.config"
+      ( umask 077; mkdir -p -- "$c" ) 2>/dev/null || c="$d"
+      export XDG_CONFIG_HOME="$c" FIVEDIVE_BROWSER_CHROME_CONFIG="$c"
       return 0
     fi
   fi
@@ -9173,8 +9185,34 @@ trap() {
   if [[ $# -eq 2 && "$2" == EXIT && "$1" == - ]]; then set -- '_tmp_release' EXIT; fi
   builtin trap "$@"
 }
+# DIVE-6327: the caches versions before 1.42.1 left in the cache home (see
+# _tmp_claim). Only what is unmistakably one: ours, a mktemp or Playwright
+# profile name, nothing but Default/ holding nothing but Chrome's cache dirs,
+# and untouched for an hour, so a launch still running an older version keeps
+# its cache. Anything else in there stays — keeping is the safe direction.
+_tmp_reap_cache() {  # [<cache home>]
+  local r="${1-${XDG_CACHE_HOME:-${HOME:-}/.cache}}" d e
+  [[ -n "$r" && "$r" != /.cache && -d "$r" ]] || return 0
+  for d in "$r"/tmp.?????????? "$r"/playwright_chromiumdev_profile-??????; do
+    [[ -d "$d" && ! -L "$d" && -O "$d" ]] || continue
+    for e in "$d"/* "$d"/.[!.]*; do
+      [[ -e "$e" || -L "$e" ]] || continue
+      [[ "$e" == "$d/Default" && -d "$e" && ! -L "$e" ]] || continue 2
+    done
+    for e in "$d"/Default/* "$d"/Default/.[!.]*; do
+      [[ -e "$e" || -L "$e" ]] || continue
+      case "${e##*/}" in
+        Cache|'Code Cache'|Storage|GPUCache|DawnCache|DawnGraphiteCache|DawnWebGPUCache) ;;
+        *) continue 2 ;;
+      esac
+    done
+    [[ -z "$(find "$d" -mmin -60 -print -quit 2>/dev/null)" ]] || continue
+    rm -rf -- "$d"
+  done
+}
 _tmp_reap
 [[ -n "$_TMP_LEGACY" ]] && _tmp_reap "$_TMP_LEGACY"
+_tmp_reap_cache
 _tmp_claim
 builtin trap '_tmp_release' EXIT
 # <<< DIVE-5190

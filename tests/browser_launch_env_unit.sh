@@ -22,6 +22,9 @@
 #   L5 dirs an older version left under $HOME/.cache are still reaped
 #   L6 the node launchers keep the crash dir bin/browser hands them, and still
 #      drop a shared XDG_CONFIG_HOME
+#   L7 (DIVE-6327) a throwaway profile's disk cache stays inside the profile, so
+#      nothing is left in the cache home; and the caches older versions left
+#      there are reaped — only those
 set -uo pipefail
 printf 'grading tree: %s @ %s\n' "$PWD" "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" >&2
 cd "$(dirname "$0")/.."
@@ -61,6 +64,19 @@ cat > "$FAKEBIN/google-chrome" <<'CHROME'
 t="${TMPDIR:-/tmp}"
 crash="${XDG_CONFIG_HOME:-$HOME/.config}/google-chrome/Crash Reports"
 printf 'tmp=%s\ncrash=%s\n' "$t" "$crash" >> "$SEEN"
+# DIVE-6327: the disk cache goes where Linux Chrome puts it (GetUserCacheDirectory):
+# $XDG_CACHE_HOME + the profile relative to $XDG_CONFIG_HOME when it is under it,
+# else inside the profile.
+udd=""; blank=0
+for a in "$@"; do case "$a" in --user-data-dir=*) udd="${a#*=}" ;; about:blank) blank=1 ;; esac; done
+if [[ -n "$udd" ]]; then
+  cfg="${XDG_CONFIG_HOME:-$HOME/.config}"; cache="$udd"
+  [[ "$udd" == "$cfg"/* ]] && cache="${XDG_CACHE_HOME:-$HOME/.cache}/${udd#"$cfg"/}"
+  mkdir -p "$cache/Default/Cache" "$cache/Default/Code Cache" 2>/dev/null && : > "$cache/Default/Cache/data_0"
+  (( blank )) && printf 'blankcache=%s\nblankudd=%s\n' "$cache" "$udd" >> "$SEEN"
+fi
+# A page that does not load: the probe then asks for an about:blank launch.
+[[ -n "${FAKE_FAIL_PAGE:-}" ]] && (( ! blank )) && { echo 'net::ERR_TIMED_OUT' >&2; exit 1; }
 # The singleton socket: Chrome's own temp dir name is 6 random characters.
 sock="$t/.com.google.Chrome.XXXXXX/SingletonSocket"
 if (( ${#sock} > 107 )); then
@@ -116,7 +132,7 @@ arm 'L2 Chrome was not pointed at the shared XDG_CONFIG_HOME' no "$(yn grep -q "
 arm 'L2 ...nor at the home' no "$(yn grep -q "^$SHORTHOME" <<<"$c")"
 
 # --- L3 the crash dir IS the per-launch dir ------------------------------------
-arm 'L3 the crash dir lives inside the per-launch dir' "$t/google-chrome/Crash Reports" "$c"
+arm 'L3 the crash dir lives inside the per-launch dir' "$t/.config/google-chrome/Crash Reports" "$c"
 arm 'L3 ...which is gone with the launch' no "$(yn test -e "$t")"
 
 # --- L4 a too-long root, and an inherited dir of another uid ---------------------
@@ -161,6 +177,37 @@ if command -v node >/dev/null; then
 else
   arm 'L6 node is on PATH' yes no
 fi
+
+# --- L7 a throwaway profile's cache, and what older versions left -----------------
+# chill-gorge, 2026-10-15: 473 ~/.cache/tmp.* dirs, 3.1G, each only Default/{Cache,
+# Code Cache,...} of a `mktemp -d` profile the probe had already removed.
+H7="$TMP/h7"; C7="$TMP/cache7"; mkdir -p "$H7" "$C7"
+old() { find "$1" -exec touch -d '2 hours ago' {} +; }
+mkleak() { mkdir -p "$C7/$1/Default/Cache" "$C7/$1/Default/Code Cache"; : > "$C7/$1/Default/Cache/data_0"; }
+mkleak tmp.AAAAAAAAAA; old "$C7/tmp.AAAAAAAAAA"                       # a leak: reaped
+mkleak playwright_chromiumdev_profile-BBBBBB; old "$C7/playwright_chromiumdev_profile-BBBBBB"
+mkleak tmp.CCCCCCCCCC                                                    # fresh: a live old launch's
+mkleak tmp.DDDDDDDDDD; : > "$C7/tmp.DDDDDDDDDD/notes"; old "$C7/tmp.DDDDDDDDDD"  # more than a cache
+mkleak tmp.EEEEEEEEEE; mkdir -p "$C7/tmp.EEEEEEEEEE/Default/Bookmarks"; old "$C7/tmp.EEEEEEEEEE"
+mkleak tmp.short; old "$C7/tmp.short"                                    # not a mktemp name
+mkdir -p "$C7/fontconfig"; old "$C7/fontconfig"
+: > "$SEEN"
+out=$(FAKE_FAIL_PAGE=1 HOME="$H7" XDG_CACHE_HOME="$C7" "$BROWSER" status launch.test 2>&1); rc=$?
+arm 'L7 (control) the page failed and the probe made its about:blank launch' yes "$(yn test -n "$(seen blankudd)")"
+arm 'L7 (control) ...whose profile is a mktemp dir under the per-launch dir' yes \
+  "$(yn grep -qE "^$OWNROOT/[0-9]+\.[0-9]+/tmp\.[A-Za-z0-9]{10}\$" <<<"$(seen blankudd)")"
+arm 'L7 ...and the box is not called BROKEN' no "$(yn grep -q BROKEN <<<"$out")"
+arm 'L7 the throwaway profile kept its cache inside itself' "$(seen blankudd)" "$(seen blankcache)"
+arm 'L7 ...so the launch left no tmp.* in the cache home but the planted ones' \
+  'tmp.CCCCCCCCCC tmp.DDDDDDDDDD tmp.EEEEEEEEEE tmp.short' "$(cd "$C7" && echo tmp.*)"
+arm 'L7 ...and the throwaway profile is gone with its cache' no "$(yn test -e "$(seen blankudd)")"
+arm 'L7 an hour-old cache an older version leaked is reaped' no "$(yn test -e "$C7/tmp.AAAAAAAAAA")"
+arm 'L7 ...and a Playwright temp profile'"'"'s' no "$(yn test -e "$C7/playwright_chromiumdev_profile-BBBBBB")"
+arm 'L7 a fresh one (a launch of an older version may hold it) stays' yes "$(yn test -e "$C7/tmp.CCCCCCCCCC")"
+arm 'L7 one holding anything but Default/ stays' yes "$(yn test -e "$C7/tmp.DDDDDDDDDD/notes")"
+arm 'L7 one whose Default/ holds more than cache stays' yes "$(yn test -e "$C7/tmp.EEEEEEEEEE/Default/Bookmarks")"
+arm 'L7 a name mktemp never makes stays' yes "$(yn test -e "$C7/tmp.short")"
+arm 'L7 the rest of the cache home is untouched' yes "$(yn test -d "$C7/fontconfig")"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
