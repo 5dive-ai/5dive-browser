@@ -172,7 +172,7 @@ and the refusal names both. **Ask the owner which one, never guess**, then name 
 
 A CAPTCHA, a "verify you are human" or a "Just a moment…" check is a hard stop. You never
 solve it and never look for a way round it. A "Just a moment…" usually clears by itself, so the
-browser already watches it for up to 30 s in the same page load before it says STOP; once it has,
+browser already watches it for up to 90 s in the same page load before it says STOP; once it has,
 do not sleep and snapshot again: a fresh load starts the check over. But you do not give up the task either: ask the
 person, wait, and finish the job yourself.
 

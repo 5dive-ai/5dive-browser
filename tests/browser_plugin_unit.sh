@@ -141,6 +141,9 @@ export FIVEDIVE_BROWSER_AUTO_PROPOSE=0 FIVEDIVE_BROWSER_DRIFT_ON_PROBE=0
 # daemon can run. The public-page arms here grade the one-off executor, so they keep
 # it off; T50 turns it on and grades the served half.
 export FIVEDIVE_BROWSER_PUBLIC_KEEP=0
+# DIVE-6334: the same for an act on the seat's own login. The act arms here grade the
+# one-off executor; T52 turns it on and grades the kept browser.
+export FIVEDIVE_BROWSER_ACT_KEEP=0
 # NO ARM FILES AN ASK IN THE SEAT'S REAL APPROVAL STORE (DIVE-5429). With this
 # unset, `_approval_dir` finds the seat's home through `getent passwd` (not
 # $HOME), so an arm that stops a send without naming its own store files a real
@@ -175,6 +178,9 @@ for a in "$@"; do case "$a" in --user-data-dir=*) d="${a#*=}" ;; esac; done
 # `auth` runs headed in the foreground, and both would then hang forever.
 hl=; ws=; for a in "$@"; do case "$a" in --headless) hl=1 ;; --window-size=*) ws=1 ;; esac; done
 [[ -n "$ws" && -z "$hl" ]] && exec sleep 300
+# DIVE-6334: a profile with `.fake-hang` parked is round 6's Pitch: the cold
+# headless check of it never finishes, and only the cap stops it.
+[[ -n "$hl" && -f "${d:-/nonexistent}/.fake-hang" ]] && exec sleep 300
 # DIVE-4794: COUNT THE LOADS, and let a profile park a SEQUENCE of them. A
 # single-page app serves the same shell to a live session and a dead one and
 # only decides later, so an arm that grades "the probe waited" needs a fake that
@@ -8349,7 +8355,7 @@ pub50stop "$MUT50/bin/browser" "$MUT50/bin/session-daemon"
 
 # --- T50e MUTANT: the act does not serve the public profile ---
 MUTK50="$TMP/t50-keep-mutant"; rm -rf "$MUTK50"; cp -r "$ROOT/browser" "$MUTK50"
-perl -pi -e 's/^(\s*)_act_keep_public "\$site" "\$url"$/$1: MUTANT (DIVE-5817)/' "$MUTK50/bin/browser"
+perl -pi -e 's/^(\s*)_act_keep_page "\$site" "\$url"$/$1: MUTANT (DIVE-5817)/' "$MUTK50/bin/browser"
 t  'T50e (anchor) the mutation landed in the copy' 1 "$(grep -c ': MUTANT (DIVE-5817)' "$MUTK50/bin/browser")"
 pub50 "$MUTK50/bin/browser" act "$U50" --steps='[{"op":"click","selector":"#send-code"}]' --out="$TMP/t50e"
 t  'T50e MUTANT (no serve): nothing holds the public page after the act — T50a is red' no "$(pub50live)"
@@ -8415,6 +8421,84 @@ perl -pi -e 's/(&& _public_for_named "\$2" "\$3"; then)/&& false; then # MUTANT 
 t  'T51e (anchor) the mutation landed in the copy' 1 "$(grep -c 'MUTANT (DIVE-5817)' "$MUTA51/bin/browser")"
 run actenv "$MUTA51/bin/browser" act blogflock.test "https://blogflock.test/register" --steps="$STAR"
 tc 'T51e MUTANT (no routing): the clicker refusal is back — T51a is red' 'no profile for blogflock.test — 5dive browser auth blogflock.test' "$ERR"
+
+# --- T52 an act keeps the seat's own login open between acts (DIVE-6334) ----------------------
+# Round 6 (cic-arm-a, 1.42.1) lost two Google sign-ups mid-form to the one-off Chrome an act runs
+# in on a logged-in site. Calendly: the Google hand-back said "carry on in this same browser, with
+# no URL", and the no-URL act was refused "no served calendly.com browser holding a page" (the
+# agent called it a lost lease). Pitch: each act's login check was a cold headless Chrome, which
+# hung to its 38 s cap 7 times ("probe timed out ... Refusing"). The fix is DIVE-5817's served
+# browser, for the seat's own login too, and PRIVATE to the seat.
+#   T52a  the first act on a login starts a served browser for it, on the act's page
+#   T52b  a no-URL act then continues on that page (Calendly's refusal, gone)
+#   T52c  ...and it is private: in-profile socket, marked private, offered to no other seat
+#   T52d  a login whose cold check hangs: the act still runs, its check went through the
+#         served browser (Pitch's "probe timed out", gone)
+#   T52e  MUTANT: the act no longer keeps the page: T52b and T52d are red, as on 1.42.1
+#   T52f  FIVEDIVE_BROWSER_ACT_KEEP=0 turns it off
+#   T52g  an explicit `serve` replaces the private one, and is not private
+K52="keep52.test"; KD52="$(mkprofile "$K52" "$LIVE_DOM")"; U52="https://$K52/signup"
+HK52="hang52.test"; HD52="$(mkprofile "$HK52" "$LIVE_DOM")"; : > "$HD52/.fake-hang"
+keep52() { run env PATH="$SPATH" DISPLAY= NODE_PATH="$DSTUB/node_modules" PWREC="$DREC" DPWDOM="$DPWDOM" \
+              FIVEDIVE_BROWSER_ACT_KEEP=1 FIVEDIVE_BROWSER_FLOW_TTL=-1 \
+              FIVEDIVE_BROWSER_PROBE_WAIT_MS=1000 FIVEDIVE_BROWSER_CHROME_SLACK_S=1 "$@"; }
+k52stop() { env PATH="$SPATH" FIVEDIVE_BROWSER_SESSION_DAEMON="${3:-$DAEMONBIN}" "${2:-$BROWSER}" serve "$1" --stop >/dev/null 2>&1; }
+k52live() { kill -0 "$(dkv "$1/.5dive-serve" daemon_pid)" 2>/dev/null && echo yes || echo no; }
+k52stop "$K52"; k52stop "$HK52"
+t  'T52 (precondition) neither login is served' 'no no' "$(k52live "$KD52") $(k52live "$HD52")"
+
+# --- T52a / T52b / T52c ---
+keep52 "$BROWSER" act "$U52" --steps='[{"op":"click","selector":"#google"}]' --out="$TMP/t52a"
+t  'T52a the first act on the seat'"'"'s own login exits 0' 0 "$RC"
+tc 'T52a ...and says it kept a served browser for it' "started a served browser for $K52" "$ERR"
+t  'T52a ...a session daemon now holds the profile' yes "$(k52live "$KD52")"
+N52=$(wc -l < "$DREC")
+keep52 "$BROWSER" act "$K52" --steps='[{"op":"click","selector":"#account"}]' --out="$TMP/t52b"
+t  'T52b a no-URL act continues in that browser (1.42.1: "no served browser holding a page")' 0 "$RC"
+tn 'T52b ...with no refusal' 'no served' "$ERR"
+t  'T52b ...the click reached the held page' 1 \
+   "$(tail -n +$((N52+1)) "$DREC" | jq -rs '[.[]|select(.call=="click")]|length')"
+t  'T52c the kept browser is marked private' 1 "$(dkv "$KD52/.5dive-serve" private)"
+t  'T52c ...its socket is the 0700 one inside the profile' "$KD52/.5dive-session.sock" "$(dkv "$KD52/.5dive-serve" sock)"
+t  'T52c ...and no other seat is offered this login' no \
+   "$(ls "$TMP/browser-sessions/$SEAT/$K52.offered" >/dev/null 2>&1 && echo yes || echo no)"
+
+# --- T52g an explicit serve replaces it ---
+run env PATH="$SPATH" DISPLAY= NODE_PATH="$DSTUB/node_modules" PWREC="$DREC" DPWDOM="$DPWDOM" "$BROWSER" serve "$K52"
+t  'T52g an explicit serve over the private one exits 0, served and no longer private' '0 yes ' \
+   "$RC $(k52live "$KD52") $(dkv "$KD52/.5dive-serve" private)"
+k52stop "$K52"
+
+# --- T52d a login whose cold check hangs ---
+keep52 env FIVEDIVE_BROWSER_ACT_KEEP=0 "$BROWSER" act "https://$HK52/workspace" --steps='[{"op":"click","selector":"#other"}]' --out="$TMP/t52d0"
+tc 'T52d (control) cold, the hanging check refuses the act, as round 6 read it' "cannot confirm the $HK52 session is live" "$ERR"
+keep52 "$BROWSER" act "https://$HK52/workspace" --steps='[{"op":"click","selector":"#other"}]' --out="$TMP/t52d"
+t  'T52d with the kept browser the act runs' 0 "$RC"
+tn 'T52d ...and was not refused' 'cannot confirm' "$ERR"
+k52stop "$HK52"
+
+# --- T52e MUTANT: the act does not keep the page ---
+MUT52="$TMP/t52-mutant"; rm -rf "$MUT52"; cp -r "$ROOT/browser" "$MUT52"
+# (A `: MUTANT (…)` line would be a bash syntax error, and a mutant that cannot run
+# goes red for that reason alone; the T52e (control) arm below proves this one runs.)
+perl -pi -e 's/^(\s*)_act_keep_page "\$site" "\$url"$/$1: MUTANT-DIVE-6334/' "$MUT52/bin/browser"
+t  'T52e (anchor) the mutation landed in the copy' 1 "$(grep -c ': MUTANT-DIVE-6334' "$MUT52/bin/browser")"
+mut52() { keep52 env FIVEDIVE_BROWSER_SESSION_DAEMON="$MUT52/bin/session-daemon" "$MUT52/bin/browser" "$@"; }
+mut52 act "$U52" --steps='[{"op":"click","selector":"#google"}]' --out="$TMP/t52e"
+tn 'T52e (control) the mutant copy runs: no syntax error' 'syntax error' "$ERR"
+mut52 act "$K52" --steps='[{"op":"click","selector":"#account"}]' --out="$TMP/t52e2"
+tc 'T52e MUTANT: the no-URL act is refused — T52b is red' 'no served' "$ERR"
+mut52 act "https://$HK52/workspace" --steps='[{"op":"click","selector":"#other"}]' --out="$TMP/t52e3"
+tc 'T52e MUTANT: the hanging check refuses the act — T52d is red' "cannot confirm the $HK52 session is live" "$ERR"
+k52stop "$K52" "$MUT52/bin/browser" "$MUT52/bin/session-daemon"; k52stop "$HK52" "$MUT52/bin/browser" "$MUT52/bin/session-daemon"
+
+# --- T52f the knob ---
+keep52 env FIVEDIVE_BROWSER_ACT_KEEP=0 "$BROWSER" act "$U52" --steps='[{"op":"click","selector":"#google"}]' --out="$TMP/t52f"
+# (The cold executor in this harness is whatever mkdriver last parked, so its rc is not graded.)
+t  'T52f FIVEDIVE_BROWSER_ACT_KEEP=0: nothing is served after the act' no "$(k52live "$KD52")"
+tn 'T52f ...and no claim that one started' 'started a served browser' "$ERR"
+k52stop "$K52"
+tc 'T52h CHANGES.md carries the DIVE-6334 entry' 'DIVE-6334' "$(cat "$ROOT/CHANGES.md")"
 
 # --- T98 no arm wrote to the seat's real approval store (DIVE-5429) -----------
 # Last on purpose: it grades every arm above. The listing carries size and mtime,

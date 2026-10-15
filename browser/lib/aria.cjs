@@ -886,12 +886,18 @@ async function waitForVisible(page, target, { timeoutMs = 30000, pollMs = 250 } 
 // a fresh load starts the check over, so an agent's `sleep 20` and a second
 // snapshot measured nothing. So right after a goto, while the title is one of
 // these self-clearing interstitials, the page is watched for up to `timeoutMs`
-// (FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS, default 30 s). It never clicks: if the
-// title is still there at the end, the caller's existing hard stop applies.
+// (FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS, default 90 s). It never clicks: if the
+// title is still there at the end, the caller's existing hard stop applies, and
+// that stop is the handoff (connect-request --challenge).
+// DIVE-6334: 30 s did not clear gamma.app from cic-arm-a's datacenter IP in
+// round 6 (twice). 90 s is the row's bound: a "Just a moment..." that clears by
+// itself is over long before it, and the wait ends at the first look it has gone,
+// so a page that clears pays only its own time. A --wait-for behind one that
+// never cleared is skipped, so the whole call stays inside a 2-minute tool limit.
 // Only the titles that clear by themselves: "Attention Required" and "Access
 // denied" are blocks, and waiting on them buys nothing.
 const INTERSTITIAL_TITLE = /(just a moment|checking your browser|one moment,? please)/i;
-const INTERSTITIAL_WAIT_MS = Number(process.env.FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS || 30000);
+const INTERSTITIAL_WAIT_MS = Number(process.env.FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS || 90000);
 async function waitInterstitial(page, { timeoutMs = INTERSTITIAL_WAIT_MS, pollMs = 1000 } = {}) {
   const titleNow = async () => { try { return String(await page.title()); } catch (e) { return null; } };
   let t = await titleNow();
