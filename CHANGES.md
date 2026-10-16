@@ -28,6 +28,10 @@ mode, not the IP.
 - A STOP on a public-profile load now says which profile the next load uses: the owner clears the
   check in the box's browser for the host, and after their Done the same URL routes to that profile
   (where the clearance is kept), not back to the public one.
+- A text field that changes role when it is focused is re-found as the same field. Measured in a
+  headed Chrome: Wikipedia's search box is a `searchbox` until it is focused, then its typeahead
+  mounts and it reads `combobox`. A step whose ref missed now tries the same name and `#n` under
+  the other text-field roles before asking reflex, and only when exactly one matches.
 - `read` and `shot` with no served browser still use one-shot headless Chrome (`--dump-dom`,
   `--screenshot`); a Cloudflare page read that way is still a headless load.
 

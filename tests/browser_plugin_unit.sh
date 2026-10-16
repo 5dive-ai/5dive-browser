@@ -8616,6 +8616,21 @@ run cfenv env FIVEDIVE_BROWSER_DRIVER="$MUT60/bin/driver-playwright" "$BROWSER" 
 t  'T60g MUTANT: headless again, the same site stops at the challenge — T60a is red' 76 "$RC"
 tc 'T60g ...at its STOP' 'STOP — this page is a security check' "$ERR"
 tc 'T60h CHANGES.md carries the DIVE-6371 entry' 'DIVE-6371' "$(cat "$ROOT/CHANGES.md")"
+# --- T60i a field that changes role when focused is the same field ---
+# Measured in a headed Chrome (5dive-ci, 2026-10-16): Wikipedia's two search inputs
+# read `search` until one is focused, then both read `combobox`, same label. The
+# routine bench's fill then press went red on it once the executor was headed.
+fr() { node -e 'const a = require(process.argv[1]); const [ref, ...nodes] = process.argv.slice(2);
+  process.stdout.write(String(a.fieldRoleMatch(nodes.map((r) => ({ ref: r })), ref)))' "$ROOT/browser/lib/aria.cjs" "$@"; }
+t  'T60i searchbox -> combobox, name and #n kept, is that field' 'combobox/Search Wikipedia#1' \
+   "$(fr 'searchbox/Search Wikipedia#1' 'combobox/Search Wikipedia#1' 'combobox/Search Wikipedia#2' 'link/Main Page')"
+t  'T60i NEGATIVE: the #n is kept, never guessed' null "$(fr 'searchbox/Q#3' 'combobox/Q#1' 'combobox/Q#2')"
+t  'T60i NEGATIVE: two field roles answer: none is picked' null "$(fr 'searchbox/Q' 'combobox/Q' 'textbox/Q')"
+t  'T60i NEGATIVE: a button is not a text field' null "$(fr 'button/Q' 'combobox/Q')"
+t  'T60i resolveOrRepick asks it before reflex' 1 "$(grep -c 'const field = fieldRoleMatch(miss.nodes, refBody(from));' "$ROOT/browser/lib/aria.cjs")"
+t  'T60i ...and its line is one the routine recorder reads' 1 \
+   "$(printf 'step 2: ref=searchbox/Q matched nothing; name match picked ref=combobox/Q; retried: ok\n' | \
+      sed -nE 's/^ *step ([0-9]+): .* matched nothing; (reflex|name match) picked (ref=.*); retried: ok$/\1\t\3/p' | grep -c 'combobox/Q')"
 
 # --- T98 no arm wrote to the seat's real approval store (DIVE-5429) -----------
 # Last on purpose: it grades every arm above. The listing carries size and mtime,
