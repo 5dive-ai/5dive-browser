@@ -55,6 +55,10 @@ jobs:
       # name (socket path) or an unwritable ~/.config (crashpad, rc 133).
       - name: browser launch environment harness
         run: bash tests/browser_launch_env_unit.sh
+      # DIVE-6345: Claude in Chrome for an agent, opt-in — policy on/off, the
+      # home link, the own-login scope check and the routing on sign-in stops.
+      - name: browser claude in chrome harness
+        run: bash tests/browser_claude_in_chrome_unit.sh
       # DIVE-5375: a probe's Chrome that never exits is stopped at budget + slack,
       # frees the profile, and a stale one-shot headless holder is reaped.
       - name: browser probe timeout harness

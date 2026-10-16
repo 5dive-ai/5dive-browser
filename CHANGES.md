@@ -8,6 +8,30 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — Claude in Chrome for an agent, opt-in: one sign-in and one Authorize tap on the owner's phone (DIVE-6345), 1.44.0
+
+lodar, 2026-10-15: make Claude in Chrome onboarding less painful. The 10-14 head-to-head took 96
+minutes, three claude.ai sign-ins, four captchas and a hand-built remote screen.
+
+- `5dive browser claude connect` opens claude.ai in this agent's own plain Chrome and hands that
+  live window to the owner (the existing handoff). It also starts the agent's own `claude auth
+  login` with `$BROWSER` pointed at that Chrome: the approval link calls back to localhost on the
+  same box, so one Authorize tap saves the login and nobody pastes a code. `--wait` waits for Done
+  and checks the login; `status` shows each piece.
+- `sudo 5dive browser claude enable|disable` adds or removes the extension in the box's Chrome
+  policy, next to uBlock Origin Lite. The policy blocks every other extension, so this is the only
+  way in. The nightly converge keeps it from `/var/lib/5dive/browser/claude-ext/enabled`.
+- claude.ai is an input-mode site (plain Chrome, because the automated launch disables
+  extensions), and every input-mode Chrome now starts with the three flags that keep a background
+  tab painting. On 10-14 a background tab hung Claude in Chrome's screenshots for 30 s.
+- `~/.config/google-chrome` is linked to that profile, because that is the only place Claude Code
+  looks for the extension and writes its native host. An existing directory there is left alone,
+  with a warning.
+- Routing: when the agent has it connected, the sign-in stops (a sign-in redirect or form, and
+  Google's hard stops) start with "This agent has Claude in Chrome: finish THIS sign-in step
+  there…". Otherwise they read as before. The use-browser skill has one line on it, and the
+  connect-site skill has the flow.
+
 ### Fixed — round 6's mid-form drops: an act keeps the seat's own login open, and "Just a moment…" is watched for 90 s (DIVE-6334), 1.43.0
 
 Round 6 of the Google sign-up benchmark (1.42.1, cic-arm-a) reached 4 of 6, but two sign-ups

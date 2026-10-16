@@ -1050,6 +1050,12 @@ function plainArgs(profile, sandbox) {
   const extra = (process.env.FIVEDIVE_BROWSER_CHROME_ARGS || '').split(/\s+/).filter(Boolean);
   const args = [`--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--window-size=1280,800', '--window-position=0,0', '--disable-features=TranslateUI',
+    // DIVE-6345: a tab behind another is still painted. Chrome stops painting a
+    // background tab, so Claude in Chrome's screenshots of its own working tab
+    // hung for 30 s and the agent looped (10-14 head-to-head). The automated
+    // launch gets the same three from Playwright's defaults already.
+    '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
+    '--disable-backgrounding-occluded-windows',
     ...(sandbox ? [] : ['--no-sandbox']), ...extra];
   const bad = args.filter(a => /^--(remote-debugging|enable-automation|headless)/.test(a));
   if (bad.length) {

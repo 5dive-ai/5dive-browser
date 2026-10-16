@@ -330,6 +330,10 @@ usage() {
   5dive browser adblock status              # is ad filtering on, and which sites is it off for
   sudo 5dive browser adblock off <site>     # this site breaks under filtering — stop filtering it
   sudo 5dive browser adblock on  <site>     # filter it again
+  5dive browser claude connect [--wait]     # opt-in Claude in Chrome for THIS agent: claude.ai opens
+                                      # on the owner's phone, one sign-in and one Authorize tap
+  5dive browser claude status
+  sudo 5dive browser claude enable|disable  # the extension in this box's Chrome policy
   5dive browser proxy set <scheme://user:pass@host:port>
                                       # some sites block server IPs: send THIS seat's
                                       # browser out through your own proxy instead.
@@ -2120,11 +2124,11 @@ _signin_guard() {
   (( _GENERIC_UNCONFIRMED )) || return 0
   if [[ -n "$u" ]] && grep -qiE "$GENERIC_SIGNIN_URL" <<<"$u"; then
     _signin_google_offer "$f" "$u" && return 0
-    die "$E_COLD" "the page redirected to a sign-in ($u). Refusing rather than handing back the sign-in page as if it were the page you asked for; no evidence was written. If this account should be signed in, a person logs in again: 5dive browser auth $_PG_SITE"
+    die "$E_COLD" "$(_cic_route)the page redirected to a sign-in ($u). Refusing rather than handing back the sign-in page as if it were the page you asked for; no evidence was written. If this account should be signed in, a person logs in again: 5dive browser auth $_PG_SITE"
   fi
   if [[ -s "$f" ]] && grep -qiE "$GENERIC_SIGNIN_MARKER" "$f"; then
     _signin_google_offer "$f" "$u" && return 0
-    die "$E_COLD" "the page that came back is a sign-in form, not the page you asked for. Refusing; no evidence was written. If this account should be signed in, a person logs in again: 5dive browser auth $_PG_SITE"
+    die "$E_COLD" "$(_cic_route)the page that came back is a sign-in form, not the page you asked for. Refusing; no evidence was written. If this account should be signed in, a person logs in again: 5dive browser auth $_PG_SITE"
   fi
   return 0
 }
@@ -2175,7 +2179,7 @@ _google_die() {  # <verdict-json>
     # from the site. Exit 76: this capture is not the page, and logging in again
     # would change nothing.
     error) die "$E_NOT_READY" "STOP: $why. Open the site's sign-up again and click its Google button; never open a Google sign-in link by hand, its long query is the sign-up." ;;
-    *)     die "$E_COLD" "STOP: $why ($kind). This is a hard stop for an agent; hand the window to your owner: 5dive browser handoff $site --reason=\"Google sign-in needs you ($kind)\"" ;;
+    *)     die "$E_COLD" "$(_cic_route)STOP: $why ($kind). This is a hard stop for an agent; hand the window to your owner: 5dive browser handoff $site --reason=\"Google sign-in needs you ($kind)\"" ;;
   esac
 }
 _google_page_guard() {
@@ -7715,6 +7719,203 @@ cmd_adblock() {
   return 0
 }
 
+# ------------------------------------------------------------ claude in chrome
+#
+# CLAUDE IN CHROME FOR ONE AGENT, OPT-IN (DIVE-6345). 5dive-browser stays every
+# agent's browser. This adds Anthropic's Claude in Chrome for the agents an owner
+# picks, set up in ONE window on the owner's phone: a claude.ai sign-in and one
+# Authorize tap. The 10-14 head-to-head (DIVE-6214) took 96 minutes and three
+# sign-ins by hand. What each piece is for:
+#   - The extension comes from the box's Chrome policy (`claude enable`, root),
+#     next to the pinned uBlock Origin Lite. That policy blocks every other
+#     extension, and branded Chrome ignores --load-extension (CHANGES.md, 4516).
+#     The nightly converge re-renders the policy from $_CIC_BOX_MARK.
+#   - claude.ai is an INPUT-MODE site (adapters/claude.ai.json): plain Chrome,
+#     because the automated launch disables extensions. It is the live window
+#     `handoff` already gives the owner, and session-daemon starts it with the
+#     flags that keep a background tab painting (the 10-14 hang).
+#   - Claude Code looks for the extension, and writes its native-messaging host,
+#     under ~/.config/google-chrome only (read from the 2.1.300 binary), so that
+#     path is linked to this seat's claude.ai profile.
+#   - The agent's own login: `claude auth login` hands its approval link to
+#     $BROWSER with a localhost callback (measured 2026-10-15), so the box's
+#     Chrome opens it, the owner taps Authorize and nobody pastes a code. A seat
+#     on its setup token has Chrome switched off by the token's scope; the CLI's
+#     `agent config <name> set chrome=on` makes the launcher use this login.
+# Every step that may be wrong fails SOFT: it shows up in the same window, or it
+# prints what to do, and the 5dive-browser path is untouched either way.
+CIC_SITE=claude.ai
+CIC_EXT_ID=fcoeoabgfenejglbffodgkkbkcdhcgfn
+CIC_UPDATE_URL=https://clients2.google.com/service/update2/crx
+_CIC_STATE_DIR="$STATE_DIR/browser/claude-ext"
+_CIC_BOX_MARK="$_CIC_STATE_DIR/enabled"
+CIC_REASON='Sign in to Claude (Continue with Google is quickest) and tap Authorize. If the Claude extension asks you to sign in, do that too. Then tap Done.'
+_cic_file() { printf '%s/.claude-in-chrome%s\n' "$(_seat_dir)" "${1:+-$1}"; }
+_cic_home() {
+  # The seat itself (runuser sets HOME on the root drop) reads its own $HOME.
+  [[ -n "${HOME:-}" && "$(id -un)" == "$(_seat)" ]] && { printf '%s\n' "$HOME"; return 0; }
+  local h; h=$(getent passwd "$(_seat)" 2>/dev/null | cut -d: -f6)
+  printf '%s\n' "${h:-$HOME}"
+}
+_cic_policy_has() {
+  local f; f="$(_adblock_policy_file)"
+  [[ -r "$f" ]] && jq -e --arg id "$CIC_EXT_ID" \
+    '(.ExtensionInstallForcelist // []) | any(startswith($id + ";"))' "$f" >/dev/null 2>&1
+}
+# The seat's OWN claude.ai login, with a scope Claude in Chrome accepts. A
+# setup token is user:inference only, which is what switches Chrome off.
+_cic_creds_ok() {
+  local c; c="$(_cic_home)/.claude/.credentials.json"
+  [[ -r "$c" ]] && jq -e '(.claudeAiOauth.accessToken // "") != ""
+      and ((.claudeAiOauth.scopes // ["user:profile"]) | index("user:profile") != null)' "$c" >/dev/null 2>&1
+}
+_cic_connected() { [[ -f "$(_cic_file)" ]] && _cic_creds_ok; }
+
+# THE ROUTE (lodar 22:26Z: "how will the agent know which route to use?"). The
+# agent never picks. 5dive-browser goes first on every task; the one step it
+# refuses on purpose, a sign-in wall, names Claude in Chrome when this agent has
+# it, and only then. No "use whichever is better": a model picks the tool it
+# reads first. Empty when not connected, so the stop reads as it always has.
+_cic_route() {
+  _cic_connected 2>/dev/null || return 0
+  printf 'This agent has Claude in Chrome: finish THIS sign-in step there with your Claude in Chrome tools, then come back to 5dive browser for the rest of the task (keep %s itself in Chrome, since its sign-in now lives there). If you have no Claude in Chrome tools, or it stops too: ' \
+    "${_PG_SITE:-this site}"
+}
+
+# Patch the LIVE policy file so the switch does not wait for 03:00. Only the
+# extension's own keys; the nightly converge renders the same keys from the mark.
+_cic_policy_patch() {  # on|off
+  local f; f="$(_adblock_policy_file)"
+  [[ "$1" == off && ! -f "$f" ]] && return 0
+  local base='{}' tmp="$f.5dive.tmp"
+  [[ -f "$f" ]] && base=$(cat "$f")
+  mkdir -p "$(dirname "$f")" || return 1
+  jq --arg id "$CIC_EXT_ID" --arg url "$CIC_UPDATE_URL" --arg on "$1" '
+      (.ExtensionInstallAllowlist // []) as $a
+      | ((.ExtensionInstallForcelist // []) | map(select(startswith($id + ";") | not))) as $l
+      | if $on == "on" then
+          .ExtensionInstallBlocklist = (.ExtensionInstallBlocklist // ["*"])
+          | .ExtensionInstallAllowlist = (($a - [$id]) + [$id])
+          | .ExtensionInstallForcelist = ($l + [$id + ";" + $url])
+          | .ExtensionSettings[$id] = {installation_mode: "force_installed", update_url: $url, toolbar_pin: "force_pinned"}
+        else
+          .ExtensionInstallAllowlist = ($a - [$id])
+          | .ExtensionInstallForcelist = $l
+          | if (.ExtensionSettings | type) == "object" then del(.ExtensionSettings[$id]) else . end
+        end' <<<"$base" > "$tmp" 2>/dev/null \
+    && mv -f "$tmp" "$f" || { rm -f "$tmp"; return 1; }
+  chmod 644 "$f" 2>/dev/null || true
+}
+_cic_box() {  # enable|disable — root: the policy file is machine-wide
+  [[ $EUID -eq 0 ]] || die "$E_PERM" "Claude in Chrome for the box is the machine-wide Chrome policy, which is root's: sudo 5dive browser claude $1"
+  if [[ "$1" == enable ]]; then
+    { mkdir -p "$_CIC_STATE_DIR" && : > "$_CIC_BOX_MARK" && chmod 644 "$_CIC_BOX_MARK"; } \
+      || die "$E_UNAVAILABLE" "cannot write $_CIC_BOX_MARK; nothing changed"
+    _cic_policy_patch on || die "$E_UNAVAILABLE" "recorded in $_CIC_BOX_MARK, but $(_adblock_policy_file) could not be written; it lands at the next nightly converge"
+    printf 'Claude in Chrome is on for this box: plain Chrome installs the extension by policy from its next start (%s). It does nothing for an agent until that agent connects it:  5dive browser claude connect\n' "$(_adblock_policy_file)"
+  else
+    rm -f "$_CIC_BOX_MARK" || die "$E_UNAVAILABLE" "cannot remove $_CIC_BOX_MARK; nothing changed"
+    _cic_policy_patch off || die "$E_UNAVAILABLE" "$_CIC_BOX_MARK removed, but $(_adblock_policy_file) could not be rewritten; the extension leaves at the next nightly converge"
+    printf 'Claude in Chrome is off for this box: Chrome removes the extension at its next start. Agents keep their own claude.ai login until it is logged out.\n'
+  fi
+}
+
+# Claude Code looks under ~/.config/google-chrome for the extension and writes
+# its native host there; Chrome reads <user-data-dir>/NativeMessagingHosts. One
+# link makes both the claude.ai profile. Never moves anything that is there.
+_cic_link_home() {  # <profile dir>
+  local dir="$1" h l; h="$(_cic_home)"; l="$h/.config/google-chrome"
+  if [[ -L "$l" && "$(readlink -f "$l")" == "$(readlink -f "$dir")" ]]; then return 0; fi
+  if [[ -e "$l" || -L "$l" ]]; then
+    printf '%s: %s is already there, so Claude Code looks for the extension in it and not in this agent'"'"'s claude.ai browser. If Claude in Chrome later says the extension is not installed, move it aside and run connect again.\n' "$PROG" "$l" >&2
+    return 0
+  fi
+  mkdir -p "$h/.config" && ln -s "$dir" "$l" \
+    || printf '%s: could not link %s to %s; Claude Code may not find the extension.\n' "$PROG" "$l" "$dir" >&2
+}
+
+_cic_login_running() { pgrep -u "$(id -u)" -f 'auth login --claudeai' >/dev/null 2>&1; }
+
+_cic_connect() {
+  _cic_policy_has || die "$E_UNAVAILABLE" "Claude in Chrome is not turned on for this box. Your owner turns it on for this agent with:  sudo 5dive agent config $(_seat) set chrome=on   (the box alone: sudo 5dive browser claude enable). Nothing changed."
+  local cl chrome; cl=$(command -v claude) || die "$E_UNAVAILABLE" "no claude command for this seat; Claude in Chrome is a Claude Code feature. Nothing changed."
+  _have script || die "$E_UNAVAILABLE" "the 'script' command (util-linux) is missing, and the agent's login needs a terminal to run in. Nothing changed."
+  [[ -d "$(_seat_dir)" ]] || die "$E_UNAVAILABLE" "this seat has no browser store yet. Create it once: $SETUP_CMD"
+  chrome=$(_chrome) && chrome=$(command -v "$chrome") || die "$E_UNAVAILABLE" "no Chrome on this box. Nothing changed."
+  local dir; dir="$(_own_site_dir "$CIC_SITE")"
+  _ensure_profile_dir "$dir"
+  _cic_link_home "$dir"
+  _input_open "$CIC_SITE" "" no
+  local disp; disp=$(_kv "$(_serve_pidfile "$dir")" display); [[ -n "$disp" ]] || disp=$(_display_num "$CIC_SITE")
+  # The opener `claude auth login` calls with its approval link: the running
+  # Chrome on this profile takes the URL as a new tab and the launch exits.
+  local url_f opener log
+  url_f="$(_cic_file url)"; opener="$(_cic_file open)"; log="$(_cic_file login.log)"
+  rm -f "$url_f"
+  { printf '#!/bin/sh\n# DIVE-6345: claude auth login opens its approval link here, in the claude.ai browser.\n'
+    printf 'printf %%s\\\\n "$1" > %q\n' "$url_f"
+    printf 'DISPLAY=:%s %q --user-data-dir=%q "$1" >/dev/null 2>&1 &\nexit 0\n' "$disp" "$chrome" "$dir"
+  } > "$opener" && chmod 700 "$opener" || die "$E_UNAVAILABLE" "cannot write $opener. Nothing changed."
+  pkill -u "$(id -u)" -f 'auth login --claudeai' 2>/dev/null || true
+  ( cd "$(_cic_home)" && setsid env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
+      -u CLAUDE_CONFIG_DIR BROWSER="$opener" timeout "$(( HANDOFF_WAIT_DEFAULT + 300 ))" \
+      script -qfc "$(printf %q "$cl") auth login --claudeai" "$log" </dev/null >/dev/null 2>&1 & )
+  local i; for (( i = 0; i < 60; i++ )); do [[ -s "$url_f" ]] && break; sleep 0.5; done
+  [[ -s "$url_f" ]] || printf '%s: the agent'"'"'s login did not hand over its approval link (log: %s). The owner can still sign in to claude.ai in the window; run connect again after.\n' "$PROG" "$log" >&2
+  local out rc=0
+  out=$(cmd_handoff "$CIC_SITE" --reason="$CIC_REASON") || rc=$?
+  grep -v '^Wait for them:' <<<"$out" || true
+  (( rc == 0 )) || return "$rc"
+  printf 'Wait for them, then the login is checked:  5dive browser claude connect --wait\n'
+}
+
+_cic_wait() {  # <seconds>
+  local wait="$1" deadline=$(( SECONDS + $1 ))
+  ( cmd_handoff "$CIC_SITE" --wait="$wait" ) || true
+  # Authorize lands on the localhost callback, before or after Done.
+  while ! _cic_creds_ok && _cic_login_running && (( SECONDS < deadline )); do sleep 2; done
+  if _cic_creds_ok; then
+    : > "$(_cic_file)" || die "$E_UNAVAILABLE" "cannot write $(_cic_file)"
+    printf 'Claude in Chrome is connected for %s: its own claude.ai login is saved. Restart this agent so it runs on that login with Chrome on:  sudo 5dive agent _self_restart\nFrom then on a sign-in wall in 5dive browser says to finish that one step in Claude in Chrome.\n' "$(_seat)"
+    return 0
+  fi
+  die "$E_COLD" "this agent's own claude.ai login did not land (Authorize not tapped yet, or the approval page did not open). Run  5dive browser claude connect  again. Login log: $(_cic_file login.log)"
+}
+
+_cic_status() {
+  local dir l; dir="$(_own_site_dir "$CIC_SITE")"; l="$(_cic_home)/.config/google-chrome"
+  printf 'box:        %s\n' "$(_cic_policy_has && echo 'on (the extension is in the Chrome policy)' || echo 'off (sudo 5dive agent config <agent> set chrome=on)')"
+  printf 'extension:  %s\n' "$([[ -d "$dir/Default/Extensions/$CIC_EXT_ID" ]] && echo "installed in $dir" || echo 'not in this agent'"'"'s claude.ai browser yet')"
+  printf 'link:       %s\n' "$([[ -L "$l" && "$(readlink -f "$l")" == "$(readlink -f "$dir")" ]] && echo "$l -> $dir" || echo "$l is not this agent's claude.ai browser")"
+  printf 'own login:  %s\n' "$(_cic_creds_ok && echo yes || echo 'no (5dive browser claude connect)')"
+  printf 'connected:  %s\n' "$(_cic_connected && echo yes || echo no)"
+}
+
+cmd_claude() {
+  local sub="${1:-status}"; shift 2>/dev/null || true
+  case "$sub" in
+    enable|disable) (( $# == 0 )) || die "$E_USAGE" "claude $sub takes no arguments"; _cic_box "$sub" ;;
+    connect)
+      local wait=""
+      while (($#)); do
+        case "$1" in
+          --wait)   wait="$HANDOFF_WAIT_DEFAULT" ;;
+          --wait=*) wait="${1#*=}" ;;
+          *) die "$E_USAGE" "unknown argument: $1" ;;
+        esac; shift
+      done
+      [[ -z "$wait" || "$wait" =~ ^[0-9]{1,5}$ ]] || die "$E_USAGE" "--wait takes seconds; got: $wait"
+      if [[ -n "$wait" ]]; then _cic_wait "$wait"; else _cic_connect; fi ;;
+    status) _cic_status ;;
+    -h|--help|help)
+      printf '%s claude connect            # open claude.ai on the owner'"'"'s phone: one sign-in, one Authorize tap\n' "$PROG"
+      printf '%s claude connect --wait[=s] # until they are done, then check the agent'"'"'s own login\n' "$PROG"
+      printf '%s claude status\n' "$PROG"
+      printf 'sudo %s claude enable|disable   # the extension in this box'"'"'s Chrome policy\n' "$PROG" ;;
+    *) die "$E_USAGE" "unknown: claude $sub (connect, status, enable, disable)" ;;
+  esac
+}
+
 # ----------------------------------------------------------------------- proxy
 #
 # DIVE-4951 — THIS SEAT'S BROWSER GOES OUT THROUGH THE CUSTOMER'S OWN PROXY. Some
@@ -9061,12 +9262,14 @@ cmd_connect_request() {
 if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
   _v1="${1:-}"; [[ "$_v1" == adapters && "${2:-}" == drift ]] && _v1=adapters-drift
   [[ "$_v1" == totp && "${2:-}" != import ]] && _v1=totp-seat
+  [[ "$_v1" == claude && "${2:-}" =~ ^(enable|disable)$ ]] && _v1=claude-box
   case "$_v1" in
     # `adblock` joins `setup` here: it writes the MACHINE-WIDE chrome policy
     # file, which is root's. Dropping to the seat would turn it into a refusal.
     # `config` too: the drive default is one box-wide file (DIVE-5338).
     # `login-link` (DIVE-6219) installs box-wide services and writes /etc.
-    setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|totp|login-link|-h|--help|help|"") ;;
+    # `claude enable|disable` (DIVE-6345) is the same policy file as adblock.
+    setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|claude-box|totp|login-link|-h|--help|help|"") ;;
     *)
       # DIVE-4813: usually the caller, and for a brokered `serve` the owner.
       _drop="$(_root_drop_target "${SUDO_USER}" "$@")"
@@ -9803,6 +10006,7 @@ case "${1:-}" in
   group|groups) shift; cmd_group "$@" ;;
   doc)   shift; cmd_doc  "$@" ;;
   adblock) shift; cmd_adblock "$@" ;;
+  claude) shift; cmd_claude "$@" ;;
   config) shift; cmd_config "$@" ;;
   proxy) shift; cmd_proxy "$@" ;;
   totp)  shift; cmd_totp  "$@" ;;

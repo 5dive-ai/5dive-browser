@@ -13,6 +13,21 @@ your later `run` calls reuse.
 The commands are easy. The orchestration is where seats get it wrong, and every mistake
 here is **silent** — nothing errors, the human just never gets in.
 
+## Claude in Chrome for this agent (opt-in, DIVE-6345)
+
+When the owner asks to "connect Claude in Chrome" (or "the Claude extension") for you, it is a
+different flow from a site login, and it is one command:
+
+```bash
+5dive browser claude connect          # claude.ai opens on the owner's phone, through the same live window
+5dive browser claude connect --wait   # until they are done, then the agent's own login is checked
+```
+
+The owner signs in to claude.ai once in that window ("Continue with Google" is quickest) and taps
+Authorize for your own login; nobody copies a code. If it says the box is not turned on, the owner
+(or main) runs `sudo 5dive agent config <you> set chrome=on` first. After `--wait` says connected,
+restart yourself (`sudo 5dive agent _self_restart`) so you run on that login with Chrome on.
+
 ## THE RULE THAT COSTS THE MOST WHEN BROKEN
 
 **The viewer link is the HUMAN'S, and it is spent by the first successful GET.** Do not
