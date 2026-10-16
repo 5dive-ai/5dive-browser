@@ -914,6 +914,27 @@ async function waitInterstitial(page, { timeoutMs = INTERSTITIAL_WAIT_MS, pollMs
   return { title: first, cleared: false, waited_ms: waited };
 }
 
+// A --wait-for BEHIND A CHALLENGE THAT STAYED (DIVE-6371). It is not waited for
+// (it would only wait again, DIVE-6317), and the answer SAYS so instead of being
+// absent: an absent wait_for is what bin/browser reads as "a session daemon from
+// before --wait-for existed", and on exact-swallow it printed exactly that for a
+// Chrome launched 5 s earlier with no daemon in the path.
+async function waitForPast(page, target, inter, opts) {
+  if (inter && !inter.cleared) {
+    return { target: String(target || ''), met: false, waited_ms: 0, skipped: 'challenge' };
+  }
+  return waitForVisible(page, target, opts);
+}
+
+// navigator.webdriver IS THE OTHER TELL (DIVE-6371). A Chrome driven over CDP
+// reports it true, headed or not, and a bot check reads it before anything else.
+// The flag Playwright's own MCP browser launches with turns it off; an operator's
+// own --disable-blink-features (FIVEDIVE_BROWSER_CHROME_ARGS) is left alone.
+function unmarkedArgs(extra) {
+  return (extra || []).some((a) => /^--disable-blink-features/.test(a))
+    ? [] : ['--disable-blink-features=AutomationControlled'];
+}
+
 // `--expect` as an EARLY EXIT, never as the verdict. bin/browser still greps
 // what comes back (grep -E, one engine, like the probe's markers), so a pattern
 // JS reads differently only costs the full window, never a wrong answer.
@@ -1109,5 +1130,5 @@ module.exports = { INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSel
   STEP_FAILED_PREFIX, failedStep,
   redirectWhy, checkLanding, E_REDIRECTED,
   _payloadIn, cleanText, cleanPayload,
-  INTERSTITIAL_TITLE, waitInterstitial,
+  INTERSTITIAL_TITLE, waitInterstitial, waitForPast, unmarkedArgs,
   waitForVisible, _visibleIn, _textIn, _scopeIn };

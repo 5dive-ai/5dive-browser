@@ -200,7 +200,7 @@ function sandboxWanted() {
 // place is a claim one edit can remove from both callers at once.
 function launchArgs(sandbox) {
   const extra = (process.env.FIVEDIVE_BROWSER_CHROME_ARGS || '').split(/\s+/).filter(Boolean);
-  const args = [...(sandbox ? [] : ['--no-sandbox']), '--disable-gpu', ...extra];
+  const args = [...(sandbox ? [] : ['--no-sandbox']), '--disable-gpu', ...aria.unmarkedArgs(extra), ...extra];
   const bad = args.filter(a => /^--remote-debugging/.test(a));
   if (bad.length) {
     die(E_NOTHING_RAN, `refusing to launch with ${bad.join(' ')}. The daemon holds CDP over the child's ` +
@@ -659,8 +659,8 @@ async function renderRequest(ctx, req, send, end) {
     await page.goto(req.url, { waitUntil: 'domcontentloaded' });
     const inter = await aria.waitInterstitial(page);   // DIVE-6317, as snapshot
     // `read --wait-for` on a brokered seat (DIVE-4983), the same wait snapshot has.
-    const waited = req.wait_for && !(inter && !inter.cleared)
-      ? await aria.waitForVisible(page, String(req.wait_for), { timeoutMs: STEP_TIMEOUT }) : null;
+    const waited = req.wait_for
+      ? await aria.waitForPast(page, String(req.wait_for), inter, { timeoutMs: STEP_TIMEOUT }) : null;
     await page.waitForTimeout(Number(req.wait) || Number(process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS || 1200));
     const buf = await page.screenshot({ fullPage: !!req.full });
     const html = await page.content();
@@ -751,8 +751,8 @@ async function snapshotRequest(ctx, req, send, end) {
     // (DIVE-6317). A --wait-for behind one that never cleared would only wait again.
     const inter = await aria.waitInterstitial(page);
     // --wait-for (DIVE-4983), exactly as the cold driver's snapshotMode does it.
-    const waited = req.wait_for && !(inter && !inter.cleared)
-      ? await aria.waitForVisible(page, String(req.wait_for), { timeoutMs: STEP_TIMEOUT }) : null;
+    const waited = req.wait_for
+      ? await aria.waitForPast(page, String(req.wait_for), inter, { timeoutMs: STEP_TIMEOUT }) : null;
     await page.waitForTimeout(settleOf(req, TREE_SETTLE_MS));
     const snap = await aria.snapshot(page, { interactiveOnly: !!req.interactive });
     let png = null;
