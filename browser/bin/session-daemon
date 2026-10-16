@@ -54,6 +54,7 @@ const proxy = require(path.join(__dirname, '..', 'lib', 'proxy.cjs'));
 const totp = require(path.join(__dirname, '..', 'lib', 'totp.cjs'));
 const downloads = require(path.join(__dirname, '..', 'lib', 'downloads.cjs'));
 const gsignin = require(path.join(__dirname, '..', 'lib', 'google-signin.cjs'));
+const popup = require(path.join(__dirname, '..', 'lib', 'popup.cjs'));
 
 // DIVE-4587: Chrome keeps its crashpad DB under $XDG_CONFIG_HOME whatever
 // --user-data-dir says, and 5dive boxes share one XDG_CONFIG_HOME across every
@@ -506,6 +507,27 @@ async function pageOf(ctx) {
   return p;
 }
 
+// THE POPUP AN EARLIER ACT LEFT IN VIEW (DIVE-6392). This browser outlives each
+// request, so the follower of the last act does too: a request on a URL of the
+// popup's own site goes to the popup (an OAuth chooser is answered in the window
+// it opened in, not in a second load of its URL in the main tab), and any other
+// URL goes to the main tab as before. lib/popup.cjs, shared with the cold loop.
+let front = null;
+async function pageFor(ctx, url) {
+  const base = await pageOf(ctx);
+  if (!front || front.base !== base) {
+    if (front) front.stop();
+    front = popup.follow(base, { stepTimeout: STEP_TIMEOUT });
+  }
+  front.use({});   // the last request's lines go nowhere now; a plan sets its own
+  return front.pageFor(url) || base;
+}
+// A popup still on the URL asked for is not loaded again: a reload of an OAuth
+// window can lose the sign-in it is in the middle of.
+function inPopup(page, url) {
+  return !!front && page !== front.base && sameUrl(page.url(), url);
+}
+
 // ---- the probe, and the thing it un-breaks ---------------------------------
 //
 // `status` could never look at a SERVED profile. Chrome allows one instance per
@@ -685,9 +707,9 @@ async function treeRequest(ctx, req, send, end) {
     send({ t: 'err', msg: 'tree needs an http(s) url to enumerate' }); return end(E_NOTHING_RAN);
   }
   try {
-    const page = await pageOf(ctx);
+    const page = await pageFor(ctx, req.url);
     assertLease(req, 'tree');
-    await page.goto(req.url, { waitUntil: 'domcontentloaded' });
+    if (!inPopup(page, req.url)) await page.goto(req.url, { waitUntil: 'domcontentloaded' });
     // NEVER network idle: a live web app long-polls and never idles — that is
     // what makes a `read` hang for 150s on a real Gmail.
     await page.waitForTimeout(settleOf(req, TREE_SETTLE_MS));
@@ -744,9 +766,10 @@ async function snapshotRequest(ctx, req, send, end) {
     return end(E_NOTHING_RAN);
   }
   try {
-    const page = await pageOf(ctx);
+    const page = await pageFor(ctx, req.url);
     assertLease(req, 'snapshot');
-    await page.goto(req.url, { waitUntil: 'domcontentloaded' });
+    if (inPopup(page, req.url)) send({ t: 'log', line: `  the popup an earlier act opened is still on ${req.url}; read as it is, not reloaded` });
+    else await page.goto(req.url, { waitUntil: 'domcontentloaded' });
     // A Cloudflare "Just a moment..." clears in this same load, or not at all
     // (DIVE-6317). A --wait-for behind one that never cleared would only wait again.
     const inter = await aria.waitInterstitial(page);
@@ -773,6 +796,8 @@ async function snapshotRequest(ctx, req, send, end) {
       png_b64: png,
       ...(waited ? { wait_for: waited } : {}),
       ...(inter ? { interstitial: inter } : {}),
+      // A served browser is a headed one (the launch above), recorded as the cold one is.
+      browser_mode: 'headed',
     }) + '\n' });
     end(0);
   } catch (e) {
@@ -834,9 +859,12 @@ async function planRequest(ctx, req, send, end) {
   // that throws may already have navigated, a click may already have posted. The
   // expensive direction is claiming nothing ran when something did — that is the
   // blind retry that double-posts.
-  let stepsRun = 0, needsOwner = null, retry = null, at = -1;
+  let stepsRun = 0, needsOwner = null, retry = null, at = -1, lastOp = null;
   let page;
-  try { page = await pageOf(ctx); }
+  // The act's own URL picks the window (DIVE-6392): the popup an earlier act left
+  // open when it is on that popup's site or the act names no URL, otherwise the main tab.
+  const first = resolved[0] && resolved[0].op === 'goto' ? resolved[0].url : null;
+  try { page = await pageFor(ctx, first); }
   catch (e) {
     send({ t: 'err', msg: `the session is open but would not give up a page: ${e.message}` });
     send({ t: 'err', msg: 'not one step ran, so nothing was published and there is nothing to re-read.' });
@@ -845,11 +873,20 @@ async function planRequest(ctx, req, send, end) {
   // A FILE A CLICK DOWNLOADS (DIVE-5751), watched from before step one and handed
   // back after the re-read — lib/downloads.cjs, shared with the one-shot loop.
   const dl = (req.report && req.report.downloads) ? downloads.watch(ctx, page) : null;
+  if (page === front.base) front.home();
+  front.use({
+    log: (l) => send({ t: 'log', line: `  ${l}` }),
+    onOpen: async (p) => {
+      const inter = await aria.waitInterstitial(p);   // watched, never clicked (DIVE-6317)
+      if (inter) send({ t: 'log', line: `  the popup's "${inter.title}" ${inter.cleared ? `cleared by itself after ${inter.waited_ms} ms` : `was still there after ${inter.waited_ms} ms`}` });
+    },
+  });
   try {
     for (let i = 0; i < resolved.length; i++) {
       const s = resolved[i];
       const where = `step ${i + 1} (${s.op})`;
       at = i;
+      page = await front.sync(lastOp);
       // BEFORE THE RESOLVE AND BEFORE THE COUNTER. Both touch the page, and the
       // point is to touch nothing once the browser is someone else's.
       assertLease(req, where);
@@ -897,7 +934,8 @@ async function planRequest(ctx, req, send, end) {
           // page held (a 6-digit code box a site had just opened). Only that
           // first, caller-less goto, and only on an exact URL match: a goto the
           // steps name themselves still navigates, which is how to ask for a reload.
-          if (i === 0 && req.stay === true && sameUrl(page.url(), s.url)) {
+          // A popup an earlier act left on this URL is never reloaded either (DIVE-6392).
+          if (i === 0 && (req.stay === true || inPopup(page, s.url)) && sameUrl(page.url(), s.url)) {
             send({ t: 'log', line: `  ${where}: already on ${s.url}; not reloaded, so the page keeps what it holds` });
             break;
           }
@@ -918,6 +956,7 @@ async function planRequest(ctx, req, send, end) {
       }
       if (retry) send({ t: 'log', line: `  ${retry}ok` });
       retry = null;
+      lastOp = s.op;
       send({ t: 'log', line: `  ${where} ok` });
       // WHERE THE GOTO LANDED (DIVE-4991), said every time, exactly as the cold
       // driver says it. This IS the served browser, so there is nothing to retry in.
@@ -937,14 +976,20 @@ async function planRequest(ctx, req, send, end) {
       if (dl) dl.stop();
       send({ t: 'err', msg: 'the session was open but not one step ran, so nothing was published and ' +
         'there is nothing to re-read.' });
+      front.use({});
       return end(E_NOTHING_RAN);
     }
+    // The step that failed may have opened the popup: the re-read shows it either way.
+    try { page = await front.sync(resolved[at] ? resolved[at].op : lastOp); } catch (e2) { /* re-read the page we have */ }
     await sendReport(page, req, send);
+    front.use({});
     await sendDownloads(dl, send);
     return end(E_FAILED);
   }
   if (needsOwner) send({ t: 'err', msg: aria.NEEDS_OWNER_PREFIX.trim() + ' ' + JSON.stringify(needsOwner) });
+  page = await front.sync(lastOp);
   await sendReport(page, req, send);
+  front.use({});
   await sendDownloads(dl, send);
   // THE SESSION STAYS WARM AND THE PAGE STAYS WHERE IT IS. Closing the context
   // here would give back exactly the launch this daemon exists to stop paying.
@@ -972,7 +1017,10 @@ async function sendReport(page, req, send) {
     }
     send({ t: 'out', data: JSON.stringify({ act_report: true, url: after.url, title: after.title,
       html_inline: after.html, png_b64: png, text: after.text, nodes: after.nodes,
-      wait_for: after.wait_for, expect_polled_ms: after.expect_polled_ms, scope: after.scope }) + '\n' });
+      wait_for: after.wait_for, expect_polled_ms: after.expect_polled_ms, scope: after.scope,
+      // DIVE-6392: the mode the steps ran in (a served browser is headed), and the
+      // popup in view when there is one.
+      browser_mode: 'headed', popup: (front && front.popup) || null }) + '\n' });
   } catch (e) {
     send({ t: 'err', msg: `the steps ran but the page could not be re-read afterwards: ${e.message}` });
   }

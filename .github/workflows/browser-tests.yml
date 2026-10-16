@@ -107,6 +107,11 @@ jobs:
       # with the recording stub, and a live arm in real Chrome against a local page.
       - name: act download harness
         run: bash tests/browser_act_download_unit.sh
+      # DIVE-6392: a popup an act opens is followed (both loops), and an act's capture
+      # says its browser mode. lib arms, cold act and the served daemon on the recording
+      # stub, and live arms in real Chrome with a 1.45.0-shaped mutant as the control.
+      - name: act popup harness
+        run: bash tests/browser_act_popup_unit.sh
       # A manifest or marketplace file that does not parse breaks `5dive plugin
       # add` at install time, where nobody is watching. Cheap, so it is its own
       # named check rather than an assertion buried in the suite.

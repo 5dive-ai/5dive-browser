@@ -54,6 +54,7 @@ const proxy = require(path.join(__dirname, '..', 'lib', 'proxy.cjs'));
 const totp = require(path.join(__dirname, '..', 'lib', 'totp.cjs'));
 const downloads = require(path.join(__dirname, '..', 'lib', 'downloads.cjs'));
 const gsignin = require(path.join(__dirname, '..', 'lib', 'google-signin.cjs'));
+const popup = require(path.join(__dirname, '..', 'lib', 'popup.cjs'));
 
 // DO NOT DELETE THIS. It is not dead code — it is the fix for DIVE-4587, and the
 // full mechanism is written out at the top of bin/browser. In one paragraph:
@@ -500,7 +501,7 @@ async function totpMode(plan) {
   await printAndExit(payload);
 }
 
-async function writeReport(page, report) {
+async function writeReport(page, report, pop) {
   try {
     const after = await aria.pageAfter(page, {
       settleMs: RUN_SETTLE_MS, waitFor: report.wait_for || null, waitTimeoutMs: STEP_TIMEOUT,
@@ -510,8 +511,11 @@ async function writeReport(page, report) {
     });
     if (report.html) fs.writeFileSync(report.html, after.html || '', { mode: 0o600 });
     if (report.meta) {
+      // browser_mode (DIVE-6392): the mode the steps ran in, as a snapshot records it,
+      // and the popup in view when there is one, so the capture says which window it is.
       fs.writeFileSync(report.meta, JSON.stringify({ url: after.url, title: after.title, text: after.text,
-        wait_for: after.wait_for, expect_polled_ms: after.expect_polled_ms, scope: after.scope }), { mode: 0o600 });
+        wait_for: after.wait_for, expect_polled_ms: after.expect_polled_ms, scope: after.scope,
+        browser_mode: browserMode, popup: (pop && pop.popup) || null }), { mode: 0o600 });
     }
     if (report.tree && after.nodes) {
       fs.writeFileSync(report.tree, JSON.stringify({ url: after.url, title: after.title, nodes: after.nodes }), { mode: 0o600 });
@@ -624,9 +628,20 @@ async function main() {
   const ctx = await openProfile(profile);
 
   let rc = 0, needsOwner = null, page = null, retry = null, acted = false, redirected = false, at = -1, dl = null;
+  let pop = null, lastOp = null;
   try {
     page = ctx.pages()[0] || await ctx.newPage();
     page.setDefaultTimeout(STEP_TIMEOUT);
+    // A POPUP A STEP OPENS IS FOLLOWED (DIVE-6392): the steps after it act in it and
+    // the re-read is of it; when it closes, the page that opened it is back.
+    pop = popup.follow(page, {
+      stepTimeout: STEP_TIMEOUT,
+      log: (l) => process.stderr.write(`  ${l}\n`),
+      onOpen: async (p) => {
+        const inter = await aria.waitInterstitial(p);   // watched, never clicked (DIVE-6317)
+        if (inter) process.stderr.write(`  the popup's "${inter.title}" ${inter.cleared ? `cleared by itself after ${inter.waited_ms} ms` : `was still there after ${inter.waited_ms} ms`}\n`);
+      },
+    });
     // A FILE A CLICK DOWNLOADS (DIVE-5751): watched from before step one, saved
     // after the re-read into the caller's own staging directory (this process IS
     // the caller), before the context closes and Playwright deletes it.
@@ -635,6 +650,7 @@ async function main() {
       const s = resolved[i];
       const where = `step ${i + 1} (${s.op})`;
       at = i;
+      page = await pop.sync(lastOp);
       // RESOLVE BEFORE THE COUNTER, deliberately. Turning `ref=button/Send` into
       // a selector is a page.evaluate that reads the document and changes
       // nothing, so a ref that matches nothing performed no part of the action —
@@ -706,6 +722,7 @@ async function main() {
       }
       if (retry) process.stderr.write(`  ${retry}ok\n`);
       retry = null;
+      lastOp = s.op;
       process.stderr.write(`  ${where} ok\n`);
       // WHERE THE GOTO LANDED (DIVE-4991), said every time. While nothing but a
       // goto has run, a redirect stops this cold run here and bin/browser runs the
@@ -723,7 +740,10 @@ async function main() {
       process.stderr.write(aria.NEEDS_OWNER_PREFIX + JSON.stringify(needsOwner) + '\n');
       rc = aria.E_NEEDS_OWNER;
     }
-    if (plan.report && (stepsRun || needsOwner)) await writeReport(page, plan.report);
+    if (plan.report && (stepsRun || needsOwner)) {
+      page = await pop.sync(lastOp);
+      await writeReport(page, plan.report, pop);
+    }
     await saveDownloads(dl, plan.report);
   } catch (e) {
     // A STEP FAILURE IS NOT A VERDICT AND MUST NOT BE DRESSED AS ONE. bin/browser
@@ -740,12 +760,16 @@ async function main() {
       process.stderr.write(`${PROG}: the browser opened but not one step ran, so nothing was ` +
         `published and there is nothing to re-read.\n`);
     } else if (plan.report && page) {
-      await writeReport(page, plan.report);
+      // The step that failed may have opened the popup (a click that timed out
+      // waiting on the opener): the re-read shows it either way.
+      if (pop) { try { page = await pop.sync(resolved[at] ? resolved[at].op : lastOp); } catch (e2) { /* re-read the page we have */ } }
+      await writeReport(page, plan.report, pop);
       // A step that failed after a click may still have started a download, and
       // that file is as real as the click was.
       await saveDownloads(dl, plan.report);
     }
   } finally {
+    if (pop) pop.stop();
     try { await ctx.close(); } catch (e) { /* the verdict is the re-read, not this */ }
   }
   process.exit(rc);

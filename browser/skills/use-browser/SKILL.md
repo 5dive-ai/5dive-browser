@@ -38,6 +38,11 @@ repo — and that is the `connect-site` skill, not this one.
    prints `downloaded: <path> (<name>, <bytes> bytes)`, and the file is in the act's artifact
    directory under `downloads/`, readable by your seat (`--json`: `downloads`). A file over
    100 MB, or still downloading after 2 minutes, is named on stderr and not saved.
+5. **A click that opens a popup** (most "Continue with Google" buttons) is followed: `act` prints
+   `a popup opened: <host>, now in view`, the steps after it act in the popup, and `page.png`
+   and the refs are of it. When the popup closes, the page that opened it is back. In a served
+   browser the popup stays open: act on its URL, or with no URL, to continue in it. A cold act's popup closes
+   with the act.
 
 `read`, `links` and `shot` take a URL the same way when you only need the text, the links or a
 picture of a page.

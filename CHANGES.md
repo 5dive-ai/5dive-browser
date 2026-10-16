@@ -8,6 +8,28 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — an act follows the popup a click opens, and an act's capture says its browser mode (DIVE-6392), 1.46.0
+
+Round 8 of the Google sign-up benchmark (cic-arm-a, 1.45.0): Gamma's page loaded with no challenge,
+then "Continue with Google" showed pressed and nothing came into view, on two attempts. Google's
+chooser opens in a popup window, and both step loops kept acting on, and re-reading, the page they
+started on. The act's `page.meta.json` also had no `browser_mode`, so nobody could tell whether the
+click ran headed.
+
+- Both step loops follow a popup (`window.open`, a `target=_blank` link) that a click or a key press
+  opens: the steps after it act in it, and the re-read (`page.png`, `page.html`, the refs) is of it.
+  When it closes, the page that opened it is back in view. Each change is a line in the act's output
+  (`a popup opened: <host>, now in view`), and `--json` and `page.meta.json` carry `popup`. The wait
+  for a popup is paid only after a click or a press, and ends as soon as one arrives
+  (`FIVEDIVE_BROWSER_POPUP_WAIT_MS`, default 1000).
+- A served browser keeps the popup between acts: an act with no URL, and an act, `snapshot` or `tree`
+  on a URL of the popup's site, go to the popup, and its own URL is not reloaded. Any other URL goes to the main tab as
+  before. A cold act's browser closes with the act, and the output says the popup closed with it.
+- The popup goes through the same guards as any page: Google's sign-in stops (no saved account, a
+  password, a code) apply in it, and a "Just a moment..." in it is watched, never clicked.
+- `browser_mode` (headed or headless) is recorded on an act's `page.meta.json` and `--json`, and on a
+  snapshot's `page.meta.json`. A served browser records `headed`.
+
 ### Fixed — the agent's page loads run headed, so Cloudflare stops judging the browser mode (DIVE-6371), 1.45.0
 
 lodar, 2026-10-16, on exact-swallow: the agent's `snapshot` of a Cloudflare site stopped at "Just a
