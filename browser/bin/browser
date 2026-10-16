@@ -5947,6 +5947,17 @@ _read_output_dir() { # _read_output_dir <site> <explicit-or-empty> <profile-dir>
 # <extra-json> (DIVE-4983) is merged into the metadata: `partial`, `wait_for` and
 # `loading_screen`, and the two a reader must not miss are repeated in page.md's
 # front matter, because page.md is the file an agent actually opens.
+# WHICH BROWSER TOOK THE CAPTURE, AND WHICH WINDOW (DIVE-6392). The executor's
+# browser_mode (headed or headless) and, after an act, the popup in view, merged
+# into <extra-json> so page.meta.json and --json carry them. Round 8 could not
+# tell whether its "Continue with Google" click ran headed: an act's meta had no
+# browser_mode at all. Never fatal: a payload that does not parse adds nothing.
+_capture_facts() { # _capture_facts <extra-json> <executor-json-file>
+  local x="${1:-}"; [[ -n "$x" ]] || x='{}'
+  jq -c --slurpfile a "$2" '. + (($a[0] // {}) | {browser_mode, popup} | with_entries(select(.value != null)))' \
+    <<<"$x" 2>/dev/null || printf '%s\n' "$x"
+}
+
 _derive_capture() { # _derive_capture <stage> <url> <chrome> <capture-kind> [<extra-json>]
   local stage="$1" url="$2" chrome="$3" capture="$4" extra="${5:-}"
   [[ -n "$extra" ]] || extra='{}'
@@ -6427,6 +6438,7 @@ cmd_snapshot() {
   local extra rrc=0
   extra=$(_ready_verdict "$(jq -r '.url // ""' <<<"$payload")" "$wait_for" "$(jq -c '.wait_for // null' <<<"$payload")" \
             "$stage/page.html" "$stage/tree.json" false "$capture") || rrc=$?
+  extra=$(_capture_facts "$extra" <(printf '%s' "$payload"))
 
   # The SAME derivation `read` uses, over the bytes the walk above came from.
   _derive_capture "$stage" "$url" "$_PG_CHROME" snapshot "$extra"
@@ -6959,6 +6971,7 @@ cmd_act() {
   if [[ -s "$stage/page.html" ]]; then
     extra=$(_ready_verdict "$final" "$wait_for" "$(jq -c '.wait_for // null' "$stage/after.json" 2>/dev/null || echo null)" \
               "$stage/page.html" "$stage/tree.json") || rrc=$?
+    extra=$(_capture_facts "$extra" "$stage/after.json")
     if [[ -r "$READ_EXTRACTOR" ]] && _have node \
        && ( _derive_capture "$stage" "${final:-$url}" "$_PG_CHROME" act "$extra" ) 2>"$stage/derive.err"; then
       for f in page.md page.meta.json; do install -m 00600 "$stage/$f" "$out/$f"; done
@@ -7023,8 +7036,25 @@ cmd_act() {
       printf '%s: %s. Some steps may have run; look at %s/page.png before retrying.\n' "$PROG" "$why" "$out" >&2 ;;
     not_ready)    printf '%s: NOT READY — every step ran, but the page they left is not ready (the reason is above). Look at %s/page.png; wait for the page, do not re-run the steps.\n' "$PROG" "$out" >&2 ;;
   esac
+  _act_popup_say "$stage/after.json"
   _act_downloads_say
   return "$rc"
+}
+
+# A POPUP IN VIEW AFTER THE STEPS (DIVE-6392), said where the agent reads the
+# verdict. A served browser keeps it open, and the next act on its URL continues
+# in it. A cold run's browser has closed and the popup with it, so the next act
+# does not continue there, and the line says so.
+_act_popup_say() { # <after.json>
+  local host url
+  host=$(jq -r '.popup.host // ""' "$1" 2>/dev/null) || return 0
+  [[ -n "$host" ]] || return 0
+  url=$(jq -r '.popup.url // ""' "$1" 2>/dev/null)
+  if _daemon_live "$_PG_DIR"; then
+    printf 'a popup opened: %s, now in view (page.png and the refs are of it). It stays open in the served browser: act on %s, or with no URL, to continue in it; when it closes, the page that opened it is back.\n' "$host" "$url"
+  else
+    printf 'a popup opened: %s, now in view (page.png and the refs are of it). This act'"'"'s browser has closed, and the popup with it: the next act starts a new browser, so a sign-in in that popup does not carry over.\n' "$host"
+  fi
 }
 
 # `act` through the warm session: the plan over the socket, the re-read back inline
@@ -7047,7 +7077,7 @@ _act_session() {  # <site> <steps> <approved> <shot> <settle> <report> <allow-ki
   rep=$(grep -F '"act_report":true' "$payload" | tail -1)
   if [[ -n "$rep" ]]; then
     jq -r '.html_inline // ""' <<<"$rep" > "$stage/page.html"
-    jq -c '{url, title, text, wait_for, expect_polled_ms}' <<<"$rep" > "$stage/after.json"
+    jq -c '{url, title, text, wait_for, expect_polled_ms, browser_mode, popup}' <<<"$rep" > "$stage/after.json"
     jq -e '.nodes | type == "array"' <<<"$rep" >/dev/null 2>&1 && jq -c '{url, title, nodes}' <<<"$rep" > "$stage/tree.json"
     if (( shot )); then jq -r '.png_b64 // ""' <<<"$rep" | base64 -d > "$stage/page.png" 2>/dev/null || :; fi
   fi
