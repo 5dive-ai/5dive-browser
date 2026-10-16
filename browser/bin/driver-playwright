@@ -235,7 +235,7 @@ function interp(s, args, where, enc) {
 // reintroduced by an env var or a later edit without this failing loudly.
 function launchArgs() {
   const extra = (process.env.FIVEDIVE_BROWSER_CHROME_ARGS || '').split(/\s+/).filter(Boolean);
-  const args = ['--no-sandbox', '--disable-gpu', '--hide-scrollbars', ...extra];
+  const args = ['--no-sandbox', '--disable-gpu', '--hide-scrollbars', ...aria.unmarkedArgs(extra), ...extra];
   const bad = args.filter(a => /^--remote-debugging/.test(a));
   if (bad.length) {
     die(E_NOTHING_RAN, `refusing to launch with ${bad.join(' ')}. CDP here goes over --remote-debugging-pipe ` +
@@ -285,9 +285,59 @@ function loadPlaywright() {
   }
 }
 
+// A HEADED BROWSER ON A DISPLAY OF ITS OWN (DIVE-6371). Every cold page load
+// (snapshot, tree, act, run, totp) used to be HEADLESS Chrome, and Cloudflare
+// challenges headless Chrome and lets a headed one through. Measured on
+// exact-swallow: the agent's snapshot of a Cloudflare site, headless in the
+// public profile, stopped at "Just a moment..." for its whole 30 s, while the
+// owner's headed viewer on the same box and the same IP loaded the page with
+// no check. So the agent was being judged on the browser MODE, not the IP.
+//
+// The fix is the shape `serve` already has: a real (headed) Chrome on an Xvfb.
+// This one is private to the run: Xvfb picks a free display itself
+// (-displayfd, so there is no race on a display number), listens on no TCP
+// port, and dies with the run (killed on exit, and -terminate ends it when the
+// browser disconnects, so a killed driver does not leave it behind).
+//
+// HEADLESS IS THE FALLBACK, NEVER SILENT. A box with no Xvfb (or
+// FIVEDIVE_BROWSER_HEADLESS=1) still runs, headless, and says so on stderr and
+// in a snapshot's payload (browser_mode), so a challenge it meets is named as a
+// headless one rather than as "this site blocks the box".
+const DISPLAY_WAIT_MS = Number(process.env.FIVEDIVE_BROWSER_DISPLAY_WAIT_MS || 5000);
+let privateDisplay = null;
+let browserMode = null;
+process.on('exit', () => { if (privateDisplay) { try { privateDisplay.kill('SIGTERM'); } catch (e) { /* already gone */ } } });
+function startDisplay() {
+  if (process.env.FIVEDIVE_BROWSER_HEADLESS === '1') return Promise.resolve({ why: 'FIVEDIVE_BROWSER_HEADLESS=1 asked for it' });
+  const bin = process.env.FIVEDIVE_BROWSER_XVFB || 'Xvfb';
+  return new Promise((resolve) => {
+    let done = false, buf = '', child, timer;
+    const finish = (r) => { if (done) return; done = true; clearTimeout(timer); resolve(r); };
+    try {
+      child = require('child_process').spawn(bin,
+        ['-displayfd', '1', '-screen', '0', '1280x800x24', '-nolisten', 'tcp', '-terminate'],
+        { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch (e) { finish({ why: `${bin} would not start (${e.message})` }); return; }
+    timer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch (e) { /* gone */ }
+      finish({ why: `${bin} named no display within ${DISPLAY_WAIT_MS} ms` });
+    }, DISPLAY_WAIT_MS);
+    child.on('error', (e) => finish({ why: `there is no ${bin} on this box (${e.code || e.message})` }));
+    child.on('exit', (c, sig) => finish({ why: `${bin} exited (${sig || c}) before naming a display` }));
+    child.stdout.on('data', (d) => {
+      buf += d;
+      const m = buf.match(/^(\d+)\s/);
+      if (!m) return;
+      privateDisplay = child;
+      child.stdout.destroy(); child.unref();
+      finish({ display: `:${m[1]}` });
+    });
+  });
+}
+
 // The launch every mode shares. Named once so `tree` cannot acquire a second,
 // laxer way into a directory holding somebody's live session.
-async function openProfile(profile, { headless = true } = {}) {
+async function openProfile(profile) {
   if (!profile) die(E_NOTHING_RAN, 'the plan names no profile directory');
   if (!fs.existsSync(profile)) die(E_NOTHING_RAN, `no profile directory at ${profile}`);
   const chrome = process.env.FIVEDIVE_BROWSER_CHROME;
@@ -299,9 +349,18 @@ async function openProfile(profile, { headless = true } = {}) {
   let viaProxy;
   try { viaProxy = proxy.launchProxy(profile); } catch (e) { die(E_NOTHING_RAN, e.message); }
   const { chromium } = loadPlaywright();
+  const shown = await startDisplay();
+  browserMode = shown.display ? 'headed' : 'headless';
+  // process.env, not an `env` option: Chrome inherits it whole (TMPDIR, DIVE-5190).
+  if (shown.display) process.env.DISPLAY = shown.display;
+  else {
+    process.stderr.write(`${PROG}: NOTE — this browser runs HEADLESS: ${shown.why}. Sites behind ` +
+      `Cloudflare challenge a headless browser that a headed one passes, so a "Just a moment..." here may ` +
+      `not be what the owner's browser sees.\n`);
+  }
   try {
     return await chromium.launchPersistentContext(profile, {
-      headless,
+      headless: !shown.display,
       executablePath: chrome,
       args: launchArgs(),
       viewport: { width: 1280, height: 800 },
@@ -383,8 +442,8 @@ async function snapshotMode(plan) {
     const inter = await aria.waitInterstitial(page);
     // --wait-for (DIVE-4983): the page says it is ready, bounded by the step
     // timeout; the settle below then gives the rest of it a moment, as before.
-    const waited = plan.wait_for && !(inter && !inter.cleared)
-      ? await aria.waitForVisible(page, String(plan.wait_for), { timeoutMs: STEP_TIMEOUT }) : null;
+    const waited = plan.wait_for
+      ? await aria.waitForPast(page, String(plan.wait_for), inter, { timeoutMs: STEP_TIMEOUT }) : null;
     // NEVER network idle, for the reason written above treeMode: a live web app
     // long-polls and never idles, and waiting for it is what makes a read hang.
     await page.waitForTimeout(Number(process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS || 1200));
@@ -402,6 +461,7 @@ async function snapshotMode(plan) {
       png: plan.shot || null,
       ...(waited ? { wait_for: waited } : {}),
       ...(inter ? { interstitial: inter } : {}),
+      browser_mode: browserMode,
     };
   } catch (e) {
     die(E_NOTHING_RAN, `could not capture ${plan.url}: ${e.message}`);

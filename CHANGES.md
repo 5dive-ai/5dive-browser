@@ -8,6 +8,33 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — the agent's page loads run headed, so Cloudflare stops judging the browser mode (DIVE-6371), 1.45.0
+
+lodar, 2026-10-16, on exact-swallow: the agent's `snapshot` of a Cloudflare site stopped at "Just a
+moment..." for its whole 30 s wait, and the owner's viewer on the same box and the same IP loaded the
+page with no check. The agent's load was headless Chrome in the public profile; the viewer was headed.
+Cloudflare challenges headless Chrome and lets a headed one through, so the cause was the browser
+mode, not the IP.
+
+- The cold executor (`snapshot`, `tree`, `act`, `run`, `totp` with no served browser) now runs a
+  HEADED Chrome on an Xvfb of its own: Xvfb picks the display (`-displayfd`), listens on no TCP port,
+  and is killed when the run ends (`-terminate` also ends it if the run is killed). Both executors
+  also launch with `--disable-blink-features=AutomationControlled`, so `navigator.webdriver` no
+  longer marks the page as automated. A box with no Xvfb (or `FIVEDIVE_BROWSER_HEADLESS=1`) still
+  runs headless, says so on stderr, and a challenge it meets is named in the STOP as a headless load.
+- `--wait-for` behind a challenge that never cleared is no longer reported as "a session daemon from
+  before --wait-for existed". The executor says it skipped the wait for the challenge
+  (`wait_for.skipped: "challenge"`), and a cold snapshot never blames a daemon.
+- A STOP on a public-profile load now says which profile the next load uses: the owner clears the
+  check in the box's browser for the host, and after their Done the same URL routes to that profile
+  (where the clearance is kept), not back to the public one.
+- A text field that changes role when it is focused is re-found as the same field. Measured in a
+  headed Chrome: Wikipedia's search box is a `searchbox` until it is focused, then its typeahead
+  mounts and it reads `combobox`. A step whose ref missed now tries the same name and `#n` under
+  the other text-field roles before asking reflex, and only when exactly one matches.
+- `read` and `shot` with no served browser still use one-shot headless Chrome (`--dump-dom`,
+  `--screenshot`); a Cloudflare page read that way is still a headless load.
+
 ### Added — Claude in Chrome for an agent, opt-in: one sign-in and one Authorize tap on the owner's phone (DIVE-6345), 1.44.0
 
 lodar, 2026-10-15: make Claude in Chrome onboarding less painful. The 10-14 head-to-head took 96

@@ -717,6 +717,24 @@ function nameMatches(nodes, ref) {
   });
 }
 
+// THE SAME FIELD UNDER ANOTHER ROLE (DIVE-6371). A text field can change role
+// when it is focused: Wikipedia's search box is a `searchbox` until a fill
+// focuses it, then its typeahead mounts and both search inputs read `combobox`,
+// with the same name, in the same order (measured in a headed Chrome). Headless
+// never mounted it, so the cold executor's refs held; a headed one is what a
+// person gets, and the fill's own ref is gone by the press that follows it. The
+// ref with only its role swapped inside the text-field family, name and #n kept,
+// is that same field. Exactly one such ref on the page, or none is picked.
+const FIELD_ROLES = ['textbox', 'searchbox', 'combobox'];
+function fieldRoleMatch(nodes, ref) {
+  const role = ref.split('/')[0];
+  if (!FIELD_ROLES.includes(role)) return null;
+  const rest = ref.slice(role.length);
+  const hits = FIELD_ROLES.filter((r) => r !== role).map((r) => r + rest)
+    .filter((alt) => (nodes || []).some((x) => x.ref === alt));
+  return hits.length === 1 ? hits[0] : null;
+}
+
 // bin/browser `_reflex-pick`, the tree on stdin. Never throws: anything that is
 // not its one line of JSON is {reflex:"error"}, and the name match decides.
 function reflexPick(site, args, tree, { timeoutMs = 90000 } = {}) {
@@ -759,10 +777,16 @@ async function resolveOrRepick(page, step, n, opts = {}) {
   let url = '', site = '';
   try { url = String(await page.url()); site = new URL(url).hostname; } catch (e) { site = ''; }
   const tree = { url, nodes: (miss.nodes || []).filter((x) => INTERACTIVE.includes(x.role)) };
-  const r = site ? await reflexPick(site, args, tree) : { reflex: 'error', why: 'the page has no host name' };
+  const field = fieldRoleMatch(miss.nodes, refBody(from));
+  const r = field ? { reflex: 'skipped' }
+    : site ? await reflexPick(site, args, tree) : { reflex: 'error', why: 'the page has no host name' };
 
   let pick;
-  if (r.reflex === 'ok' && !(r.error && r.error !== 'no_candidates')) {
+  if (field) {
+    // "name match" is the word bin/browser's routine recorder reads (_routine_picks).
+    pick = { ref: field, line: `name match picked ref=${field}`,
+             said: `The same field under another role picked ref=${field}`, review: false };
+  } else if (r.reflex === 'ok' && !(r.error && r.error !== 'no_candidates')) {
     const conf = typeof r.confidence === 'number' ? r.confidence : null;
     if (!r.ref) throw failAs(' Reflex proposed no element for it.');
     if (conf === null || conf < REPICK_MIN_CONFIDENCE) {
@@ -912,6 +936,27 @@ async function waitInterstitial(page, { timeoutMs = INTERSTITIAL_WAIT_MS, pollMs
     if (t !== null && !INTERSTITIAL_TITLE.test(t)) return { title: first, cleared: true, waited_ms: waited };
   }
   return { title: first, cleared: false, waited_ms: waited };
+}
+
+// A --wait-for BEHIND A CHALLENGE THAT STAYED (DIVE-6371). It is not waited for
+// (it would only wait again, DIVE-6317), and the answer SAYS so instead of being
+// absent: an absent wait_for is what bin/browser reads as "a session daemon from
+// before --wait-for existed", and on exact-swallow it printed exactly that for a
+// Chrome launched 5 s earlier with no daemon in the path.
+async function waitForPast(page, target, inter, opts) {
+  if (inter && !inter.cleared) {
+    return { target: String(target || ''), met: false, waited_ms: 0, skipped: 'challenge' };
+  }
+  return waitForVisible(page, target, opts);
+}
+
+// navigator.webdriver IS THE OTHER TELL (DIVE-6371). A Chrome driven over CDP
+// reports it true, headed or not, and a bot check reads it before anything else.
+// The flag Playwright's own MCP browser launches with turns it off; an operator's
+// own --disable-blink-features (FIVEDIVE_BROWSER_CHROME_ARGS) is left alone.
+function unmarkedArgs(extra) {
+  return (extra || []).some((a) => /^--disable-blink-features/.test(a))
+    ? [] : ['--disable-blink-features=AutomationControlled'];
 }
 
 // `--expect` as an EARLY EXIT, never as the verdict. bin/browser still greps
@@ -1109,5 +1154,5 @@ module.exports = { INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSel
   STEP_FAILED_PREFIX, failedStep,
   redirectWhy, checkLanding, E_REDIRECTED,
   _payloadIn, cleanText, cleanPayload,
-  INTERSTITIAL_TITLE, waitInterstitial,
+  INTERSTITIAL_TITLE, waitInterstitial, waitForPast, unmarkedArgs, fieldRoleMatch,
   waitForVisible, _visibleIn, _textIn, _scopeIn };

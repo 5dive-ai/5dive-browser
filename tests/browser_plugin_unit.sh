@@ -126,6 +126,20 @@ unset BASH_ENV ENV
 # The T25 arms point this at the real binary explicitly. Every arm before them is
 # grading the cold path on purpose.
 export FIVEDIVE_BROWSER_SESSION_DAEMON="$TMP/no-session-daemon"
+# DIVE-6371: the cold executor runs HEADED on an Xvfb of its own. This one names
+# display 99 the way Xvfb -displayfd does, records its argv, and lives until the
+# driver kills it, so no arm starts a real X server or depends on the runner's.
+FAKEXVFB="$TMP/fake-xvfb"
+cat > "$FAKEXVFB" <<'XVFB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKEXVFB_LOG:-/dev/null}"
+fd=""; prev=""; for a in "$@"; do [[ "$prev" == -displayfd ]] && fd="$a"; prev="$a"; done
+[[ -n "$fd" ]] && eval "printf '99\n' >&$fd"
+echo $$ > "${FAKEXVFB_PID:-/dev/null}"
+exec sleep 60
+XVFB
+chmod +x "$FAKEXVFB"
+export FIVEDIVE_BROWSER_XVFB="$FAKEXVFB"
 # NO ARM TALKS TO THE REAL 5dive CLI (DIVE-4982). An ask is handed to `5dive
 # owner-ask` when the CLI has it; on a developer box that is the live owner's
 # Telegram. T36 points this at a recording fake; everywhere else it is absent.
@@ -2433,6 +2447,11 @@ let keydowns = 0;
 // lands instead (a redirect) — every goto, or only the one to PWLAND_FROM. PWURL,
 // older, pins url() whatever the goto was.
 let lastGoto = '';
+// DIVE-6371: A CLOUDFLARE SITE THAT JUDGES THE BROWSER MODE. PWCF_WALK is what it
+// shows a HEADLESS browser (a "Just a moment..." that never clears); a headed one
+// gets the page, exactly what exact-swallow measured. Unset, nothing changes.
+let headlessLaunch = false;
+const cfBlocked = () => !!process.env.PWCF_WALK && headlessLaunch;
 const landed = () => (process.env.PWLAND && (!process.env.PWLAND_FROM || lastGoto === process.env.PWLAND_FROM)
   ? process.env.PWLAND : lastGoto);
 // DIVE-5751: A CLICK THAT DOWNLOADS. PWDOWNLOAD is a JSON list of downloads each
@@ -2507,6 +2526,7 @@ const page = {
     // predicate itself is graded against a DOM shim in T34g; here the stub only
     // answers on the clock, and the tape shows the product ASKED.
     if (arg && arg.visibleOf) { rec({ call: 'visible', target: arg.target, mode: arg.mode, at: clock });
+      if (cfBlocked()) return false;
       return !process.env.PWLATE_MS || late(); }
     if (arg && arg.textOf) return (late() && process.env.PWTEXT_LATE) || process.env.PWTEXT || '';
     // DIVE-4984: a verify's scope — the one element it grades. PWSCOPE parks what
@@ -2517,6 +2537,7 @@ const page = {
     if (mark) markWalks++;
     rec({ call: 'evaluate', fnlen: String(fn).length, mark, walkN: mark ? markWalks : null,
           interactiveOnly: !!(arg && arg.interactiveOnly), snapshot: !!(arg && arg.snapshot) });
+    if (cfBlocked()) return JSON.parse(fs.readFileSync(process.env.PWCF_WALK, 'utf8'));
     // PWREFS: A PAGE THAT KNOWS ITS OWN REFS (T40). A file of {nodes}; a mark walk
     // stamps the one node whose ref it names, and finds nothing for any other, so
     // a missed ref and the one picked for the retry answer differently on the same
@@ -2553,7 +2574,7 @@ const page = {
   selectOption: async (sel, val) => rec({ call: 'selectOption', sel, val }),
   // DIVE-4943: `act` re-reads the page as the steps left it.
   url: () => process.env.PWURL || (lastGoto && landed()) || 'https://stub.test/after',
-  title: async () => process.env.PWTITLE || 'stub after',
+  title: async () => (cfBlocked() ? 'Just a moment...' : (process.env.PWTITLE || 'stub after')),
   content: async () => (late() && process.env.PWHTML_LATE) || process.env.PWHTML || '<html><body>stub after</body></html>',
   setInputFiles: async (sel, p) => rec({ call: 'setInputFiles', sel, path: p }),
   press: async (sel, key) => rec({ call: 'press', sel, key }),
@@ -2563,7 +2584,9 @@ exports.chromium = {
     // xdg: DIVE-4587 — what the child would inherit. '<unset>' is the fix working.
     // proxy: DIVE-4951 — '<absent>' means NO KEY, which is the unset contract.
     rec({ call: 'launch', profile, args: opts.args, executablePath: opts.executablePath, headless: opts.headless, xdg: process.env.XDG_CONFIG_HOME === undefined ? '<unset>' : process.env.XDG_CONFIG_HOME,
-          proxy: Object.prototype.hasOwnProperty.call(opts, 'proxy') ? opts.proxy : '<absent>' });
+          proxy: Object.prototype.hasOwnProperty.call(opts, 'proxy') ? opts.proxy : '<absent>',
+          display: process.env.DISPLAY || '<none>' });
+    headlessLaunch = !!opts.headless;
     // PWNOPAGE: THE BROWSER REALLY OPENS AND THEN CANNOT HAND OVER A PAGE.
     // Every other shape here returns a working page, which is exactly why five
     // anchored mutants missed the window between the launch and step one
@@ -2604,8 +2627,9 @@ t  'T16b the launch OPENS NO DEBUG PORT for another seat to take the session' ''
    "$(jq -rs '[.[]|select(.call=="launch")|.args[]|select(startswith("--remote-debugging"))]|join(" ")' "$PWREC")"
 t  'T16b (control) the launch recorded its argv at all' 'yes' \
    "$([[ -n "$(jq -rs '[.[]|select(.call=="launch")]|length' "$PWREC")" ]] && echo yes || echo no)"
-t  'T16b ...and it is headless' 'true' \
-   "$(jq -rs '[.[]|select(.call=="launch")|.headless]|first' "$PWREC")"
+# DIVE-6371 reversed this arm: headless was the tell Cloudflare blocks (T60).
+t  'T16b ...and it is HEADED, on the display its own Xvfb named' 'false :99' \
+   "$(jq -rs '[.[]|select(.call=="launch")]|first|"\(.headless) \(.display)"' "$PWREC")"
 # T16b/DIVE-4587 — the driver is reached by a path in an environment variable, so
 # it does not get to assume its parent unset the shared XDG_CONFIG_HOME. Driven
 # DIRECTLY here, with the variable set, exactly as a caller that is not
@@ -8501,6 +8525,112 @@ t  'T52f FIVEDIVE_BROWSER_ACT_KEEP=0: nothing is served after the act' no "$(k52
 tn 'T52f ...and no claim that one started' 'started a served browser' "$ERR"
 k52stop "$K52"
 tc 'T52h CHANGES.md carries the DIVE-6334 entry' 'DIVE-6334' "$(cat "$ROOT/CHANGES.md")"
+
+# === T60 DIVE-6371: Cloudflare judged the agent's browser MODE, not the IP ===
+#
+# exact-swallow, 2026-10-16: the agent's `snapshot <url> --wait-for=text=Matcha`
+# ran HEADLESS in the public profile and stopped at "Just a moment..." for 30 s;
+# the owner's headed viewer on the same box and IP loaded the page. Then the
+# NOT READY line blamed "a session daemon from before --wait-for existed" for a
+# Chrome launched 5 s earlier with no daemon anywhere.
+#   T60a  the cold snapshot is HEADED on a private Xvfb, navigator.webdriver off;
+#         a site that challenges headless serves it the page: exit 0, no STOP
+#   T60b  the Xvfb it started is gone when the run ends
+#   T60c  no Xvfb on the box: headless, said on stderr, and a challenge is named
+#         as a HEADLESS load in the STOP
+#   T60d  --wait-for behind a challenge that stayed is named as that, never as an
+#         old daemon; page.meta.json says skipped: challenge
+#   T60e  the STOP of a public-profile load names the profile the next load uses
+#   T60f  the next load of that URL, once the box offers the host, routes there
+#   T60g  MUTANT: the driver reverted to headless — T60a is red
+unset FIVEDIVE_BROWSER_DRIVER
+CF_HOST=www.cf-matcha.test; CF_URL="https://$CF_HOST/english/shop/matcha"
+CFW="$TMP/t60-challenge.json"; CFP="$TMP/t60-page.json"
+jq -n --arg u "$CF_URL" '{nodes:[], marker:null, title:"Just a moment...", url:$u,
+  html:"<html><head><title>Just a moment...</title></head><body>Verifying you are human.</body></html>"}' > "$CFW"
+jq -n --arg u "$CF_URL" '{nodes:[{ref:"link/Matcha",role:"link",name:"Matcha",tag:"a"}], marker:null, title:"Matcha | Shop", url:$u,
+  html:"<html><head><title>Matcha | Shop</title></head><body><h1>Matcha</h1><p>Every matcha in the catalog, with its grade and its price, listed for the shop.</p></body></html>"}' > "$CFP"
+cfenv() { actenv env PWWALK="$CFP" PWTITLE='Matcha | Shop' PWCF_WALK="$CFW" FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS=3000 \
+            FAKEXVFB_LOG="$TMP/t60-xvfb.log" FAKEXVFB_PID="$TMP/t60-xvfb.pid" "$@"; }
+
+# --- T60a headed on its own display: the challenge is not served ---
+: > "$PWREC"; rm -f "$TMP/t60-xvfb.log" "$TMP/t60-xvfb.pid"; rm -rf "$TMP/t60a"
+run cfenv "$BROWSER" snapshot "$CF_URL" --wait-for='text=Matcha' --out="$TMP/t60a"
+t  'T60a the Cloudflare site that challenges headless: a cold snapshot exits 0' 0 "$RC"
+t  'T60a ...in the public profile, HEADED, on the display its Xvfb named' "$P31/$SEAT/_public false :99" \
+   "$(jq -rs '[.[]|select(.call=="launch")]|first|"\(.profile) \(.headless) \(.display)"' "$PWREC")"
+t  'T60a ...with navigator.webdriver turned off' 1 \
+   "$(jq -rs '[.[]|select(.call=="launch")|.args[]|select(.=="--disable-blink-features=AutomationControlled")]|length' "$PWREC")"
+t  'T60a ...and no --headless in its argv' 0 \
+   "$(jq -rs '[.[]|select(.call=="launch")|.args[]|select(startswith("--headless"))]|length' "$PWREC")"
+t  'T60a the page is the page, and --wait-for was met' 'Matcha | Shop true' \
+   "$(jq -r '"\(.title) \(.wait_for.met)"' "$TMP/t60a/page.meta.json" 2>/dev/null)"
+tn 'T60a ...no STOP' 'STOP' "$ERR"
+tc 'T60a the private display listens on no TCP port and ends with its browser' '-nolisten tcp -terminate' "$(cat "$TMP/t60-xvfb.log" 2>/dev/null)"
+# --- T60b the Xvfb is gone with the run ---
+XP=$(cat "$TMP/t60-xvfb.pid" 2>/dev/null)
+t  'T60b the private Xvfb the run started is not left running' 'gone' \
+   "$([[ -n "$XP" ]] && { kill -0 "$XP" 2>/dev/null && echo alive || echo gone; } || echo 'no pid')"
+
+# --- T60c no Xvfb: headless, and SAID ---
+: > "$PWREC"; rm -rf "$TMP/t60c"
+run cfenv env FIVEDIVE_BROWSER_XVFB="$TMP/no-such-xvfb" "$BROWSER" snapshot "$CF_URL" --out="$TMP/t60c"
+t  'T60c with no Xvfb the launch falls back to headless' true \
+   "$(jq -rs '[.[]|select(.call=="launch")|.headless]|first' "$PWREC")"
+tc 'T60c ...and says so before anything else' 'this browser runs HEADLESS' "$ERR"
+tc 'T60c the headless load meets the challenge: the STOP still applies' 'STOP — this page is a security check' "$ERR"
+tc 'T60c ...and the STOP names it a HEADLESS load the owner'"'"'s browser may pass' 'this load ran in a HEADLESS browser' "$ERR"
+t  'T60c page.meta.json is not a page' 'Just a moment...' "$(jq -r '.title' "$TMP/t60c/page.meta.json" 2>/dev/null)"
+
+# --- T60d --wait-for behind a challenge that stayed ---
+rm -rf "$TMP/t60d"
+run cfenv env FIVEDIVE_BROWSER_HEADLESS=1 "$BROWSER" snapshot "$CF_URL" --wait-for='text=Matcha' --out="$TMP/t60d"
+t  'T60d not ready (76)' 76 "$RC"
+tn 'T60d ...and NO old session daemon is blamed for a fresh launch' 'session daemon from before' "$ERR"
+tc 'T60d ...the reason is the check the page never got past' 'was not waited for: this page is still the security check' "$ERR"
+t  'T60d page.meta.json: not met, skipped for the challenge, partial' 'false challenge true' \
+   "$(jq -r '"\(.wait_for.met) \(.wait_for.skipped) \(.partial)"' "$TMP/t60d/page.meta.json" 2>/dev/null)"
+tc 'T60d FIVEDIVE_BROWSER_HEADLESS=1 is named as the reason it ran headless' 'FIVEDIVE_BROWSER_HEADLESS=1' "$ERR"
+
+# --- T60e the STOP says which profile the next load uses ---
+tc 'T60e a public-profile STOP says the next load goes through the box'"'"'s browser for the host' \
+   "this load used the PUBLIC profile. The owner clears the check in the box's $CF_HOST browser" "$ERR"
+tc 'T60e ...and how to name it' "5dive browser snapshot $CF_HOST $CF_URL" "$ERR"
+
+# --- T60f once the box offers the host, the URL routes there, not to _public ---
+mkdir -p "$TMP/p31/sessions/$BOXSEAT"
+printf 'site=%s\nowner=%s\n' "$CF_HOST" "$BOXSEAT" > "$TMP/p31/sessions/$BOXSEAT/$CF_HOST.offered"
+: > "$PWREC"
+run cfenv "$BROWSER" snapshot "$CF_URL" --out="$TMP/t60f"
+t  'T60f after the hand-off the next snapshot of the URL does NOT load the public profile' 0 \
+   "$(jq -rs '[.[]|select(.call=="launch")|.profile|select(endswith("/_public"))]|length' "$PWREC")"
+tc 'T60f ...it is the box'"'"'s login for the host that answers' "$CF_HOST" "$ERR$OUT"
+rm -f "$TMP/p31/sessions/$BOXSEAT/$CF_HOST.offered"
+
+# --- T60g MUTANT: the driver headless again ---
+MUT60="$TMP/t60-mutant"; rm -rf "$MUT60"; cp -r "$ROOT/browser" "$MUT60"
+perl -pi -e 's/^(\s*)headless: !shown\.display,$/$1headless: true, \/\/ MUTANT-DIVE-6371/' "$MUT60/bin/driver-playwright"
+t  'T60g (anchor) the mutation landed in the copy' 1 "$(grep -c 'MUTANT-DIVE-6371' "$MUT60/bin/driver-playwright")"
+rm -rf "$TMP/t60g"
+run cfenv env FIVEDIVE_BROWSER_DRIVER="$MUT60/bin/driver-playwright" "$BROWSER" snapshot "$CF_URL" --wait-for='text=Matcha' --out="$TMP/t60g"
+t  'T60g MUTANT: headless again, the same site stops at the challenge — T60a is red' 76 "$RC"
+tc 'T60g ...at its STOP' 'STOP — this page is a security check' "$ERR"
+tc 'T60h CHANGES.md carries the DIVE-6371 entry' 'DIVE-6371' "$(cat "$ROOT/CHANGES.md")"
+# --- T60i a field that changes role when focused is the same field ---
+# Measured in a headed Chrome (5dive-ci, 2026-10-16): Wikipedia's two search inputs
+# read `search` until one is focused, then both read `combobox`, same label. The
+# routine bench's fill then press went red on it once the executor was headed.
+fr() { node -e 'const a = require(process.argv[1]); const [ref, ...nodes] = process.argv.slice(2);
+  process.stdout.write(String(a.fieldRoleMatch(nodes.map((r) => ({ ref: r })), ref)))' "$ROOT/browser/lib/aria.cjs" "$@"; }
+t  'T60i searchbox -> combobox, name and #n kept, is that field' 'combobox/Search Wikipedia#1' \
+   "$(fr 'searchbox/Search Wikipedia#1' 'combobox/Search Wikipedia#1' 'combobox/Search Wikipedia#2' 'link/Main Page')"
+t  'T60i NEGATIVE: the #n is kept, never guessed' null "$(fr 'searchbox/Q#3' 'combobox/Q#1' 'combobox/Q#2')"
+t  'T60i NEGATIVE: two field roles answer: none is picked' null "$(fr 'searchbox/Q' 'combobox/Q' 'textbox/Q')"
+t  'T60i NEGATIVE: a button is not a text field' null "$(fr 'button/Q' 'combobox/Q')"
+t  'T60i resolveOrRepick asks it before reflex' 1 "$(grep -c 'const field = fieldRoleMatch(miss.nodes, refBody(from));' "$ROOT/browser/lib/aria.cjs")"
+t  'T60i ...and its line is one the routine recorder reads' 1 \
+   "$(printf 'step 2: ref=searchbox/Q matched nothing; name match picked ref=combobox/Q; retried: ok\n' | \
+      sed -nE 's/^ *step ([0-9]+): .* matched nothing; (reflex|name match) picked (ref=.*); retried: ok$/\1\t\3/p' | grep -c 'combobox/Q')"
 
 # --- T98 no arm wrote to the seat's real approval store (DIVE-5429) -----------
 # Last on purpose: it grades every arm above. The listing carries size and mtime,

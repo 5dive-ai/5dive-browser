@@ -3954,8 +3954,16 @@ _render_title() { { grep -oiE '<title[^>]*>[^<]{1,200}' "$1" 2>/dev/null || true
 # the executor (lib/aria.cjs waitInterstitial); the 4th argument is how long. A
 # STOP that says so is a measured one, and tells the agent that a second
 # snapshot starts the check over rather than waiting it out.
-_challenge_hint() {  # <html> <landed url> [<asked url>] [<ms waited on it>]
-  local f="$1" u="${2:-}" waited="${4:-}" host title
+# DIVE-6371: WHICH BROWSER MET IT, AND WHICH ONE THE NEXT LOAD USES. <profile>
+# is the one this load ran in, <mode> the executor's browser_mode. A headless
+# load is said to be one (Cloudflare challenges headless Chrome that a headed one
+# passes; exact-swallow's agent stopped where the owner's viewer did not). And
+# the hand-off is cleared in the box's browser FOR THE HOST, not in the public
+# profile, so a public-profile STOP says the next load goes through that one:
+# the box offers it once the owner taps, and a URL routes to an offered login
+# (_route_site) before it falls back to the public profile.
+_challenge_hint() {  # <html> <landed url> [<asked url>] [<ms waited on it>] [<profile>] [<mode>]
+  local f="$1" u="${2:-}" waited="${4:-}" profile="${5:-}" mode="${6:-}" host title
   [[ -n "$u" ]] || u="${3:-}"
   [[ -s "$f" ]] || return 0
   title="$(_render_title "$f")"
@@ -3964,8 +3972,15 @@ _challenge_hint() {  # <html> <landed url> [<asked url>] [<ms waited on it>]
   [[ -n "$host" && "$host" != "$u" ]] || host="<site>"
   [[ "$waited" =~ ^[0-9]+$ ]] && printf '%s: the browser watched "%s" for %s s in this same page load and it did not clear by itself. Loading the page again starts the check over, so a second snapshot will not get past it either.\n' \
     "$PROG" "$(cut -c1-80 <<<"$title")" "$(( waited / 1000 ))" >&2
+  [[ "$mode" == headless ]] && printf '%s: this load ran in a HEADLESS browser (this box gave it no display of its own). Cloudflare challenges headless Chrome that a headed one passes, so the owner'"'"'s browser may not see this check at all.\n' "$PROG" >&2
   printf '%s: STOP — this page is a security check ("%s"), not the page you asked for. 5dive never solves one. Ask your owner to clear it, wait for their Done, then re-run this step: 5dive browser connect-request %s --challenge --url=%s  (A flat block with nothing to click, such as "access denied" or a 403, is the site refusing this box'"'"'s IP, and a person cannot clear that one either.)\n' \
     "$PROG" "$(cut -c1-80 <<<"$title")" "$host" "${u:-<the page>}" >&2
+  if [[ -n "$profile" && "$host" != "<site>" ]] && _is_public "$profile"; then
+    printf '%s: this load used the PUBLIC profile. The owner clears the check in the box'"'"'s %s browser, and after their Done the same command, given the URL, goes through THAT profile, where the clearance is kept, not this one (to name it: 5dive browser snapshot %s %s).\n' \
+      "$PROG" "$host" "$host" "${u:-<the page>}" >&2
+  elif [[ -n "$profile" ]]; then
+    printf '%s: this load used the %s profile, and that is the one the owner clears it in; your next load of it goes through the same profile.\n' "$PROG" "$profile" >&2
+  fi
 }
 _render_is_challenge() {  # <site> <html>
   grep -qiE "$(_site_challenge_marker "$1")" "$2" 2>/dev/null && _challenge_confirmed "$1" "$2" 2>/dev/null && return 0
@@ -6032,6 +6047,11 @@ _ready_verdict() {
     printf '%s: NOT READY — --wait-for=%s was not answered: the %s capture came back without a verdict on it (the field was missing, or its reply could not be read), so nothing says this is the page you waited for. No daemon was involved; restarting one will not change it.\n' "$PROG" "$want" "$source" >&2
     got=$(jq -nc --arg t "$want" '{target:$t, met:false, honoured:false}')
     partial=true; rc=$E_NOT_READY
+  elif [[ -n "$want" && "$got" != null && "$(jq -r '.skipped // ""' <<<"$got")" == challenge ]]; then
+    # DIVE-6371: the executor said WHY it did not wait — the page never got past
+    # its security check (the STOP above), so the page waited for never loaded.
+    printf '%s: NOT READY — --wait-for=%s was not waited for: this page is still the security check named above, so the page you waited for never loaded. Restarting a browser will not change that; the STOP above is the way on.\n' "$PROG" "$want" >&2
+    partial=true; rc=$E_NOT_READY
   elif [[ -n "$want" && "$got" == null ]]; then
     printf '%s: NOT READY — --wait-for was not honoured: the served browser for this profile runs a session daemon from before --wait-for existed, and it captured at the settle instead. Restart it (serve <site> --stop, then serve <site>) and run this again.\n' "$PROG" >&2
     got=$(jq -nc --arg t "$want" '{target:$t, met:false, honoured:false}')
@@ -6149,7 +6169,7 @@ _cmd_read_like() { # _cmd_read_like read|links <site> <url> [flags]
   fi
 
   _signin_guard "$stage/page.html"
-  _challenge_hint "$stage/page.html" "$url"
+  _challenge_hint "$stage/page.html" "$url" "" "" "$site"
   local extra rrc=0
   extra=$(_ready_verdict "$url" "$wait_for" "$waitj" "$stage/page.html" "$stage/tree.json" "$partial" "$capture") || rrc=$?
   _derive_capture "$stage" "$url" "$chrome" "$capture" "$extra"
@@ -6337,7 +6357,7 @@ cmd_snapshot() {
   local stage="$_READ_STAGE"
   local png=""; (( shot )) && png="$stage/page.png"
 
-  local plan payload
+  local plan payload capture=session-daemon
   if _daemon_live "$_PG_DIR"; then
     # THE WARM SESSION CAPTURES IT — no launch, no stop, no restart, and the
     # person at a viewer is not disturbed. This is the render op DIVE-4621 said
@@ -6372,6 +6392,8 @@ cmd_snapshot() {
       fi
     fi
   else
+    # A fresh launch (DIVE-6371): no daemon is in this path, so none is blamed.
+    capture=executor
     local driver="${FIVEDIVE_BROWSER_DRIVER:-$_SELF_DIR/driver-playwright}"
     [[ -n "$driver" && -x "$driver" ]] || die "$E_UNAVAILABLE" "no executor backend at $driver — snapshot reads the page through the same executor \`run\` acts through, inside the same profile."
     local chrome; chrome=$(command -v "$_PG_CHROME" 2>/dev/null || printf '%s' "$_PG_CHROME")
@@ -6391,7 +6413,8 @@ cmd_snapshot() {
   _page_crumb "$site" "$(jq -r '.url // ""' <<<"$payload" 2>/dev/null)"
   _signin_guard "$stage/page.html" "$(jq -r '.url // ""' <<<"$payload" 2>/dev/null)"
   _challenge_hint "$stage/page.html" "$(jq -r '.url // ""' <<<"$payload" 2>/dev/null)" "$url" \
-    "$(jq -r 'if .interstitial.cleared == false then .interstitial.waited_ms else "" end' <<<"$payload" 2>/dev/null)"
+    "$(jq -r 'if .interstitial.cleared == false then .interstitial.waited_ms else "" end' <<<"$payload" 2>/dev/null)" \
+    "$site" "$(jq -r '.browser_mode // ""' <<<"$payload" 2>/dev/null)"
 
   # tree.json is the refs, written from the same payload the walk returned — so
   # "what I can click" and "what the page said" are one observation on disk.
@@ -6403,7 +6426,7 @@ cmd_snapshot() {
   # as not ready, and the verb does not exit 0 on it.
   local extra rrc=0
   extra=$(_ready_verdict "$(jq -r '.url // ""' <<<"$payload")" "$wait_for" "$(jq -c '.wait_for // null' <<<"$payload")" \
-            "$stage/page.html" "$stage/tree.json") || rrc=$?
+            "$stage/page.html" "$stage/tree.json" false "$capture") || rrc=$?
 
   # The SAME derivation `read` uses, over the bytes the walk above came from.
   _derive_capture "$stage" "$url" "$_PG_CHROME" snapshot "$extra"
@@ -6927,7 +6950,7 @@ cmd_act() {
   _policy_log "$site" "$errf" "$final" "$out/page.png"
 
   _signin_guard "$stage/page.html" "$final"
-  _challenge_hint "$stage/page.html" "$final"
+  _challenge_hint "$stage/page.html" "$final" "" "" "$site"
 
   # THE SAME TRIPLE A SNAPSHOT LEAVES (DIVE-4983): page.md and page.meta.json from
   # the page the steps left, beside the tree.json the executor walked. Never
