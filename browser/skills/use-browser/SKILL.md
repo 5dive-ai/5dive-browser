@@ -268,3 +268,5 @@ Lessons from browser jobs that went wrong on real sites (DIVE-5390). One line ea
 - **A site that flags the account as automated means stop there for the day.** After a captcha, a 403 or an "unusual activity" page on a site where you post, tell the owner and do nothing more on that site that day. Space later posts hours apart.
 - **A click can land on a different page than you meant**, like a notification that opens the feed instead of the post. Check the URL bar or title before you record a link or id from it; never guess one.
 - **An upsell or "verify your identity" prompt after an action is not the job.** Decline it ("Not now"); never start it.
+- **Input mode: a `shot` shows only the first screen (1280x800).** Before you say a list, feed or inbox has nothing new, or count what is on it, `scroll{dy}` (or press `PageDown`) and read the new `page.png`, or say which part you did not reach.
+- **Input mode: a first `shot` can catch the page still loading** (a spinner, grey boxes, an empty list). `wait{ms}` a few seconds and shoot again before you read it or judge signed in.
