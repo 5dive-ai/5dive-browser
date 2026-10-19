@@ -8474,6 +8474,10 @@ _connect_caller() {
 
 # The caller's Telegram channel: bot token, and the owner DMs in its allowFrom.
 # Sets CONNECT_TG_TOKEN, CONNECT_TG_OWNERS (space-separated), CONNECT_TG_TYPE.
+# DIVE-6518: the owners are access.owners (the first id paired) within allowFrom,
+# private chats only; all of allowFrom only on a pairing older than that record.
+# A guest the owner let talk to the agent is in allowFrom too, and must neither
+# get a Connect message nor be able to tap one into the owner's browser.
 # Only Claude Code's bridge carries the tap handler in this release; a runtime
 # whose bridge would show a dead button is refused up front instead.
 _connect_channel() {
@@ -8488,10 +8492,18 @@ _connect_channel() {
     d="$home/.$t/channels/telegram/access.json"
     [[ -r "$d" ]] || continue
     CONNECT_TG_TYPE="$t"
-    CONNECT_TG_OWNERS=$(jq -r '(.allowFrom // [])[] | tostring | select(test("^[0-9]+$"))' "$d" 2>/dev/null | tr '\n' ' ')
+    CONNECT_TG_OWNERS=$(_tg_owner_ids "$d")
     break
   done
   [[ -n "$CONNECT_TG_TOKEN" && -n "$CONNECT_TG_TYPE" ]]
+}
+
+# One reader for "who is this seat's owner on Telegram", so every owner-only
+# message and check uses it and none re-derives allowFrom (DIVE-6518).
+_tg_owner_ids() {  # <access.json>  -> owner ids, space-separated
+  jq -r '[(.allowFrom // [])[] | tostring] as $a
+         | (if .owners == null then $a else [.owners[] | tostring] end)[]
+         | select(test("^[1-9][0-9]*$")) | select(. as $i | any($a[]; . == $i))' "$1" 2>/dev/null | tr '\n' ' '
 }
 
 _connect_is_owner() {  # <seat> <telegram user id>
