@@ -8,6 +8,12 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — Connect goes to the seat's owner only, and only the owner can tap it (DIVE-6518), 1.46.1
+
+On 2026-10-19 lodar reported that a customer's ceo seat sent "ceo asks you to log in to google.com … Tap Connect" to both people allowed to message its bot. `connect-request` sent the message to every id in `allowFrom`, and the tap check accepted any of them, so the second person could tap Connect and get the one-time link into the browser on the owner's box, where the owner's logged-in sessions are.
+
+The owner set is now `access.owners` (the first id paired) that are still in `allowFrom`, private chats only, read once by `_tg_owner_ids`. The login, captcha and take-over requests, the SSH steps of a handoff on a box with no web front, and the tap and Done checks all use it. A tap from anyone else in `allowFrom` is refused with "only this seat's paired owner can use that button". A pairing too old to have an `owners` record keeps today's behaviour: everyone in `allowFrom`. Arms O1–O8 in `tests/browser_connect_request_unit.sh` cover it, and seven of them fail on 1.46.0.
+
 ### Fixed — an act follows the popup a click opens, and an act's capture says its browser mode (DIVE-6392), 1.46.0
 
 Round 8 of the Google sign-up benchmark (cic-arm-a, 1.45.0): Gamma's page loaded with no challenge,

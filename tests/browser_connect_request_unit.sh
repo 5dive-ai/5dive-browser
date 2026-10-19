@@ -439,6 +439,52 @@ t  "X12 (control) with the front, the same call is the hosted Connect button aga
 unset FIVEDIVE_BROWSER_SSH_USER FIVEDIVE_BROWSER_SSH_ADDR
 export FIVEDIVE_PROVISIONING_ENV="$TMP/provisioning.env"
 
+# ---- O: owner-only (DIVE-6518) ---------------------------------------------------------
+# The measured shape: allowFrom = the owner plus a guest, owners = the owner. The
+# guest may talk to the agent; the Connect message and its button are not theirs.
+GUEST=444555666
+ACC="$TMP/home/.claude/channels/telegram/access.json"
+sent_to() { jq -r 'select(.path|test("sendMessage")) | .form.chat_id' "$TMP/stub.log" | sort | tr '\n' ' ' | sed 's/ $//'; }
+printf '{"dmPolicy":"allowlist","allowFrom":["%s","%s"],"owners":["%s"],"groups":{}}\n' "$OWNER" "$GUEST" "$OWNER" >"$ACC"
+
+reset; rm -rf "$TMP/req"/*
+out=$("$BROWSER" connect-request booking.com --reason="to search hotels" 2>&1); rc=$?
+t  "O1 owners set: the Connect message goes to the owner only" "0 $OWNER" "$rc $(sent_to)"
+OCODE=$(last_code)
+reset
+out=$("$BROWSER" connect-request booking.com --challenge 2>&1); rc=$?
+t  "O2 ... and so does a captcha request" "0 $OWNER" "$rc $(sent_to)"
+reset
+out=$(priv tap "$OCODE" "$GUEST" 2>&1); rc=$?
+t  "O3 a guest in allowFrom cannot tap the owner's Connect button" 77 "$rc"
+tc "O3 ... refused as not the paired owner" "only this seat's paired owner can use that button" "$out"
+t  "O3 ... and nothing was bound or started" "0 " "$(binds) $(cat "$FAKE_LOG")"
+out=$(priv tap "$OCODE" "$OWNER" 2>&1); rc=$?
+t  "O4 the owner's tap on the same button still works" 0 "$rc"
+
+reset; rm -rf "$TMP/req"/*
+out=$(FIVEDIVE_PROVISIONING_ENV="$TMP/half-provisioning.env" priv handoff tiktok.com "" 2>&1); rc=$?
+t  "O5 a no-front handoff sends its SSH steps to the owner only" "0 $OWNER" "$rc $(sent_to)"
+ODONE=$(jq -r 'select(.path|test("sendMessage")) | .form.reply_markup' "$TMP/stub.log" | jq -r '.inline_keyboard[0][0].callback_data' | sed -n 's/^bdone://p' | head -1)
+out=$(priv done "$ODONE" "$GUEST" 2>&1); rc=$?
+t  "O6 ... and the guest cannot press its Done" 77 "$rc"
+
+# Old pairings have no owners record: every allowed DM, today's behaviour.
+printf '{"dmPolicy":"allowlist","allowFrom":["%s","%s"],"groups":{}}\n' "$OWNER" "$GUEST" >"$ACC"
+reset; rm -rf "$TMP/req"/*
+out=$("$BROWSER" connect-request booking.com 2>&1); rc=$?
+t  "O7 owners absent: both allowed DMs are asked" "0 $OWNER $GUEST" "$rc $(sent_to)"
+OCODE=$(last_code)
+out=$(priv tap "$OCODE" "$GUEST" 2>&1); rc=$?
+t  "O7 ... and either may tap" 0 "$rc"
+
+# An owner the bot no longer allows is nobody.
+printf '{"dmPolicy":"allowlist","allowFrom":["%s"],"owners":["%s"],"groups":{}}\n' "$GUEST" "$OWNER" >"$ACC"
+reset
+out=$("$BROWSER" connect-request booking.com 2>&1); rc=$?
+t  "O8 an owner outside allowFrom: refused, nobody messaged" "69 " "$rc $(sent_to)"
+printf '{"dmPolicy":"allowlist","allowFrom":["%s"],"groups":{}}\n' "$OWNER" >"$ACC"
+
 # ---- S: the seams are not a door under root -------------------------------------------
 # EVERY top-level non-root block, not the first one: the on-demand serve's seams
 # (DIVE-5389) live in a second block, and an awk that exits at the first `fi`
