@@ -49,6 +49,10 @@ jobs:
         run: bash tests/browser_reflex_propose_unit.sh
       # DIVE-5190: each launch's own TMPDIR, removed on exit and reaped after a
       # kill — graded through the real bin/browser with a fake Chrome.
+      # DIVE-6582: read keeps a page's label/value tables (the infobox), a bare
+      # status probes side by side, snapshot/act print a small page inline.
+      - name: browser read tables harness
+        run: bash tests/browser_read_tables_unit.sh
       - name: browser tmpdir harness
         run: bash tests/browser_tmpdir_unit.sh
       # DIVE-5638: a launch does not depend on the seat's $HOME — a long seat

@@ -82312,6 +82312,54 @@ function abs(href, base) {
 function textOf(el) {
   return (el.textContent || "").replace(/\s+/g, " ").trim();
 }
+var FACT_TABLES_MAX = 6;
+var FACT_ROWS_MAX = 60;
+var FACT_VALUE_MAX = 300;
+function cellText(cell) {
+  const c = cell.cloneNode(true);
+  for (const n of c.querySelectorAll('sup.reference, .reference, style, script, .noprint, [style*="display:none"], [hidden]')) n.remove();
+  for (const n of c.querySelectorAll("br")) n.replaceWith(c.ownerDocument.createTextNode("; "));
+  for (const n of c.querySelectorAll("li")) n.appendChild(c.ownerDocument.createTextNode("; "));
+  return (c.textContent || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").replace(/(\s*;\s*)+/g, "; ").replace(/^[;\s]+|[;\s]+$/g, "").trim();
+}
+function ownRows(table) {
+  return [...table.querySelectorAll("tr")].filter((tr) => tr.closest("table") === table);
+}
+function factTables(document2) {
+  const out = [];
+  for (const table of document2.querySelectorAll("table")) {
+    if (out.length >= FACT_TABLES_MAX) break;
+    if (table.parentElement && table.parentElement.closest("table")) continue;
+    if (table.closest('nav, [role="navigation"]')) continue;
+    const rows = ownRows(table);
+    if (rows.length < 2) continue;
+    const facts = [];
+    let pairs = 0, other = 0;
+    for (const tr of rows) {
+      const cells = [...tr.children].filter((c) => c.tagName === "TH" || c.tagName === "TD");
+      if (cells.length === 2 && (cells[0].tagName === "TH" || cells[1].tagName === "TD")) {
+        const label = cellText(cells[0]).replace(/:$/, "");
+        const value = cellText(cells[1]);
+        if (label && value && label.length <= 80) {
+          pairs++;
+          if (facts.length < FACT_ROWS_MAX) {
+            facts.push({ label, value: value.length > FACT_VALUE_MAX ? value.slice(0, FACT_VALUE_MAX) + "\u2026" : value });
+          }
+          continue;
+        }
+      }
+      if (cells.length === 1) continue;
+      other++;
+    }
+    const named = /\binfobox\b/.test(table.getAttribute("class") || "");
+    if (pairs >= 2 && (named || pairs >= 2 * other)) {
+      const cap = table.querySelector("caption");
+      const title = cap && cellText(cap) || "";
+      out.push({ title, facts });
+    }
+  }
+  return out;
+}
 (async () => {
   const url = arg("url");
   if (!url) {
@@ -82329,6 +82377,7 @@ function textOf(el) {
   const canonical_url = abs(canonEl && canonEl.getAttribute("href"), url) || abs(ogUrl && ogUrl.getAttribute("content"), url) || url;
   if (canonEl) canonEl.setAttribute("href", canonical_url);
   if (ogUrl) ogUrl.setAttribute("content", canonical_url);
+  const tables = factTables(document2);
   const res = await (0, import_node11.Defuddle)(document2, url, { separateMarkdown: true });
   const { document: cdoc } = parseHTML(`<body>${res.content || ""}</body>`);
   const seen = /* @__PURE__ */ new Set();
@@ -82347,7 +82396,17 @@ function textOf(el) {
     iseen.add(src);
     images.push({ src, alt: (img.getAttribute("alt") || "").trim() });
   }
-  const markdown = (res.contentMarkdown || res.content || "").trim();
+  const body = (res.contentMarkdown || res.content || "").trim();
+  const facts = tables.filter((t) => !t.facts.every((f) => body.includes(f.label)));
+  const factLines = facts.map((t) => (t.title ? `${t.title}
+` : "") + t.facts.map((f) => `- ${f.label}: ${f.value}`).join("\n"));
+  const markdown = factLines.length ? `## Facts on the page (its label/value tables)
+
+${factLines.join("\n\n")}
+
+## Page text
+
+${body}` : body;
   process.stdout.write(JSON.stringify({
     url,
     canonical_url,
@@ -82359,6 +82418,7 @@ function textOf(el) {
     word_count: typeof res.wordCount === "number" ? res.wordCount : 0,
     links,
     images,
+    facts,
     schema_org: res.schemaOrgData === void 0 ? null : res.schemaOrgData,
     defuddle_version: PINS.defuddle,
     linkedom_version: PINS.linkedom,

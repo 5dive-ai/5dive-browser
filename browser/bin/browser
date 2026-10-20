@@ -2026,6 +2026,17 @@ _auth_status() {
   _require_store
   local seat_dir; seat_dir="$(_seat_dir)"
   local rc=0 found=0 broken=0 d site
+  # THE PROBES RUN SIDE BY SIDE (DIVE-6582). Each one is a Chrome on its own
+  # profile directory and nothing else, so one does not wait on another — but in
+  # series a bare `status` on a seat with eight sites took 50 s, and in the
+  # DIVE-6491 bench an agent ran it to orient itself in 3 of 6 attempts, which
+  # was most of why 5dive was the slowest arm. A few at a time, not all at once:
+  # every probe is a whole browser, on the same box as everything else. The lines
+  # still print in site order, after the probes are done.
+  local jobs="${FIVEDIVE_BROWSER_STATUS_JOBS:-3}"
+  [[ "$jobs" =~ ^[1-9][0-9]?$ ]] || die "$E_USAGE" "FIVEDIVE_BROWSER_STATUS_JOBS takes a number from 1 to 99; got: $jobs"
+  local res; res=$(mktemp -d /tmp/5dive-browser-status.XXXXXXXX) || die "$E_UNAVAILABLE" "cannot stage the status probes"
+  local -a sites=()
   for d in "$seat_dir"/*/; do
     [[ -d "$d" ]] || continue
     site=$(basename "$d")
@@ -2033,14 +2044,22 @@ _auth_status() {
     [[ -z "$only" || "$only" == "$site" ]] || continue
     found=1
     _audit "$d" 700
-    local state; state=$(_probe "$site" "$d"); local prc=$?
-    printf '  %-20s %s\n' "$site" "$state"
+    sites+=("$site")
+    while (( $(jobs -rp | wc -l) >= jobs )); do wait -n; done
+    ( _probe "$site" "$d" >"$res/${#sites[@]}.out"; printf '%s' "$?" >"$res/${#sites[@]}.rc" ) &
+  done
+  wait
+  local i prc
+  for i in "${!sites[@]}"; do
+    prc=$(cat "$res/$((i + 1)).rc" 2>/dev/null) || prc=2
+    printf '  %-20s %s\n' "${sites[$i]}" "$(cat "$res/$((i + 1)).out" 2>/dev/null)"
     case "$prc" in
       0) ;;
       2) broken=1 ;;
       *) rc=$E_COLD ;;
     esac
   done
+  rm -rf -- "$res"
   if (( ! found )); then
     _ls_box_offers
     printf 'no profiles of your own yet — 5dive browser auth <site>\n'
@@ -6497,8 +6516,37 @@ cmd_snapshot() {
   printf '    tree.json       what you can act on: ref=<role>/<name>[#n]\n'
   printf '    page.html       the document the two above came from\n'
   (( shot )) && [[ -s "$out/page.png" ]] && printf '    page.png        the same tab, the same instant\n'
+  _inline_page "$out"
   (( rrc )) && return "$rrc"
   printf '%s: one browser cycle for all of it — quote a ref straight into `run`.\n' "$PROG" >&2
+  return 0
+}
+
+# A SMALL PAGE IS PRINTED, NOT POINTED AT (DIVE-6582). snapshot and act used to
+# print only the directory, and in every one of the DIVE-6491 bench's 5dive
+# attempts the agent's very next call was `cat page.md tree.json` — one extra
+# round trip per page, every page. When the page text and the refs are small
+# they are the output; a big page still gets the paths, so a 100 KB article is
+# not dumped into the agent's context unasked.
+INLINE_MD_MAX="${FIVEDIVE_BROWSER_INLINE_MD_MAX:-4000}"
+INLINE_REFS_MAX="${FIVEDIVE_BROWSER_INLINE_REFS_MAX:-60}"
+_inline_page() { # _inline_page <artifact dir>
+  local out="$1" body n
+  [[ "$INLINE_MD_MAX" =~ ^[0-9]{1,7}$ && "$INLINE_REFS_MAX" =~ ^[0-9]{1,5}$ ]] || return 0
+  if [[ -s "$out/page.md" ]]; then
+    # The body without the front matter: url and title are already the two lines above.
+    body=$(awk 'NR==1 && $0=="---"{fm=1; next} fm && $0=="---"{fm=0; next} !fm' "$out/page.md")
+    if (( ${#body} > 0 && ${#body} <= INLINE_MD_MAX )); then
+      printf '  --- page.md (what the page says) ---\n%s\n' "$body"
+    fi
+  fi
+  if [[ -s "$out/tree.json" ]]; then
+    n=$(jq -r '.nodes | length' "$out/tree.json" 2>/dev/null) || n=-1
+    if (( n > 0 && n <= INLINE_REFS_MAX )); then
+      printf '  --- refs (tree.json: act on these) ---\n'
+      jq -r '.nodes[] | "  ref=\(.ref)"' "$out/tree.json" 2>/dev/null
+    fi
+  fi
   return 0
 }
 
@@ -7024,6 +7072,7 @@ cmd_act() {
     return "$rc"
   fi
   printf '%s\n  %s\n  %s\n' "$title" "$final" "$out"
+  _inline_page "$out"
   case "$verdict" in
     verified)     printf 'verified: the page after the steps matches --expect\n' ;;
     not_verified) printf '%s: NOT VERIFIED — the executor exited %s, but the page after the steps does not match --expect. Look at %s/page.png before retrying: if it went through and we misread, a retry does it twice.\n' "$PROG" "$drc" "$out" >&2 ;;
