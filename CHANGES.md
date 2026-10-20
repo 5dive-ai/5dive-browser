@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — `read` keeps a page's facts tables, and the loop loses three waits (DIVE-6582), 1.47.0
+
+The DIVE-6491 benchmark (2026-10-20, Haiku 5.5 on every arm) scored 5dive 9 of 12 against 12 of 12 for Claude in Chrome and OpenClaw, and 5dive was the slowest arm (median 43 s). All three misses were R1, the Wikipedia facts task: `read` ran Defuddle, a readability extractor, and it dropped the infobox, so "Initial release 8 July 1996" was in none of 5dive's reads and the agent took 1997 or 1989 from the history text.
+
+- `read` (and every page.md) now reads the page's label/value tables before Defuddle runs and puts them at the top as `- label: value` lines under "Facts on the page", with `facts[]` in `--json`. A table counts when its rows are mostly one label cell and one value cell: a Wikipedia infobox, a shop's spec table, a profile card. A data grid, a navigation box and a table Defuddle already kept are left alone. Footnote markers are dropped, and a line break in a cell becomes "; ". OpenClaw's read (the page's innerText, every table kept) is what showed the gap; no OpenClaw code is used.
+- A bare `status` probes its sites three at a time instead of one after another (`FIVEDIVE_BROWSER_STATUS_JOBS`), and still prints them in order. On the bench seat's eight sites it took about 50 s, and the agent ran it in 3 of the 6 slow attempts.
+- `snapshot` and `act` print a small page's text and refs under the artifact directory (up to 4000 characters and 60 refs; `FIVEDIVE_BROWSER_INLINE_MD_MAX`, `FIVEDIVE_BROWSER_INLINE_REFS_MAX`). Every bench attempt followed each of them with a `cat page.md tree.json`.
+- The use-browser skill says to start with the verb (no `status` before a public page), to take facts from the top of a read, and to grep the saved page.md instead of reading a page again.
+
+Arms F, N, S, P, I and Q in `tests/browser_read_tables_unit.sh`; 13 of the 28 fail on 1.46.1.
+
 ### Fixed — Connect goes to the seat's owner only, and only the owner can tap it (DIVE-6518), 1.46.1
 
 On 2026-10-19 lodar reported that a customer's ceo seat sent "ceo asks you to log in to google.com … Tap Connect" to both people allowed to message its bot. `connect-request` sent the message to every id in `allowFrom`, and the tap check accepted any of them, so the second person could tap Connect and get the one-time link into the browser on the owner's box, where the owner's logged-in sessions are.

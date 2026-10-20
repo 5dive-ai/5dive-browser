@@ -47,6 +47,16 @@ repo — and that is the `connect-site` skill, not this one.
 `read`, `links` and `shot` take a URL the same way when you only need the text, the links or a
 picture of a page.
 
+- **Start with the verb.** A public page needs no `status`, `--help` or setup first: `status`
+  checks the owner's logins, one browser per site, and tells you nothing about a public page.
+- **A small page is in the output.** `snapshot` and `act` print the page text and the refs
+  under the directory they name; `cat page.md` is only for a big page they did not print.
+- **`read` puts the page's facts first.** Label/value tables (a Wikipedia infobox, a spec or
+  profile table) come at the top as `- label: value` lines, before the article. Take a fact
+  from there when it is there: "Initial release" in the infobox, not a year from the history.
+- **Read a page once.** To look for something else in it, grep the `page.md` in the artifacts
+  directory `read` names on stderr; reading the page again loads it again.
+
 ## Doing it again: record once, replay without snapshots
 
 A flow you will repeat (a daily post, a check, a clicker) costs a snapshot and a decision per
