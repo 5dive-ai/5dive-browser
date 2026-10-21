@@ -19,6 +19,16 @@ On a phone, the login-link viewer drew the box's whole 1280x800 browser into a 3
 
 Arms U, B and L in `tests/browser_viewer_fit_unit.sh` (live on the runner's Xvfb and Chrome, screens kept as an artifact), and P1–P5 in `tests/browser_login_link_unit.sh`.
 
+### Fixed — `act --expect` no longer says `verified` from hidden page markup (DIVE-6651), 1.47.1
+
+On 2026-10-19 a seat recorded Google Search Console indexing requests as done when none had been made. `act --expect='Indexing requested'` printed `verified` while the screen said "Oops! Something went wrong … We had a problem submitting your indexing request". The match came from `page.html`, the raw document, which keeps a hidden `<span>Indexing requested</span>` template on the page.
+
+- `--expect` is graded against what a person can read: the page's rendered text (toasts and live regions still included, so a "Message sent" that shows for a moment still counts, DIVE-4983), the title and the url. Text only in hidden markup gives NOT VERIFIED, exit 1.
+- The executor's `--expect-wait` poll tests the same three, so a hidden match no longer ends the wait early and ships the wrong moment.
+- Known and left alone: `page.md` (Defuddle) can still print hidden text and drop an alert dialog. `run`'s adapter verify still reads the document it fetches.
+
+Arms V1–V6 in `tests/browser_act_expect_visible_unit.sh`; the negative control (V1) reads `verified` on 1.47.0.
+
 ### Fixed — `read` keeps a page's facts tables, and the loop loses three waits (DIVE-6582), 1.47.0
 
 The DIVE-6491 benchmark (2026-10-20, Haiku 5.5 on every arm) scored 5dive 9 of 12 against 12 of 12 for Claude in Chrome and OpenClaw, and 5dive was the slowest arm (median 43 s). All three misses were R1, the Wikipedia facts task: `read` ran Defuddle, a readability extractor, and it dropped the infobox, so "Initial release 8 July 1996" was in none of 5dive's reads and the agent took 1997 or 1989 from the history text.

@@ -681,7 +681,10 @@ because its one re-read came before the toast.
   few seconds later and `read` exits 76 with nothing written, rather than hanging.
 - **`--expect` is re-read for a window.** After the last step, `act` reads the page again until
   `--expect` matches or `--expect-wait` ms pass (default 5000, `FIVEDIVE_BROWSER_EXPECT_WAIT_MS`),
-  against the document **and** the text a person sees, toasts and `aria-live` regions included. The
+  against the text a person sees, toasts and `aria-live` regions included, plus the title and the
+  url — **never the raw document** (DIVE-6651): Search Console keeps a hidden "Indexing requested"
+  span on the page, and grading `page.html` read `verified` while the screen said "Something went
+  wrong". The
   read that matched is the one that ships, so `page.png` shows the toast. `--expect-wait=0` is the
   old single read. The verdict is still `grep -iE` in `bin/browser`; the executor's poll is only an
   early exit, so a pattern JavaScript reads differently costs the window, never a wrong answer.

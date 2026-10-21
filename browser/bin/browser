@@ -3539,7 +3539,7 @@ _run_verify_in_session() {  # <adapter-file> <action> <profile-dir> <url> <expec
   local f="$1" action="$2" dir="$3" vurl="$4" vexpect="$5" st="${_READ_STAGE:?}" report steps
   report=$(jq -c --arg a "$action" --arg e "$vexpect" \
       --argjson ew "${FIVEDIVE_BROWSER_EXPECT_WAIT_MS:-$ACT_EXPECT_WAIT_DEFAULT}" '
-      .actions[$a].verify as $v | {expect:$e, expect_wait_ms:$ew, shot:false, tree:false}
+      .actions[$a].verify as $v | {expect:$e, expect_doc:true, expect_wait_ms:$ew, shot:false, tree:false}
       + (if $v.wait_for then {wait_for:$v.wait_for} else {} end)
       + (if $v.scope then {scope:$v.scope} else {} end)' "$f")
   steps=$(jq -nc --arg u "$vurl" '[{op:"goto", url:$u}]')
@@ -7070,9 +7070,12 @@ cmd_act() {
     fi
   fi
 
-  # --expect is graded against the document AND the text a person could read,
-  # toasts and live regions included — the executor polled for it for
-  # --expect-wait ms, and the capture it shipped is the read that matched.
+  # --expect is graded against the text a person could read — the rendered
+  # body, toasts and live regions included — plus the title and the url. NEVER
+  # page.html (DIVE-6651): a page carries hidden markup, and Search Console's
+  # hidden "Indexing requested" span read `verified` over an "Oops! Something
+  # went wrong" on screen. The executor polled for it for --expect-wait ms, and
+  # the capture it shipped is the read that matched.
   # A FAILED STEP FAILS THE RUN, WHATEVER --expect MATCHED (DIVE-4990). The page
   # the goto left can already carry the text: a step 2 that matched nothing read
   # "verified" on booking.com. So the order is step_failed > not_ready >
@@ -7084,8 +7087,9 @@ cmd_act() {
   elif [[ -n "$expect" ]]; then
     # No pipe into `grep -q`: under pipefail its early exit SIGPIPEs the writer on
     # a large page, and a page that matched would read as NOT VERIFIED.
-    if [[ -s "$out/page.html" ]] && { grep -qiE -- "$expect" "$out/page.html" \
-         || grep -qiE -- "$expect" <<<"$(jq -r '.text // ""' "$stage/after.json" 2>/dev/null)"; }; then verdict=verified; rc=0
+    if [[ -s "$out/page.html" ]] \
+       && grep -qiE -- "$expect" <<<"$(jq -r '[.text, .title, .url] | map(. // "") | join("\n")' "$stage/after.json" 2>/dev/null)"; then
+      verdict=verified; rc=0
     else verdict=not_verified; rc=1; fi
   else
     verdict=executed; rc=0

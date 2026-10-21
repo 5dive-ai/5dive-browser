@@ -110,6 +110,10 @@ jobs:
       # the real bin/browser and driver with the recording playwright stub.
       - name: routine and delta harness
         run: bash tests/browser_routine_delta_unit.sh
+      # DIVE-6651: act --expect grades the text on screen, never hidden markup;
+      # a toast the poll caught still verifies (DIVE-4983).
+      - name: act expect harness
+        run: bash tests/browser_act_expect_visible_unit.sh
       # DIVE-5336: the owner's authenticator seed. LAST among the harnesses, because
       # its live arm needs the pinned playwright-core installed next to the plugin,
       # and the suites above grade the executor's "playwright is absent" refusals.
