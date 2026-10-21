@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Changed — a matched `--expect` is the check: the agent moves on instead of re-opening the page (DIVE-6694), 1.48.1
+
+In the 2026-10-21 browser bench (Haiku 5.5, 1.48.0), the "save a note after the button moved" task took 49.9 s and 49.5 s in two of three runs and 21.5 s in the third. In the slow two, the agent saved, `--expect` matched, and it then re-opened the report to confirm a note that page does not show. That re-check is most of the 6.5 s median gap to OpenClaw.
+
+- `use-browser` step 3 (Verify) now says a matched `--expect` IS the check: report and move on, no re-open, re-read or re-shot. Look again only when no `--expect` was used or it did not match, and expect the words that prove the job: the saved value when the page shows it, else the page's own success message.
+- The two "From real jobs" lines that told the agent to read the record back and look at the screenshot after every submit now apply when no `--expect` covered it, so they no longer order the re-check the Verify step rules out.
+- The hidden-markup rule (DIVE-6651) is unchanged. Skill text only; no code moved.
+
 ### Added — a phone at the login link sees the site's phone layout, not a shrunken desktop (DIVE-6646), 1.48.0
 
 On a phone, the login-link viewer drew the box's whole 1280x800 browser into a 390-px page, about 0.3 scale, so every field and button was a third of its size. lodar, 2026-10-21: "if user is on the phone its almost impossible to make actions on our browser/viewer".

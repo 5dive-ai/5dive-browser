@@ -32,8 +32,12 @@ repo — and that is the `connect-site` skill, not this one.
    goes key by key (`"delay_ms"`, default 50); pick the suggestion with a `wait_for` and a
    `click`.
 3. **Verify.** `--expect=<regex>` grades the text on screen as the steps left it, re-read for up
-   to 5 s so a toast counts. Hidden markup never matches. Without it, `act` only says the steps ran — open the `page.png` it wrote
-   before you tell anyone it worked.
+   to 5 s so a toast counts. Hidden markup never matches. **A matched `--expect` IS the check:**
+   report and move on. Do not re-open the page, read it again or take another shot to confirm
+   it; a second look costs a page load and proves nothing new. Look again only when you used no
+   `--expect` (then open the `page.png` the act wrote before you tell anyone it worked) or it did
+   not match. Expect the words that prove the job: the saved value when the page shows it, else
+   the page's own success message.
 4. **A click that downloads a file** (an Export or Download button) hands you the file: `act`
    prints `downloaded: <path> (<name>, <bytes> bytes)`, and the file is in the act's artifact
    directory under `downloads/`, readable by your seat (`--json`: `downloads`). A file over
@@ -253,8 +257,8 @@ exits **73** with the ask, a screenshot and an approval id.
 
 Lessons from browser jobs that went wrong on real sites (DIVE-5390). One line each:
 
-- **Read the saved record back.** After a submit, open what the site saved and check every field landed where you meant: a URL can land in the name field while the page says "success".
-- **Look at the screenshot after a submit**, not only the exit code. A success line can show for a moment and the form reset under it.
+- **Read the saved record back when no `--expect` covered it.** After a submit with no `--expect`, or one that did not match, open what the site saved and check every field landed where you meant: a URL can land in the name field while the page says "success". A matched `--expect` naming the saved value already is that check.
+- **Look at the screenshot after a submit with no `--expect`**, not only the exit code. A success line can show for a moment and the form reset under it.
 - **One run per form, every field in it.** Tabs keep page state between runs, so clear a pre-filled form and re-check it before you type.
 - **Never press a site's autofill or AI-assist button.** It writes text you were not given.
 - **A bot check can appear mid-flow**, after a sign-in or submit button, not only on page load. It is still a hard stop.
