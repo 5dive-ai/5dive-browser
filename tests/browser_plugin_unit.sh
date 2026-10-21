@@ -2437,6 +2437,11 @@ let markWalks = 0;   // DIVE-4674: how many times the ref layer has asked THIS p
 // Unset, every answer is the one it always was.
 let clock = 0;
 const late = () => !!process.env.PWLATE_MS && clock >= Number(process.env.PWLATE_MS);
+// DIVE-6651: ...AND A LATE STATE THAT GOES AWAY. From PWGONE_MS the page is back
+// to its first answers (a toast removed), so only a read inside the window between
+// PWLATE_MS and PWGONE_MS sees it. Unset, a late state stays.
+const gone = () => !!process.env.PWGONE_MS && clock >= Number(process.env.PWGONE_MS);
+const lateNow = () => late() && !gone();
 // A SEARCH BOX WHOSE SUGGESTIONS OPEN ON KEYSTROKES (the `type` step). PWSUGGEST
 // names the suggestion; it is on the page only once a key has gone down in the
 // box since the last goto. page.fill puts a value in with no keydown, which is
@@ -2528,7 +2533,7 @@ const page = {
     if (arg && arg.visibleOf) { rec({ call: 'visible', target: arg.target, mode: arg.mode, at: clock });
       if (cfBlocked()) return false;
       return !process.env.PWLATE_MS || late(); }
-    if (arg && arg.textOf) return (late() && process.env.PWTEXT_LATE) || process.env.PWTEXT || '';
+    if (arg && arg.textOf) return (lateNow() && process.env.PWTEXT_LATE) || process.env.PWTEXT || '';
     // DIVE-4984: a verify's scope — the one element it grades. PWSCOPE parks what
     // the page's first match would say ({html,text}); unset, nothing matched.
     if (arg && arg.scopeOf) { rec({ call: 'scope', scope: arg.scope, at: clock });
@@ -2575,7 +2580,7 @@ const page = {
   // DIVE-4943: `act` re-reads the page as the steps left it.
   url: () => process.env.PWURL || (lastGoto && landed()) || 'https://stub.test/after',
   title: async () => (cfBlocked() ? 'Just a moment...' : (process.env.PWTITLE || 'stub after')),
-  content: async () => (late() && process.env.PWHTML_LATE) || process.env.PWHTML || '<html><body>stub after</body></html>',
+  content: async () => (lateNow() && process.env.PWHTML_LATE) || process.env.PWHTML || '<html><body>stub after</body></html>',
   setInputFiles: async (sel, p) => rec({ call: 'setInputFiles', sel, path: p }),
   press: async (sel, key) => rec({ call: 'press', sel, key }),
 };
@@ -5727,7 +5732,9 @@ tc 'T32g --help names act' 'browser act' "$OUT$ERR"
 # guard is graded there too, through the real daemon over its socket.
 mkprofile warmact.test "$LIVE_DOM" >/dev/null
 DPWLABEL="$TMP/dpw.label"; printf 'Send' > "$DPWLABEL"
-dserve warmact.test DPWLABEL="$DPWLABEL"
+# DPWTEXT: the words a person reads on LIVE_DOM. --expect grades those, never
+# the markup (DIVE-6651), so `feed` — only an id there — is not on the page.
+dserve warmact.test DPWLABEL="$DPWLABEL" DPWTEXT=posts
 t  'T32h a warm session is up for the act arms' 0 "$RC"
 LB31="$(launches)"; : > "$TMP/.drec-mark"; DREC_LINES=$(wc -l < "$DREC")
 dwarm FIVEDIVE_BROWSER_APPROVAL_POLICY="$POL31" FIVEDIVE_BROWSER_GRANT_UID="$(id -u)" \
@@ -5737,7 +5744,7 @@ t  'T32h ...before the click' 0 "$(tail -n +$((DREC_LINES+1)) "$DREC" | jq -rs '
 t  'T32h ...in the browser that was already up (no launch)' "$LB31" "$(launches)"
 tc 'T32h ...and names the ask' 'sudo 5dive browser approve' "$ERR"
 printf 'Star' > "$DPWLABEL"; DREC_LINES=$(wc -l < "$DREC")
-dwarm "$BROWSER" act warmact.test --steps='[{"op":"click","selector":"#star"}]' --out="$TMP/act31h2" --expect='feed'
+dwarm "$BROWSER" act warmact.test --steps='[{"op":"click","selector":"#star"}]' --out="$TMP/act31h2" --expect='posts'
 t  'T32h (control) a harmless click with NO url continues on the held page and verifies' 0 "$RC"
 # The login probe opens its OWN tab (kind "extra") and may navigate there; the
 # held page is kind "first", and that is the one that must not be reloaded.
@@ -7568,7 +7575,7 @@ tn 'T42d cold: ...and no word about --expect it was not given' 'whatever --expec
 # --- warm: the second copy of the step loop ----------------------------------------------------
 cp "$T40/refs.json" "$T42/wrefs.json"; touch "$T40/rfx-off"
 mkprofile warm42.test "$LIVE_DOM" >/dev/null
-dserve warm42.test FIVEDIVE_BROWSER_CLI="$RFX40" DPWREFS="$T42/wrefs.json"
+dserve warm42.test FIVEDIVE_BROWSER_CLI="$RFX40" DPWREFS="$T42/wrefs.json" DPWTEXT=posts
 t  'T42 (precondition) a warm session is up' 0 "$RC"
 w42() {  # w42 <steps> [act flags...] — act on the served browser, whose page says "posts"
   local st="$1"; shift
