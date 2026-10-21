@@ -9,7 +9,8 @@
 #      The product's own plain Chrome (bin/session-daemon --input, the login
 #      view's launch: no CDP) on a 1280x800 Xvfb, showing a login page that
 #      prints its innerWidth and its field and button heights in its title:
-#        L1 before: the window is the desktop's (innerWidth 1280)
+#        L1 before: the window is the desktop's: Chrome's own launch size on
+#           this screen, and the page's innerWidth is that window's width
 #        L2 a desktop viewer (1440x900): nothing printed, nothing saved, the
 #           window untouched — the negative control
 #        L3 a 390x700 phone: the window is 390 wide, the page switches to its
@@ -35,7 +36,20 @@ REAL_CHROME="$(command -v google-chrome || command -v chromium || command -v chr
 ART="${VIEWER_FIT_ARTIFACTS:-}"; [[ -n "$ART" ]] && mkdir -p "$ART"
 TMP="$(mktemp -d /tmp/d6646.XXXXXX)"
 _KILL=()
-trap 'rc=$?; for p in "${_KILL[@]}"; do kill "$p" 2>/dev/null; done; rm -rf "${TMP:-}"; echo "HARNESS-RC=$rc"' EXIT
+# Chrome is the daemon's child, not ours, and it is still writing its profile
+# for a moment after the daemon goes: wait for every process on the profile to
+# exit before the profile is removed, or rm races it ("Directory not empty").
+cleanup() {
+  local rc=$? p i
+  for p in "${_KILL[@]}"; do kill "$p" 2>/dev/null; done
+  pkill -f -- "--user-data-dir=$TMP/" 2>/dev/null
+  for i in $(seq 1 50); do pgrep -f -- "--user-data-dir=$TMP/" >/dev/null || break; sleep 0.1; done
+  pkill -KILL -f -- "--user-data-dir=$TMP/" 2>/dev/null
+  for i in 1 2 3 4 5; do rm -rf "${TMP:-}" 2>/dev/null && break; sleep 0.2; done
+  [[ -e "$TMP" ]] && rm -rf "$TMP"
+  echo "HARNESS-RC=$rc"
+}
+trap cleanup EXIT
 
 PASS=0; FAIL=0; SKIP=0
 gha() {
@@ -106,8 +120,22 @@ HTML
   if ! grep -q '^ready' "$TMP/l.ready"; then
     arm 'L0 the live input daemon came up' ready "$(grep -v -i dbus "$TMP/l.err" | tail -2 | tr '\n' ' ')"
   else
-    t0=$(see 'w=1280')
-    arm 'L1 before: the browser window is the desktop (innerWidth 1280, desktop fields)' 'w=1280 in=30 btn=30' "$t0"
+    # Chrome is launched --window-size=1280,800 on a 1280x800 screen, and
+    # Chromium never makes a window exactly a display's size (it takes 1 px off
+    # each side, so a window manager does not read it as fullscreen): the
+    # window is 1279x799. Measured on the runner, 2026-10-21 (run 39539598956).
+    # So L1 asserts against the window this screen actually gives, read from X,
+    # and L4/L5 still demand that exact state back.
+    g0=$(node -e '
+      require(process.argv[1]).open(process.argv[2]).then(async (x) => {
+        const b = await x.browserWindow(); console.log(b ? `${b.g.w} ${b.g.h} ${x.width} ${x.height}` : "none"); x.close(); })' \
+      "$X11LIB" ":$disp" 2>/dev/null)
+    read -r w0 h0 sw sh <<<"$g0"
+    t0=$(see "w=${w0:-x}")
+    printf '   before: window %sx%s on a %sx%s screen, page %s\n' "${w0:-?}" "${h0:-?}" "${sw:-?}" "${sh:-?}" "$t0"
+    whole=$( [[ "$w0" =~ ^[0-9]+$ && "$sw" =~ ^[0-9]+$ ]] && (( w0 >= sw - 1 && w0 <= sw && h0 >= sh - 1 && h0 <= sh )) && echo screen || echo "${g0:-none}")
+    arm 'L1 before: the window is the desktop (the screen, less at most 1 px a side) and innerWidth is its width' \
+      "screen w=$w0 in=30 btn=30" "$whole $t0"
     shot before
 
     out=$(node "$FIT" fit ":$disp" 1440x900 "$ST" 2>&1); sleep 0.5
