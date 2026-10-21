@@ -961,7 +961,11 @@ function unmarkedArgs(extra) {
 
 // `--expect` as an EARLY EXIT, never as the verdict. bin/browser still greps
 // what comes back (grep -E, one engine, like the probe's markers), so a pattern
-// JS reads differently only costs the full window, never a wrong answer.
+// JS reads differently only costs the full window, never a wrong answer. It
+// tests what bin/browser grades: for `act`, the text, the title, the url, never
+// the document (DIVE-6651) — a hidden span that matched would stop the wait
+// early and ship the wrong moment. `expectDoc` is `run`'s in-session verify,
+// whose grader still reads the document it fetched.
 function expectRe(p) {
   if (typeof p !== 'string' || !p) return null;
   try { return new RegExp(p, 'i'); }
@@ -984,7 +988,7 @@ function expectRe(p) {
 // `scope` (DIVE-4984) narrows the read to one element: `run`'s in-session verify.
 async function pageAfter(page, { settleMs = 0, waitFor = null, waitTimeoutMs = 30000,
                                  expect = null, expectWaitMs = 0, pollMs = 250, walk: walkOpts = null,
-                                 scope = null } = {}) {
+                                 scope = null, expectDoc = false } = {}) {
   const waited = waitFor ? await waitForVisible(page, waitFor, { timeoutMs: waitTimeoutMs, pollMs }) : null;
   if (settleMs > 0) { try { await page.waitForTimeout(settleMs); } catch (e) { /* the read still runs */ } }
   const readNow = async () => {
@@ -1006,8 +1010,9 @@ async function pageAfter(page, { settleMs = 0, waitFor = null, waitTimeoutMs = 3
     return o;
   };
   const re = expectRe(expect);
+  const seen = (o) => re.test(o.text) || re.test(o.title) || re.test(o.url) || (expectDoc && re.test(o.html));
   let out = await readNow(), polled = 0;
-  while (re && !re.test(out.text) && !re.test(out.html) && polled < expectWaitMs) {
+  while (re && !seen(out) && polled < expectWaitMs) {
     const step = Math.min(pollMs, expectWaitMs - polled);
     try { await page.waitForTimeout(step); } catch (e) { break; }
     polled += step;

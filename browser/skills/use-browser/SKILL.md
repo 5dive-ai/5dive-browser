@@ -31,8 +31,8 @@ repo — and that is the `connect-site` skill, not this one.
    inputs: `fill` sets the value with no key presses, so a suggestion list never opens. `type`
    goes key by key (`"delay_ms"`, default 50); pick the suggestion with a `wait_for` and a
    `click`.
-3. **Verify.** `--expect=<regex>` grades the page as the steps left it, re-read for up to 5 s so
-   a toast counts. Without it, `act` only says the steps ran — open the `page.png` it wrote
+3. **Verify.** `--expect=<regex>` grades the text on screen as the steps left it, re-read for up
+   to 5 s so a toast counts. Hidden markup never matches. Without it, `act` only says the steps ran — open the `page.png` it wrote
    before you tell anyone it worked.
 4. **A click that downloads a file** (an Export or Download button) hands you the file: `act`
    prints `downloaded: <path> (<name>, <bytes> bytes)`, and the file is in the act's artifact

@@ -507,7 +507,7 @@ async function writeReport(page, report, pop) {
       settleMs: RUN_SETTLE_MS, waitFor: report.wait_for || null, waitTimeoutMs: STEP_TIMEOUT,
       expect: report.expect || null, expectWaitMs: Number(report.expect_wait_ms) || 0,
       walk: report.tree ? { interactiveOnly: !!report.interactive } : null,
-      scope: report.scope || null,
+      scope: report.scope || null, expectDoc: !!report.expect_doc,
     });
     if (report.html) fs.writeFileSync(report.html, after.html || '', { mode: 0o600 });
     if (report.meta) {

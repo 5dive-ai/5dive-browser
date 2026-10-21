@@ -1008,7 +1008,7 @@ async function sendReport(page, req, send) {
       settleMs: settleOf(req, RUN_SETTLE_MS), waitFor: r.wait_for || null, waitTimeoutMs: STEP_TIMEOUT,
       expect: r.expect || null, expectWaitMs: Number(r.expect_wait_ms) || 0,
       walk: r.tree ? { interactiveOnly: !!r.interactive } : null,
-      scope: r.scope || null,
+      scope: r.scope || null, expectDoc: !!r.expect_doc,
     });
     let png = null;
     if (r.shot) {
