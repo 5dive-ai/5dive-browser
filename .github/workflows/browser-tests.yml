@@ -91,6 +91,21 @@ jobs:
           name: input-harness-screens
           path: ${{ runner.temp }}/input-harness
           if-no-files-found: ignore
+      # DIVE-6646: a phone at the login-link viewer gets the browser window fitted
+      # to it (the site's phone layout, about 1:1), a desktop gets nothing, and
+      # the window is given back when the view ends. LIVE on the runner's Xvfb +
+      # Chrome; the screens before, during and after are kept on every run.
+      - name: viewer phone fit harness
+        run: bash tests/browser_viewer_fit_unit.sh
+        env:
+          VIEWER_FIT_ARTIFACTS: ${{ runner.temp }}/viewer-fit
+      - name: keep the viewer fit screens
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: viewer-fit-screens
+          path: ${{ runner.temp }}/viewer-fit
+          if-no-files-found: ignore
       # DIVE-5335: routines (act --record, replay) and delta snapshots, through
       # the real bin/browser and driver with the recording playwright stub.
       - name: routine and delta harness

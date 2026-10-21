@@ -293,8 +293,10 @@ usage() {
                                       # (probe-all runs it once a day). Exit 1 if one drifted.
   5dive browser viewer <site> --bind=<session> [--ttl=600]
                                       # mint a ONE-TIME, expiring link a person logs in through
-  5dive browser viewer-redeem <site> --nonce=- --session=<id>
-                                      # the relay's gate: consumes the link, prints the loopback target
+  5dive browser viewer-redeem <site> --nonce=- --session=<id> [--client=<W>x<H>]
+                                      # the relay's gate: consumes the link, prints the loopback target;
+                                      #   --client is the viewer page's size: a phone gets the window
+                                      #   narrowed to it for the view (fit=), a desktop nothing
   5dive browser viewer-revoke <site>  # kill the view; the browser stays logged in
   5dive browser connect-request <site> [--reason=<why>]
                                       # ask your paired owner, over Telegram, to log in:
@@ -4743,6 +4745,7 @@ _viewer_pidfile() { echo "$1/.5dive-viewer"; }
 # disk yet. `left_at` is when the view was taken down. Cleared with the serve it
 # belongs to.
 _viewer_admitted_file() { echo "$1/.5dive-viewer.admitted"; }
+_viewer_fit_file() { echo "$1/.5dive-viewer.fit"; }
 # True when a person was admitted to THIS serve (at or after <serve-started-at>)
 # and was in it within the last 60 s. Chrome commits a cookie batch ~30 s after
 # its first change, so whatever a person changed before they left a minute ago is
@@ -5268,6 +5271,7 @@ _viewer_stop() {
   local dir="$1" f; f="$(_viewer_pidfile "$dir")"
   local p
   for p in $(_kv "$f" vnc_pid) $(_kv "$f" ws_pid); do kill "$p" 2>/dev/null; done
+  _viewer_unfit "$dir"
   # The view coming down is when the person left (DIVE-5374): Done's revoke lands
   # here a second before its stop.
   local af; af="$(_viewer_admitted_file "$dir")"
@@ -5279,6 +5283,24 @@ _viewer_stop() {
   # process that was started with it is alive, so a copy left behind in the
   # profile directory is a stored secret with no live purpose.
   rm -f "$dir/.5dive-viewer.pw"
+}
+
+# A PHONE AT THE VIEWER (DIVE-6646). For the length of a phone's view the browser
+# window is the phone's size (lib/viewer-fit.cjs), so the site uses its phone
+# layout and the phone draws it at about 1:1 instead of a 1280x800 desktop at
+# 0.3. Giving the window back has two triggers, and both are needed: the holder
+# started at redeem gives it back when x11vnc exits (the person closed the page:
+# -once), and this gives it back when the view is stopped (Done, revoke, a new
+# viewer, serve --stop). The state file is claimed by rename, so one of them acts.
+_viewer_fit_lib() { echo "$_SELF_DIR/../lib/viewer-fit.cjs"; }
+_viewer_unfit() {
+  local dir="$1" ff; ff="$(_viewer_fit_file "$dir")"
+  [[ -f "$ff" ]] || return 0
+  local disp; disp=$(_kv "$(_serve_pidfile "$dir")" display)
+  if [[ -n "$disp" ]] && _have node; then
+    node "$(_viewer_fit_lib)" restore ":$disp" "$ff" >/dev/null 2>&1 || true
+  fi
+  rm -f "$ff"
 }
 
 # A ticket is minted, printed ONCE, and never recoverable. The file holds the
@@ -5411,10 +5433,11 @@ cmd_viewer() {
 # The relay calls this before it bridges a websocket; if this exits non-zero the
 # relay must serve nothing.
 cmd_viewer_redeem() {
-  local site="" session="" nonce_from_argv=0
+  local site="" session="" nonce_from_argv=0 client=""
   while (($#)); do
     case "$1" in
       --session=*) session="${1#*=}" ;;
+      --client=*)  client="${1#*=}" ;;
       --nonce=-)   : ;;                 # the only accepted form: read from stdin
       --nonce=*)   nonce_from_argv=1 ;;
       -h|--help) usage; return 0 ;;
@@ -5429,6 +5452,7 @@ cmd_viewer_redeem() {
   [[ -n "$site" ]] || die "$E_USAGE" "usage: 5dive browser viewer-redeem <site> --nonce=- --session=<id>"
   _valid_site "$site" || die "$E_USAGE" "'$site' is not a usable profile name"
   [[ -n "$session" ]] || die "$E_USAGE" "--session=<id> is required: a ticket is bound to the session that asked for it"
+  [[ -z "$client" || "$client" =~ ^[0-9]{1,4}x[0-9]{1,4}$ ]] || die "$E_USAGE" "--client=$client: expected <width>x<height> in CSS pixels, e.g. --client=390x700"
 
   _open_site "$site" --no-broker viewer "the viewer is minted and revoked by the seat that owns it."
   local dir="$_SITE_DIR"
@@ -5497,7 +5521,24 @@ cmd_viewer_redeem() {
 
   _viewer_revoke_file "$dir" consumed
   ( umask 077; printf 'admitted_at=%s\n' "$(date -u +%s)" > "$(_viewer_admitted_file "$dir")" ) 2>/dev/null || true
+
+  # A PHONE GETS A PHONE-SIZED WINDOW (DIVE-6646), only after the ticket is spent,
+  # and best-effort: a fit that fails leaves the desktop view, never a refusal.
+  # A desktop client (600 px wide or more) prints nothing and changes nothing.
+  local fitout="" disp ff; ff="$(_viewer_fit_file "$dir")"
+  disp=$(_kv "$(_serve_pidfile "$dir")" display)
+  if [[ -n "$client" && -n "$disp" && -n "$vncpid" ]] && _have node && [[ -r "$(_viewer_fit_lib)" ]]; then
+    fitout=$( (umask 077; node "$(_viewer_fit_lib)" fit ":$disp" "$client" "$ff") 2>/dev/null | grep -E '^(fit|screen)=[0-9]+x[0-9]+$')
+    if [[ -n "$fitout" ]]; then
+      # Detached and silent: the relay reads this command's stdout to its end.
+      ( setsid node "$(_viewer_fit_lib)" hold ":$disp" "$ff" "$vncpid" </dev/null >/dev/null 2>&1 & )
+    else
+      _viewer_unfit "$dir"
+    fi
+  fi
   printf 'target=127.0.0.1:%s\npassword=%s\n' "$port" "$vncpw"
+  [[ -n "$fitout" ]] && printf '%s\n' "$fitout"
+  return 0
 }
 
 _viewer_revoke_file() {

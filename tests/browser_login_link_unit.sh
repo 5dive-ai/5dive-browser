@@ -12,6 +12,8 @@
 #      config (viewer paths only, 404 for the rest, no admin), NAT, no Cloudflare
 #   S  the login-link server itself, over loopback: page / redeem / websocket /
 #      assets / 404, against a fake viewer-redeem and a fake websocket bridge
+#   P  (DIVE-6646) the page's size reaches viewer-redeem as --client, and the box's
+#      fit comes back to the page; a malformed size or a malformed fit goes nowhere
 # Run unprivileged: every seam is honoured only without root.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -274,6 +276,8 @@ printf 'argv=%s\n' "\$*" >>"$TMP/redeem.log"
 IFS= read -r n; printf 'stdin=%s\n' "\$n" >>"$TMP/redeem.log"
 [[ -f "$TMP/redeem.refuse" ]] && { echo "browser: that viewer link has already been used (state: consumed)." >&2; exit 77; }
 printf 'target=127.0.0.1:%s\npassword=pw-123\n' "$WSPORT"
+[[ -f "$TMP/redeem.fit" ]] && cat "$TMP/redeem.fit"
+exit 0
 SH
 chmod +x "$TMP/redeem"
 LINK_HOST=$LHOST LINK_PORT=0 LINK_PORT_FILE="$TMP/srv.port" LINK_BIND_DIR="$TMP/s/binds" LINK_NOVNC_DIR="$TMP/s/novnc" \
@@ -353,6 +357,27 @@ tn "S12 THE NONCE IS NEVER LOGGED" "$NONCE" "$(cat "$TMP/srv.err")"
 tn "S12 ... nor the password" "pw-123" "$(cat "$TMP/srv.err")"
 listen=$(ss -Hltn 2>/dev/null | awk '{print $4}' | grep ":$SP\$")
 t  "S13 the server listens on loopback only" "127.0.0.1:$SP" "$listen"
+
+# ---- P: a phone's size, there and back (DIVE-6646) ------------------------------
+rm -f "$TMP/redeem.refuse"; : >"$TMP/redeem.log"
+printf 'fit=390x700\nscreen=1280x800\n' >"$TMP/redeem.fit"
+j=$(redeem -H 'content-type: application/json' --data '{"w":390,"h":700}')
+t  "P1 the page's size reaches viewer-redeem as --client" "argv=$SITE --nonce=- --session=$BIND --client=390x700" "$(grep '^argv=' "$TMP/redeem.log" | tail -1)"
+t  "P1 ... and the box's fit comes back to the page" "390x700 1280x800 pw-123" "$(jq -r '"\(.fit) \(.screen) \(.password)"' <<<"$j")"
+for body in '{"w":"390","h":700}' '{"w":390}' '{"w":true,"h":700}' '{"w":0,"h":700}' '[390,700]' 'w=390&h=700' ''; do
+  : >"$TMP/redeem.log"; redeem -H 'content-type: application/json' --data "$body" >/dev/null
+  t "P2 a malformed size ($body) sends no --client" "argv=$SITE --nonce=- --session=$BIND" "$(grep '^argv=' "$TMP/redeem.log")"
+done
+printf 'fit=390x700;rm\nscreen=wide\n' >"$TMP/redeem.fit"
+j=$(redeem -H 'content-type: application/json' --data '{"w":390,"h":700}')
+t  "P3 a fit that is not <w>x<h> is not passed to the page" "null null pw-123" "$(jq -r '"\(.fit) \(.screen) \(.password)"' <<<"$j")"
+rm -f "$TMP/redeem.fit"
+j=$(redeem -H 'content-type: application/json' --data '{"w":1440,"h":900}')
+t  "P4 no fit from the box (a desktop): the answer carries none" "null null pw-123" "$(jq -r '"\(.fit) \(.screen) \(.password)"' <<<"$j")"
+pj="$ROOT/browser/lib/login-link/page.js"
+tc "P5 the page sends its own size with the redeem" "body: JSON.stringify({ w: Math.round(innerWidth), h: Math.round(innerHeight) })" "$(cat "$pj")"
+tc "P5 ... and still raises the soft keyboard" "kbd.addEventListener('click', () => kin.focus())" "$(cat "$pj")"
+tc "P5 ... and the page still has both" '<input id="kin"' "$(cat "$TMP/page.html")"
 
 # ---- G: the seams are not a door under root --------------------------------------
 blk=$(awk '/^if \[\[ \$EUID -ne 0 && -n "\$\{FIVEDIVE_BROWSER_LINK_CONF:-\}" \]\]; then$/{p=1} p{print} p&&/^fi$/{p=0}' "$BROWSER")
