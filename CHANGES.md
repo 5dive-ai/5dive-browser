@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — a phone at the login link sees the site's phone layout, not a shrunken desktop (DIVE-6646), 1.48.0
+
+On a phone, the login-link viewer drew the box's whole 1280x800 browser into a 390-px page, about 0.3 scale, so every field and button was a third of its size. lodar, 2026-10-21: "if user is on the phone its almost impossible to make actions on our browser/viewer".
+
+- The viewer page sends its own size with the redeem. A page under 600 CSS px wide gets the browser WINDOW resized to that size for the length of the view (`lib/viewer-fit.cjs`, a ConfigureWindow on the X display). The site sees a phone-wide window and uses its own phone layout, and the page draws that corner of the screen scaled to the phone's width, about 1:1. A desktop page gets nothing and the whole screen, as before.
+- The window is resized, not emulated over CDP, because the login view and input mode are plain Chrome with no CDP channel by design (DIVE-5203, DIVE-5287). The user agent is never changed, so there is nothing to put back there.
+- The window gets its exact geometry back when the view ends: a holder started at redeem restores it when x11vnc exits (the person closed the page), and the viewer's stop restores it on Done, revoke, a new viewer or `serve --stop`. Whichever comes first renames the state file to claim it, so it is restored once.
+- `viewer-redeem` takes `--client=<W>x<H>` and prints `fit=` and `screen=` when it fitted the window. The self-hosted login-link server passes both through. The viewer on a hosted box is drawn by the box relay, which still sends no size; until it does, it gets the desktop view as before.
+
+Arms U, B and L in `tests/browser_viewer_fit_unit.sh` (live on the runner's Xvfb and Chrome, screens kept as an artifact), and P1–P5 in `tests/browser_login_link_unit.sh`.
+
 ### Fixed — `act --expect` no longer says `verified` from hidden page markup (DIVE-6651), 1.47.1
 
 On 2026-10-19 a seat recorded Google Search Console indexing requests as done when none had been made. `act --expect='Indexing requested'` printed `verified` while the screen said "Oops! Something went wrong … We had a problem submitting your indexing request". The match came from `page.html`, the raw document, which keeps a hidden `<span>Indexing requested</span>` template on the page.

@@ -41,7 +41,7 @@ const X11_DIR = process.env.FIVEDIVE_BROWSER_X11_DIR || '/tmp/.X11-unix';
 
 // Core request opcodes used here.
 const OP = {
-  GetWindowAttributes: 3, QueryTree: 15, InternAtom: 16, GetProperty: 20,
+  GetWindowAttributes: 3, ConfigureWindow: 12, GetGeometry: 14, QueryTree: 15, InternAtom: 16, GetProperty: 20,
   QueryPointer: 38, SetInputFocus: 42, GetInputFocus: 43, GetImage: 73, QueryExtension: 98,
   ChangeKeyboardMapping: 100, GetKeyboardMapping: 101,
 };
@@ -252,6 +252,40 @@ class X11 {
     }
     if (!best) return { window: '', page: '', id: 0 };
     return { window: best.t, page: best.t.replace(/ [-–—] (Google Chrome|Chromium)(?: [^-–—]*)?$/, ''), id: best.id };
+  }
+
+  // ---- the window's size (DIVE-6646) --------------------------------------
+  // A phone at the login-link viewer gets the browser WINDOW narrowed to the
+  // phone's width, so the site lays itself out for a phone and the phone draws
+  // it at about 1:1. With no window manager on the display, a ConfigureWindow
+  // from any client is applied as asked and Chrome follows it like any resize.
+  async geometry(win) {
+    const b = Buffer.alloc(4); b.writeUInt32LE(win, 0);
+    const r = await this.req(OP.GetGeometry, 0, b, true);
+    return { x: r.readInt16LE(12), y: r.readInt16LE(14), w: r.readUInt16LE(16), h: r.readUInt16LE(18) };
+  }
+
+  async configure(win, g) {
+    const b = Buffer.alloc(24);
+    b.writeUInt32LE(win, 0);
+    b.writeUInt16LE(0x0f, 4);                    // x | y | width | height
+    b.writeInt32LE(g.x, 8); b.writeInt32LE(g.y, 12);
+    b.writeUInt32LE(g.w, 16); b.writeUInt32LE(g.h, 20);
+    this.req(OP.ConfigureWindow, 0, b, false);
+    await this.sync();
+  }
+
+  // The browser's main window: the largest viewable top-level browser window
+  // that is not override-redirect (menus and popups are; the window is not).
+  async browserWindow(pid) {
+    let best = null;
+    for (const w of await this.children(this.root)) {
+      const a = await this.attrs(w);
+      if (!a.viewable || a.override || !(await this.isBrowserWindow(w, pid))) continue;
+      let g; try { g = await this.geometry(w); } catch (e) { continue; }
+      if (!best || g.w * g.h > best.g.w * best.g.h) best = { id: w, g };
+    }
+    return best;
   }
 
   // ---- whose window is it -------------------------------------------------

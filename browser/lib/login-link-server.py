@@ -15,7 +15,10 @@ the box seat on 127.0.0.1 only, behind a TLS front that forwards it nothing but
                                                ticket through `5dive browser
                                                viewer-redeem` (nonce on stdin), and
                                                answers the VNC password and a
-                                               one-use socket path
+                                               one-use socket path. Its body may
+                                               carry the page's size {"w","h"}: a
+                                               phone gets the browser window fitted
+                                               to it for the view (DIVE-6646)
   GET  /browser/viewer/<site>/<nonce>/ws/<tok> the websocket, spliced byte for byte
                                                onto the viewer's own loopback bridge
   GET  /browser/viewer/assets/...              page.js and the box's noVNC files
@@ -96,6 +99,18 @@ def bind_for(site):
     return b, int(e)
 
 
+def client_size(raw):
+    """The page's own size from the redeem body, as viewer-redeem's --client."""
+    try:
+        j = json.loads(raw or b"{}")
+        w, h = j.get("w"), j.get("h")
+    except (ValueError, AttributeError):
+        return ""
+    if not all(isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 9999 for v in (w, h)):
+        return ""
+    return "%dx%d" % (w, h)
+
+
 def sweep():
     now = time.time()
     with _lock:
@@ -160,8 +175,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if not m:
             return self.nf()
         n = int(self.headers.get("content-length") or 0)
-        if n:
-            self.rfile.read(min(n, 4096))
+        raw = self.rfile.read(min(n, 4096)) if n else b""
         # Only the page on the link's own origin may spend the link: a form or a
         # fetch from any other origin carries a different Origin and is refused.
         if not HOST or self.headers.get("origin") != "https://" + HOST or self.headers.get("x-5dive-viewer") != "1":
@@ -171,8 +185,12 @@ class H(http.server.BaseHTTPRequestHandler):
         if not b:
             return self.send(410, json.dumps({"error": "this login link is not live any more. Ask your agent for a new one."}), "application/json")
         bind, exp = b
+        argv = REDEEM + [site, "--nonce=-", "--session=" + bind]
+        client = client_size(raw)
+        if client:
+            argv.append("--client=" + client)
         try:
-            r = subprocess.run(REDEEM + [site, "--nonce=-", "--session=" + bind], input=nonce + "\n",
+            r = subprocess.run(argv, input=nonce + "\n",
                                capture_output=True, text=True, timeout=30)
         except (OSError, subprocess.TimeoutExpired):
             return self.send(503, json.dumps({"error": "the box could not open the login screen. Ask your agent for a new link."}), "application/json")
@@ -186,8 +204,11 @@ class H(http.server.BaseHTTPRequestHandler):
         tok = secrets.token_hex(32)
         with _lock:
             _tokens[tok] = (site, nonce, "127.0.0.1", int(tm.group(1)), exp)
-        self.send(200, json.dumps({"password": kv["password"], "ws": "/browser/viewer/%s/%s/ws/%s" % (site, nonce, tok)}),
-                  "application/json")
+        out = {"password": kv["password"], "ws": "/browser/viewer/%s/%s/ws/%s" % (site, nonce, tok)}
+        for k in ("fit", "screen"):
+            if re.fullmatch(r"[0-9]{1,4}x[0-9]{1,4}", kv.get(k, "")):
+                out[k] = kv[k]
+        self.send(200, json.dumps(out), "application/json")
 
     def asset(self, rel):
         if rel == "page.js":
