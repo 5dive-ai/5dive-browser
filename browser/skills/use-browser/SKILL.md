@@ -3,294 +3,79 @@ name: use-browser
 description: Do something on a website in a real browser on the box — click, type, fill a form, search, check a page, add to a cart, star a repo, draft a reply. Use for "go to <site> and …", "buy/book/fill/submit/check … on <site>", "open <url> and …", or anything a normal fetch cannot do (JavaScript pages, clicks, forms, logged-in pages). Works with NOTHING connected; connecting a site (the connect-site skill) is only for pages where it must be the owner's account.
 ---
 
-# use-browser — snapshot, act by ref, verify; the owner says yes to pay/post/send/delete
+# use-browser — snapshot, act by ref, verify; the owner says yes to pay
 
-`5dive browser` drives a real Chrome on this box. Give any page verb a **URL** and it picks
-the profile itself: the host's one connected login, or the **public profile** (nothing logged
-in) when there is none. A box with zero connected sites can still browse and act on any public
-page. Connecting a site is only for the owner's own accounts — their inbox, their cart, their
-repo — and that is the `connect-site` skill, not this one.
+`5dive browser <verb> <url>` drives a real Chrome on this box. The URL picks the profile: the
+owner's one login for that site, or the public profile (nothing logged in). **Start with the
+verb.** Never run `--help`, `status` or setup first: this page is the manual, and a public page
+needs nothing connected.
 
 ## The loop: ONE snapshot per decision
 
 ```bash
-5dive browser snapshot <url> --interactive     # the refs you can act on
-5dive browser act <url> --steps='[{"op":"click","selector":"ref=button/Star"}]'
+5dive browser snapshot <url> --interactive     # prints the page text and the refs you can act on
 5dive browser act <url> --steps='[{"op":"fill","selector":"ref=textbox/Title","value":"Bug: …"},
                                   {"op":"click","selector":"ref=button/Save draft"}]' --expect='Draft saved'
 ```
 
-1. **Snapshot** the page with `--interactive` and pick refs from what it printed. Never invent a
-   ref; a page you have not snapshotted is a page you are guessing about. A web app (Gmail) shows
-   a loading screen first: add `--wait-for='[role=main]'` (or `text=<words>` the loaded page
-   has). **Exit 76 is not the page** — a loading screen or a `--wait-for` that never came; run it
-   again with a `--wait-for`, and do not ask anyone to log in.
-2. **Act** on those refs. Steps are `goto fill type click wait_for select press`, run in order,
-   in one tab under one lease. Without a URL, `act` continues on the page a served browser holds.
-   Use `type` for search boxes and autocompletes that react to keystrokes, and `fill` for plain
-   inputs: `fill` sets the value with no key presses, so a suggestion list never opens. `type`
-   goes key by key (`"delay_ms"`, default 50); pick the suggestion with a `wait_for` and a
-   `click`.
-3. **Verify.** `--expect=<regex>` grades the text on screen as the steps left it, re-read for up
-   to 5 s so a toast counts. Hidden markup never matches. **A matched `--expect` IS the check:**
-   report and move on. Do not re-open the page, read it again or take another shot to confirm
-   it; a second look costs a page load and proves nothing new. Look again only when you used no
-   `--expect` (then open the `page.png` the act wrote before you tell anyone it worked) or it did
-   not match. Expect the words that prove the job: the saved value when the page shows it, else
-   the page's own success message.
-4. **A click that downloads a file** (an Export or Download button) hands you the file: `act`
-   prints `downloaded: <path> (<name>, <bytes> bytes)`, and the file is in the act's artifact
-   directory under `downloads/`, readable by your seat (`--json`: `downloads`). A file over
-   100 MB, or still downloading after 2 minutes, is named on stderr and not saved.
-5. **A click that opens a popup** (most "Continue with Google" buttons) is followed: `act` prints
-   `a popup opened: <host>, now in view`, the steps after it act in the popup, and `page.png`
-   and the refs are of it. When the popup closes, the page that opened it is back. In a served
-   browser the popup stays open: act on its URL, or with no URL, to continue in it. A cold act's popup closes
-   with the act.
+1. **Snapshot** with `--interactive` and pick refs from what it printed. Never invent a ref.
+   Exit 76 is a loading screen, not the page: run it again with `--wait-for='text=<words the
+   loaded page has>'`. Never guess a CSS selector for `--wait-for`; a miss waits 30 s.
+2. **Act** on those refs. `--steps` is a JSON array, never empty, run in order in one tab. Each
+   step is one of:
+   `{"op":"goto","url":…}` `{"op":"click","selector":…}` `{"op":"fill","selector":…,"value":…}`
+   `{"op":"type","selector":…,"value":…}` `{"op":"select","selector":…,"value":…}`
+   `{"op":"press","selector":…,"key":"Enter"}` `{"op":"wait_for","selector":"text=…"}`.
+   A selector is `ref=<role>/<name>` from the snapshot. Use `type` for search boxes and
+   autocompletes that react to keystrokes, and `fill` for plain inputs. An act with a URL loads
+   the page fresh, so fill and submit a form in one act; without a URL it carries on in the page
+   the browser is on.
+3. **Verify** with `--expect=<regex>`: the words that prove the job (the saved value, or the
+   site's own success message), matched on screen for up to 5 s. **A matched `--expect` IS the
+   check:** report and move on, never re-open the page to confirm. No `--expect`, or no match:
+   open the `page.png` the act wrote before you say it worked.
 
-`read`, `links` and `shot` take a URL the same way when you only need the text, the links or a
-picture of a page.
-
-- **Start with the verb.** A public page needs no `status`, `--help` or setup first: `status`
-  checks the owner's logins, one browser per site, and tells you nothing about a public page.
-- **A small page is in the output.** `snapshot` and `act` print the page text and the refs
-  under the directory they name; `cat page.md` is only for a big page they did not print.
-- **`read` puts the page's facts first.** Label/value tables (a Wikipedia infobox, a spec or
-  profile table) come at the top as `- label: value` lines, before the article. Take a fact
-  from there when it is there: "Initial release" in the infobox, not a year from the history.
-- **Read a page once.** To look for something else in it, grep the `page.md` in the artifacts
-  directory `read` names on stderr; reading the page again loads it again.
-
-## Doing it again: record once, replay without snapshots
-
-A flow you will repeat (a daily post, a check, a clicker) costs a snapshot and a decision per
-page every time. Record it the first time, then replay it in one call:
+## Reading pages
 
 ```bash
-5dive browser act <url> --steps='[…]' --expect='…' --record=daily-post   # each act of run 1
-5dive browser replay <site> daily-post --values='["today'"'"'s text"]'     # run 2, 3, …: no snapshots
-5dive browser routine ls            # what is recorded; `routine show <site> <name>` for the steps
+5dive browser read <url1> <url2> <url3>        # several pages: ONE call, loaded side by side
 ```
 
-- `--record=<name>` keeps an act's steps **only when it succeeded**, and **never the values you
-  typed**: each fill/type/select value becomes a numbered slot that `replay --values` fills in
-  order. Add `--expect` when you record, so the replay re-checks each page.
-- `replay` runs every act from the cache with no snapshot to read. If the site renamed a button,
-  it re-picks it once and rewrites the routine. If it cannot, it stops (exit 1), names the act,
-  and tells you to `routine forget <site> <name> --from=<k>` and re-record from there with a
-  snapshot. A pay step stops a replay for the owner exactly as it stops an act (exit 73).
-- Read the last `page.png` a replay leaves before you report success, as after any act.
-
-**Re-snapshotting the same page?** Add `--delta` after the first full snapshot: it prints only
-the refs and text that changed since your last snapshot of that site, and does not write
-`page.png` when under 1% of it moved (the picture you have is current). A new page, or a change
-bigger than the page, comes back full.
-
-## Input mode: sites that refuse an automated browser (tiktok.com)
-
-Some sites will not render for a browser under automation control. For those, the site's
-adapter says `"drive": "input"`, and the browser is **plain Chrome, driven the way a person
-drives it**: you read the screen and act through a real keyboard and mouse. There is no
-automation channel, so to the page it is indistinguishable from the owner's own window.
-tiktok.com is the first such site. A box can also make input mode the **default** for every
-logged-in site (`5dive browser config` shows it; root sets `drive=input`), and then this is how
-you work on all of them, unless a site's adapter says `"drive": "cdp"`. The verbs tell you when a
-site is in input mode: `read`, `tree` or `run` refused "INPUT mode" means use the screen.
-
-```bash
-5dive browser shot tiktok.com https://www.tiktok.com/@someone   # a PNG of the live window (1280x800) + its title
-5dive browser shot tiktok.com                                     # the window as it is now, no navigation
-5dive browser act tiktok.com --steps='[{"op":"click","x":922,"y":674},
-                                       {"op":"type","value":"hello"},{"op":"press","key":"Enter"}]'
-```
-
-1. **Look first.** Every decision starts from a `shot` (or the `page.png` the last `act` left).
-   The coordinates are pixels of that PNG. The address bar is in the picture, so you can see
-   which page you are on.
-2. **Act in small steps**: `click{x,y[,button,count]}`, `move{x,y}`, `type{value}` (into
-   whatever has focus), `press{key}` (`Enter`, `Tab`, `Escape`, `PageDown`, `ctrl+l`, …),
-   `scroll{dy}` (wheel notches, + is down), `goto{url}` (typed into the address bar),
-   `wait{ms}`, `upload{x,y,path}` (clicks the upload control at x,y, types the file's absolute
-   path into the browser's file chooser and checks it closed; if the chooser will not take it,
-   the file is dropped on x,y instead), `drop{x,y,path}` (drags the file onto x,y: a drop area
-   or the upload control, no chooser). Then read the `page.png` it wrote before the next act. A click that opens a new
-   page ends that act: type into the new page in the next one, after you have seen it. A click
-   on a spot another window covers, or keys that cannot reach the browser, fail the step (exit
-   1) with nothing sent past it. Read the error and the screenshot; do not repeat the same step
-   blind.
-3. **There is no DOM here.** `tree`, `read`, `links`, adapter `run` actions and `selector`/`ref`
-   steps are refused, by name. Do not ask for them; use the screen.
-4. **Say what a step does when it matters.** Nothing here can read a button's label, so a step
-   that pays, publishes, sends or deletes must carry `"kind":"pay"` (or `publish`, `send`,
-   `delete`). The owner's policy applies to what you declare: a kind they set to `ask` (pay, by
-   default) stops with exit 73 before anything runs. Never leave the kind off to get past that.
-   An undeclared purchase is still a purchase.
-
-**Hand the window to the owner whenever a person is needed.** A captcha or slider puzzle, a
-verification code, an "unusual activity" page, or a judgement call that is theirs:
-
-```bash
-5dive browser handoff tiktok.com --reason="solve the slider puzzle"   # they get a Connect button
-5dive browser handoff tiktok.com --wait                               # returns when they are done
-```
-
-They open the **same window** you were driving. Your input is refused while they have it, and
-when they tap Done you carry on from the page they left. Take a `shot` before your next act.
-A challenge whose title says so stops an act by itself (exit 75). TikTok's puzzle does not change
-the title, so when you see one in a screenshot, hand the window over. Never try to solve it.
-
-## Pages that need the owner's login
-
-A page verb refuses a page that is visibly a sign-in form or a challenge, and never hands one
-back as evidence. On a site with no adapter it proceeds otherwise, and says that no adapter
-confirmed the login. If you hit the sign-in refusal on a page that must be the owner's account,
-switch to the `connect-site` skill. Never type the owner's password yourself, and never try to
-get past a CAPTCHA or other challenge.
-**Claude in Chrome, only when the stop names it.** If this agent has Claude in Chrome connected
-(opt-in, `5dive browser claude status`), the sign-in stop starts with "This agent has Claude in
-Chrome". Then, and only then, finish that one sign-in step with your Claude in Chrome tools and come
-back here for the rest of the task. Never reach for Claude in Chrome for anything else.
-An authenticator-app 2FA prompt is the one exception, and only on a site whose owner saved its
-seed on the box: `run` types the code itself, and `5dive browser totp fill <site> [<url>]` does
-it on demand. Neither shows you the code. With no seed saved, it stops like any challenge.
-
-**"Sign up / Sign in with Google" when the browser already holds a Google login.** Google's own
-pages get one fixed answer each, whatever site led there:
-
-- **You may click:** the account chooser, to pick the saved account the task names (never another
-  one); the "Sign in to <app> with Google" / "Continue as …" confirm; a consent screen that asks
-  only for basic profile and email (the "See your gender / languages" lines under the profile
-  item are its details, not extra access). Carry on with `act <the site you started on>` and no
-  URL: the whole sign-up stays in that one browser. Never copy a Google URL into a command; its
-  long query IS the sign-up, and a cut copy opens Google's "400. That's an error." page.
-- **Hard stop (exit 75), hand it over:** a password field, a verification code or 2-step prompt, a
-  robot check, Google asking for an email address (adding an account), a chooser whose account is
-  signed out. `5dive browser handoff <site>` (a robot check: `connect-request <site> --challenge`).
-- **Google's error page (exit 76)**, "400. That's an error.": the sign-up was lost, not refused.
-  Open the site's sign-up again and click its Google button.
-- **A sign-up that lands on the site's own login page** with "Continue with Google" (or a button
-  that says just "Google") on it comes back with a note saying so. Click that button and nothing
-  else on that page, again with `act <site>` and no URL.
-- **The site's own terms step** ("I agree to the Terms of Use / Privacy Policy" box + Continue,
-  e.g. Pitch's "We take your privacy seriously"): tick it and continue, `act <site>` and no URL.
-  Agreeing to the terms of the account the job names IS the sign-up, not a grant. Leave optional
-  boxes (newsletters, marketing) unticked.
-- **Ask your owner (exit 73):** a Google consent screen that wants more than basic profile and
-  email (calendar, contacts, Drive, extra scope boxes to tick). Tell them what it wants. Never click Allow on it; if
-  they say yes, they click it themselves through `handoff`.
-
-**Do not ask about sign-up housekeeping** when the job says "sign up": a required workspace or
-team name the job did not give takes a neutral default (the page's placeholder, or "My
-Workspace"), and a session on the site for another account than the one the job names is signed
-out first. Say what you did in your report.
-
-**Blocked from a server IP** ("Request blocked by network security", "suspicious network"):
-some sites block server IPs; `5dive browser proxy set <url>` sends this box's browser through
-your own proxy. That is the owner's proxy and the owner's call — tell them, and use only a URL
-they give you. Switching the proxy mid-session can end a site's login (the site sees a new IP).
-
-**Two accounts on one site** (`github.com_work`, `github.com_personal`): a URL alone is refused
-and the refusal names both. **Ask the owner which one, never guess**, then name it:
-`5dive browser act github.com_work <url> --steps=…`.
-
-## Stuck on a captcha: ask the owner to clear it, then carry on (DIVE-5200)
-
-A CAPTCHA, a "verify you are human" or a "Just a moment…" check is a hard stop. You never
-solve it and never look for a way round it. A "Just a moment…" usually clears by itself, so the
-browser already watches it for up to 90 s in the same page load before it says STOP; once it has,
-do not sleep and snapshot again: a fresh load starts the check over. But you do not give up the task either: ask the
-person, wait, and finish the job yourself.
-
-```bash
-5dive browser connect-request <site> --challenge --url=<the page you were stopped on> \
-  --reason="<one line: what you were doing>"
-```
-
-`<site>` is the host (`futuretools.io`), even if you were browsing with nothing connected.
-A page verb that hits a check prints this exact command for you. Your paired owner gets
-"I'm stuck on a captcha on <site>" with an **Open <site>** button; their tap opens the box
-browser on that page and sends them a one-time link as code, from root, never through you.
-They clear the check and tap **Done**. Done closes their view and **hands the same browser
-back to you, on that page**, so the check stays cleared for you.
-
-**The box loads the page first** (DIVE-6725). If the page is an error, nobody is messaged and
-the command fails: a 4xx/5xx with no check on it, a "Page not found", or a page that does not
-load at all means the address is wrong. Find the right one first (`5dive browser snapshot <url>`).
-If the page loads with no check on it, the owner is still asked, but to **take over** and not to
-clear a captcha. Then `--reason` is what they read as what to do, so make it the one thing to tap
-(`--reason="tap Got it on the URL inspection bubble"`). Done tells you what the page shows now
-(its title, its address, and whether a check is still on it). It never says the check was cleared.
-
-After the `[browser challenge] … tapped Done` message, carry on **without asking again**:
-
-1. First check what already happened. If the step you were on may have gone through,
-   read the result (the listing, the sent folder, the confirmation page) before you redo it.
-   Nothing is sent twice.
-2. Re-read the page you were stopped on (`5dive browser snapshot <url>`). It goes through
-   the browser profile the owner just used.
-3. Clear: continue from that step. Still a check: say so once and stop.
-
-Do not poll while you wait. Do not open the link. A flat block with nothing to click
-("access denied", a 403 from a server IP) is not a check a person can clear; see
-"Blocked from a server IP".
+- **A job that names several pages reads them in one `read`**, never one call per page.
+- `read` prints each page's facts first (`- label: value` lines from its infobox or spec
+  table), then the head of its text. Take a fact from the facts when it is there.
+- **Read a page once.** The whole page is in the `page.md` it names: grep that file for more,
+  do not read the page again. `--full` prints all of it.
+- `snapshot` and `act` print a small page's text and refs too; `cat page.md` only for a big one.
+- `links <url>` gives a page's links, `shot <url>` a picture of it.
 
 ## Paying, posting, sending and deleting are the owner's call
 
-**The owner's default is standard** (DIVE-5148): `act` runs post, send and delete steps without
-stopping, says `ALLOWED (default standard)`, and logs each one for the owner with what it sent and
-a screenshot — but a **pay step stops and asks them** (exit 73), because a post or a delete can be
-undone and money cannot. `5dive browser approvals policy` shows the policy and its `mode`
-(`standard`, `yolo`, `careful` or `custom`). Changing it is the owner's, not yours:
-`sudo 5dive browser approvals policy set careful` puts the stop on all four,
-`set yolo` takes it off all four, `set standard` is this default,
-`set <kind>=ask|allow` changes one kind, and from your seat all of them are refused.
+The default is **standard**: post, send and delete steps run and are logged for the owner, and
+a **pay step stops**: `act` exits **73** with an ask, a screenshot and an approval id. Relay the
+ask to the owner with the screenshot, in plain words: what is bought, sent or deleted, and
+where. The owner approves, not you: their Telegram button or `sudo 5dive browser approve <id>`.
+Then re-run the same act with `--approved=<id>`. `5dive browser approvals policy` shows
+the policy; `approvals policy set careful` (the owner's, never yours) makes all four ask.
+**Do not rephrase the steps** to get past a stop: a renamed button is still an order placed. If
+a step will pay and `act` does not stop it, ask first anyway.
 
-Where a kind is `ask` (`pay` by default; the owner chose `careful`, or that kind), `act` stops in front of any such
-button (read off the live page, whatever selector you used; Ctrl/Cmd+Enter counts as send, and so
-does a plain Enter in a composer with no form around it, which is how a chat box sends) and
-exits **73** with the ask, a screenshot and an approval id.
+## Hard stops: never solve, never guess
 
-- Relay the ask to the owner **with the screenshot**, in plain words: what will be bought,
-  posted, sent or deleted, and where.
-- Relay the ask's payload (who it goes to, what it says, the amount, the item), not the button's
-  name. If the ask says the page showed none, say that and send the screenshot.
-- Only on their explicit yes is it approved: `sudo 5dive browser approve <id>`, which the owner
-  or their dashboard runs, or their Approve button on Telegram — not you (from a seat it is
-  refused). Then re-run the SAME act with `--approved=<id>`. A yes covers exactly those steps,
-  once, for 30 minutes.
-- **Do not rephrase the steps to get around the stop.** A button renamed is still an order
-  placed. The check reads literal button labels, so a purchase behind a button labelled
-  "Continue" is not caught by it — under `careful` that one is on you: if a step will pay, post,
-  send or delete, ask first even when `act` does not stop you.
+- A captcha, "verify you are human" or "Just a moment…" that did not clear: never solve it.
+  Run the `connect-request <site> --challenge` command the verb prints, then wait for the
+  owner's Done.
+- A sign-in form, a password, a 2FA code or a certificate warning: stop. Never type the owner's
+  password. A page that must be the owner's account: the `connect-site` skill.
+- Two accounts on one site (`github.com_work`, `github.com_personal`): ask the owner which one,
+  never guess, then name it: `5dive browser act github.com_work <url> …`.
 
-## From real jobs
+## Read more only when you need it
 
-Lessons from browser jobs that went wrong on real sites (DIVE-5390). One line each:
+These files sit next to this one, in `references/`:
 
-- **Read the saved record back when no `--expect` covered it.** After a submit with no `--expect`, or one that did not match, open what the site saved and check every field landed where you meant: a URL can land in the name field while the page says "success". A matched `--expect` naming the saved value already is that check.
-- **Look at the screenshot after a submit with no `--expect`**, not only the exit code. A success line can show for a moment and the form reset under it.
-- **One run per form, every field in it.** Tabs keep page state between runs, so clear a pre-filled form and re-check it before you type.
-- **Never press a site's autofill or AI-assist button.** It writes text you were not given.
-- **A bot check can appear mid-flow**, after a sign-in or submit button, not only on page load. It is still a hard stop.
-- **Only a real browser render proves a page has no bot check.** A plain fetch of the page cannot see one.
-- **Patterns:** `--expect` already ignores case, so never put `(?i)` in it (grep -E rejects it). `--wait-for='text=<words>'` matches plain words in any case. A regex works only in a `wait_for` step's selector, as `text=/word/i`.
-- **A form that only says "thanks"** (Tally and the like) leaves no record to read back: report "submitted, not live".
-- **Served is not signed in.** Before you hand off work that needs the login, check `5dive browser status <site>` reads authenticated.
-- **Input mode: Chrome's "Restore pages?" bubble can cover the header's sign-in link or avatar.** Close it and take a new `shot` before you judge signed in or out, and check the URL bar in the screenshot shows the page you meant.
-- **An `act` that opens a URL starts the page fresh.** A filled form, an open dialog or a code box from one act is gone in the next, so fill and submit in one act. When a later step needs the same page (a code that arrives after "Send code"), keep the browser served and act without a URL, and test that before you spend a press you only get once.
-- **A blank, unlabelled text box in a form is usually a honeypot.** Leave it empty.
-- **Files are not a DOM `act` step**, on purpose. In input mode use one `upload{x,y,path}` step on the upload control: the file must be one this seat can read, by absolute path. If the chooser does not take the path, the step drops the file on the same point, and fails by name only when that does not take either. A page with a "drag files here" area takes `drop{x,y,path}` on that area directly. A drop on a spot that is neither makes the browser open the file in the tab: the step says so, go back with `alt+Left`. Check the file name shows on the form before you submit. If the form also takes an image URL, use that instead. Neither works for you? Stop and tell the owner.
-- **Input mode: check typed text in the screenshot before you press Enter.** A field can refuse focus or drop characters. After two misses on the same field, try one other way in, then stop. Never send a partial message.
-- **A certificate warning is a hard stop.** Never click through it. The same site with or without `www.` can have a valid certificate; try that once.
-- **A check that appears after you send means it was not delivered.** A chat or relay bot can let the first command through and hold the first real message behind a captcha. Report "not delivered".
-- **A site that fills the form by reading your URL writes text you were not given.** Clear every field you have no value for. If the form has no place for text you were given, stop and ask; never rewrite it to fit.
-- **An invite refused for a new account is usually an unverified email.** Verify the account's email, then retry the invite once.
-- **Input mode: re-shoot before you click by coordinates.** A cookie banner, a dialog or a name that wraps to two lines moves everything below it, so coordinates from an earlier screenshot miss.
-- **A tick box or dropdown can miss on the first click.** Before the final press, check in a screenshot that every box shows ticked, every dropdown shows its value and the submit button is enabled. A native dropdown that will not open takes a second click or the Down key.
-- **"Captcha verification failed" after a submit is an invisible bot check.** There was no widget to see, and it is still a hard stop: never press submit twice.
-- **A money form can open on the wrong direction or with an old amount.** Read the add/withdraw switch, the amount and the button label in a screenshot before you press.
-- **A site that flags the account as automated means stop there for the day.** After a captcha, a 403 or an "unusual activity" page on a site where you post, tell the owner and do nothing more on that site that day. Space later posts hours apart.
-- **A click can land on a different page than you meant**, like a notification that opens the feed instead of the post. Check the URL bar or title before you record a link or id from it; never guess one.
-- **An upsell or "verify your identity" prompt after an action is not the job.** Decline it ("Not now"); never start it.
-- **Input mode: a `shot` shows only the first screen (1280x800).** Before you say a list, feed or inbox has nothing new, or count what is on it, `scroll{dy}` (or press `PageDown`) and read the new `page.png`, or say which part you did not reach.
-- **Input mode: a first `shot` can catch the page still loading** (a spinner, grey boxes, an empty list). `wait{ms}` a few seconds and shoot again before you read it or judge signed in.
+- `references/lessons.md`: before a form, a sign-up, a post or an upload; downloads and popups.
+- `references/logins.md`: a sign-in stop, Google sign-up, a captcha, a blocked server IP, a proxy.
+- `references/input-mode.md`: a verb says "INPUT mode", or the site is tiktok.com.
+- `references/paying.md`: the whole pay/post/send/delete rule, when an act exits 73.
+- `references/repeat.md`: a flow you will run again (`--record`, `replay`, `--delta`).

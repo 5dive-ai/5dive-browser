@@ -1,0 +1,40 @@
+# Lessons from real browser jobs
+
+Part of the use-browser skill. Read it before a form, a sign-up, a post or an upload, and whenever a step did something you did not expect.
+
+## Downloads and popups
+
+- **A click that downloads a file** (an Export or Download button) hands you the file: `act`
+   prints `downloaded: <path> (<name>, <bytes> bytes)`, and the file is in the act's artifact
+   directory under `downloads/`, readable by your seat (`--json`: `downloads`). A file over
+   100 MB, or still downloading after 2 minutes, is named on stderr and not saved.
+- **A click that opens a popup** (most "Continue with Google" buttons) is followed: `act` prints
+   `a popup opened: <host>, now in view`, the steps after it act in the popup, and `page.png`
+   and the refs are of it. When the popup closes, the page that opened it is back. In a served
+   browser the popup stays open: act on its URL, or with no URL, to continue in it. A cold act's popup closes
+   with the act.
+
+## On real sites (DIVE-5390)
+
+- **Read the saved record back when no `--expect` covered it.** After a submit with no `--expect`, or one that did not match, open what the site saved and check every field landed where you meant: a URL can land in the name field while the page says "success". A matched `--expect` naming the saved value already is that check.
+- **Look at the screenshot after a submit with no `--expect`**, not only the exit code. A success line can show for a moment and the form reset under it.
+- **One run per form, every field in it.** Tabs keep page state between runs, so clear a pre-filled form and re-check it before you type.
+- **Never press a site's autofill or AI-assist button.** It writes text you were not given.
+- **A bot check can appear mid-flow**, after a sign-in or submit button, not only on page load. It is still a hard stop.
+- **Only a real browser render proves a page has no bot check.** A plain fetch of the page cannot see one.
+- **Patterns:** `--expect` already ignores case, so never put `(?i)` in it (grep -E rejects it). `--wait-for='text=<words>'` matches plain words in any case. A regex works only in a `wait_for` step's selector, as `text=/word/i`.
+- **A form that only says "thanks"** (Tally and the like) leaves no record to read back: report "submitted, not live".
+- **Served is not signed in.** Before you hand off work that needs the login, check `5dive browser status <site>` reads authenticated.
+- **An `act` that opens a URL starts the page fresh.** A filled form, an open dialog or a code box from one act is gone in the next, so fill and submit in one act. When a later step needs the same page (a code that arrives after "Send code"), keep the browser served and act without a URL, and test that before you spend a press you only get once.
+- **A blank, unlabelled text box in a form is usually a honeypot.** Leave it empty.
+- **Files are not a DOM `act` step**, on purpose. In input mode use one `upload{x,y,path}` step on the upload control: the file must be one this seat can read, by absolute path. If the chooser does not take the path, the step drops the file on the same point, and fails by name only when that does not take either. A page with a "drag files here" area takes `drop{x,y,path}` on that area directly. A drop on a spot that is neither makes the browser open the file in the tab: the step says so, go back with `alt+Left`. Check the file name shows on the form before you submit. If the form also takes an image URL, use that instead. Neither works for you? Stop and tell the owner.
+- **A certificate warning is a hard stop.** Never click through it. The same site with or without `www.` can have a valid certificate; try that once.
+- **A check that appears after you send means it was not delivered.** A chat or relay bot can let the first command through and hold the first real message behind a captcha. Report "not delivered".
+- **A site that fills the form by reading your URL writes text you were not given.** Clear every field you have no value for. If the form has no place for text you were given, stop and ask; never rewrite it to fit.
+- **An invite refused for a new account is usually an unverified email.** Verify the account's email, then retry the invite once.
+- **A tick box or dropdown can miss on the first click.** Before the final press, check in a screenshot that every box shows ticked, every dropdown shows its value and the submit button is enabled. A native dropdown that will not open takes a second click or the Down key.
+- **"Captcha verification failed" after a submit is an invisible bot check.** There was no widget to see, and it is still a hard stop: never press submit twice.
+- **A money form can open on the wrong direction or with an old amount.** Read the add/withdraw switch, the amount and the button label in a screenshot before you press.
+- **A site that flags the account as automated means stop there for the day.** After a captcha, a 403 or an "unusual activity" page on a site where you post, tell the owner and do nothing more on that site that day. Space later posts hours apart.
+- **A click can land on a different page than you meant**, like a notification that opens the feed instead of the post. Check the URL bar or title before you record a link or id from it; never guess one.
+- **An upsell or "verify your identity" prompt after an action is not the job.** Decline it ("Not now"); never start it.

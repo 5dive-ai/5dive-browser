@@ -52,8 +52,8 @@ t 'I15 FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS still sets the bound' \
   '{"title":"Just a moment...","cleared":false,"waited_ms":20000} clock=20000' \
   "$(FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS=20000 w default 'Just a moment...')"
 
-# Every executor goto calls it: the two snapshot paths, render, and both act gotos.
-t 'I8 driver-playwright calls it after its snapshot goto and its act goto' 2 "$(grep -c 'aria.waitInterstitial(page)' browser/bin/driver-playwright)"
+# Every executor goto calls it: the two snapshot paths, render, both act gotos, and readMode's goto.
+t "I8 driver-playwright calls it after its snapshot goto, its act goto and readMode's goto" 3 "$(grep -c 'aria.waitInterstitial(page)' browser/bin/driver-playwright)"
 t 'I9 session-daemon calls it after snapshot, render and the act goto' 3 "$(grep -c 'aria.waitInterstitial(page)' browser/bin/session-daemon)"
 
 # bin/browser's STOP says the wait happened when the payload says it did not clear.

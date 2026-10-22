@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Changed — cheaper and faster per browser job: a small skill, several pages in one `read`, a `read` that prints the page's head (DIVE-6732), 1.51.0
+
+The public bench prints cost per job, and Hermes beat us 2.5x on it ($0.0023 against $0.0057, Haiku 5.5). main's breakdown of the 1.48.0 runs: steps are not the gap (5D makes 4-7 model calls, Hermes 6). The gap is what every call re-reads. The use-browser skill was 23.7 KB (~5.6k tokens), loaded on every job and re-read by every later call. `read` printed whole articles (40.5 KB plus 12.9 KB in R1-r2). And wasted steps: two runs ran `5dive browser --help` (6.8 KB), one sent `act --steps='[]'`. DIVE-6731 also found R1 at ~37 s against OpenClaw's 22.4 s: three ~9 s Wikipedia reads queued on one profile's lease.
+
+- **`use-browser` is a 5.2 KB core**: snapshot, act by ref, verify; the exact shape of every `act` step with one example; "never run `--help`, `status` or setup first"; read several pages in one call; the pay rule; the hard stops. The rest moved, unchanged, into `skills/use-browser/references/` (`lessons.md`, `logins.md`, `input-mode.md`, `paying.md`, `repeat.md`), which the core names with when to read each.
+- **`read <url> <url>…`** (up to 5): one lease, one executor call (new driver mode `read`) with every page in its own tab loading at once, and the pages derived side by side. Every url must open in the first one's profile.
+- **`read` prints the page's head**: front matter and facts whole, then the text up to 6000 characters (shared across the pages of one call), cut at a line, with one line naming the complete `page.md`. `--full` prints everything. `page.md` and `--json` are unchanged.
+- Measured on this box: the pinned extractor alone takes 3.3 s (SQLite) and 6.0 s (PostgreSQL) of a Wikipedia read.
+
+Arms: `tests/browser_read_many_unit.sh`, 28 arms; 16 of them fail on 1.49.0. The skill-text pins in `browser_plugin_unit.sh` (T33m, T46e), `browser_routine_delta_unit.sh` (R6) and `browser_claude_in_chrome_unit.sh` (C6) now read the reference file the text moved to, and the core is checked for pointing at it.
+
 ### Fixed — the captcha button loads the page first, says "captcha" only when there is one, and a late tap gets a fresh button (DIVE-6725), 1.50.0
 
 On exact-swallow, an agent sent its owner three "clear the captcha" buttons for a Search Console address that was a 404 with no captcha on it. The owner answered: "it was not capture - just broken link". Nothing loaded the page before the message went out. The only wording was about a captcha, Done told the agent "the owner cleared the check" either way, and a tap 65 s after the 15-minute expiry was a dead end.

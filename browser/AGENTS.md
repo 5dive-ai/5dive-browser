@@ -223,6 +223,11 @@ They are also **one page instant**, which the three separate commands are not: a
 by `tree` can be gone from the DOM `read` captured seconds later, and nothing in the two
 files says so. Use `tree`, `read` or `shot` when one field really is all you want.
 
+**Several pages to read? One `read` with every url** (`5dive browser read <url> <url> <url>`,
+up to 5): they load side by side in one browser, instead of queueing one call after another.
+`read` prints each page's facts and the head of its text; the whole page is in the `page.md`
+it names, so grep that rather than reading the page again (`--full` prints all of it).
+
 **Never guess a selector.** A ref is `ref=<role>/<accessible name>[#n]` and is re-derived from
 the page every time, so it survives a reload — an obfuscated class name does not.
 
