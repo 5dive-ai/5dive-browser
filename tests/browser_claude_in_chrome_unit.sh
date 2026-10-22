@@ -129,7 +129,7 @@ arm 'C6 the sign-in form stop starts with the route' 1 "$(grep -c 'die "$E_COLD"
 arm 'C6 Google'"'"'s hard stop starts with the route' 1 "$(grep -c 'die "$E_COLD" "$(_cic_route)STOP: $why ($kind)' "$BROWSER")"
 arm 'C6 a consent the owner must judge does NOT route (it stays theirs)' 0 "$(grep -c '$(_cic_route)STOP, ask your owner' "$BROWSER")"
 arm 'C6 a robot check does NOT route (never solved by an agent)' 0 "$(grep -c 'robot) die "$E_COLD" "$(_cic_route)' "$BROWSER")"
-arm 'C6 the use-browser skill says when, and only then' yes "$(yn grep -q 'Then, and only then, finish that one sign-in step with your Claude in Chrome tools' "$ROOT/browser/skills/use-browser/SKILL.md")"
+arm 'C6 the use-browser skill says when, and only then' yes "$(yn grep -rq 'Then, and only then, finish that one sign-in step with your Claude in Chrome tools' "$ROOT/browser/skills/use-browser/")"
 
 # --- C7 ----------------------------------------------------------------------
 arm 'C7 claude.ai is an input-mode site (plain Chrome keeps extensions)' input "$(jq -r .drive "$ROOT/browser/adapters/claude.ai.json")"

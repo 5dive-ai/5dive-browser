@@ -472,6 +472,44 @@ async function snapshotMode(plan) {
   await printAndExit(payload);
 }
 
+// `read <url> <url>…` — SEVERAL PAGES, ONE BROWSER, LOADED SIDE BY SIDE (DIVE-6732).
+// The bench's R1 sent three `read`s at once and they came back ~9 s apart: one
+// profile is one Chrome, so the lease put them in a line. Here every page gets
+// its own tab of the one persistent context and all of them load at the same
+// time. A page that fails is named in its own entry; the others still land.
+async function readMode(plan) {
+  const profile = process.env.FIVEDIVE_BROWSER_PROFILE || plan.profile;
+  const pages = Array.isArray(plan.pages) ? plan.pages : [];
+  if (!pages.length) die(E_NOTHING_RAN, 'read needs at least one page to capture');
+  for (const p of pages) {
+    if (!p || typeof p.url !== 'string' || !/^https?:\/\//.test(p.url)) die(E_NOTHING_RAN, 'read needs http(s) urls to capture');
+    if (typeof p.html !== 'string' || !p.html.startsWith('/')) die(E_NOTHING_RAN, 'read needs an absolute path to write each document to');
+  }
+  const ctx = await openProfile(profile);
+  let results;
+  try {
+    assertLease('read');
+    const settle = Number(process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS || 1200);
+    results = await Promise.all(pages.map(async (p, i) => {
+      try {
+        const page = (i === 0 && ctx.pages()[0]) || await ctx.newPage();
+        page.setDefaultTimeout(STEP_TIMEOUT);
+        await page.goto(p.url, { waitUntil: 'domcontentloaded' });
+        const inter = await aria.waitInterstitial(page);
+        await page.waitForTimeout(settle);
+        const html = await page.content();
+        fs.writeFileSync(p.html, html, { mode: 0o600 });
+        return { url: p.url, ok: true, html_bytes: Buffer.byteLength(html), ...(inter ? { interstitial: inter } : {}) };
+      } catch (e) {
+        return { url: p.url, ok: false, error: e.message };
+      }
+    }));
+  } finally {
+    try { await ctx.close(); } catch (e) { /* the pages are already on disk */ }
+  }
+  await printAndExit({ pages: results, browser_mode: browserMode });
+}
+
 // `act`'s re-read (DIVE-4943): the page as the steps left it, to the files
 // bin/browser named. Never fatal — a missing re-read is reported by bin/browser
 // as "not verified", which is the honest answer, and must not turn a step that
@@ -563,6 +601,7 @@ async function main() {
   // guarded road every other page in this plugin is opened by.
   if (plan.mode === 'snapshot') return await snapshotMode(plan);
   if (plan.mode === 'totp') return await totpMode(plan);
+  if (plan.mode === 'read') return await readMode(plan);
 
   const steps = Array.isArray(plan.steps) ? plan.steps : null;
   if (!steps || !steps.length) die(E_NOTHING_RAN, 'the plan carries no steps');

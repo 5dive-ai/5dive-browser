@@ -5912,10 +5912,13 @@ env PATH="$SPATH" "$BROWSER" serve proxied.test --stop >/dev/null 2>&1
 
 run bash "$BROWSER" --help
 tc 'T33m --help names proxy set' 'browser proxy set' "$OUT$ERR"
-for f in README.md skills/use-browser/SKILL.md skills/connect-site/SKILL.md AGENTS.md; do
+# DIVE-6732: use-browser's core names references/logins.md for a blocked IP, and that file says it.
+for f in README.md skills/use-browser/references/logins.md skills/connect-site/SKILL.md AGENTS.md; do
   tc "T33m $f tells the reader the fix exists" '5dive browser proxy set' "$(tr -s '[:space:]' ' ' < "$ROOT/browser/$f")"
   tc "T33m $f says a switch can end a login" 'new IP' "$(tr -s '[:space:]' ' ' < "$ROOT/browser/$f")"
 done
+tc 'T33m the use-browser core sends a blocked server IP to logins.md' 'a blocked server IP, a proxy' \
+   "$(tr -s '[:space:]' ' ' < "$ROOT/browser/skills/use-browser/SKILL.md")"
 tn 'T33m connect-site no longer says there is no fix' 'there is no flag for it' \
    "$(tr -s '[:space:]' ' ' < "$ROOT/browser/skills/connect-site/SKILL.md")"
 
@@ -7963,7 +7966,7 @@ t  'T46d (control) Enter in a formless search box runs, with no ask' '0 1' \
 if [[ -s "$T46/policy.before" ]]; then cp "$T46/policy.before" "$POL31"; fi
 
 # --- T46e the words ----------------------------------------------------------------------------
-for f in browser/README.md browser/AGENTS.md browser/skills/use-browser/SKILL.md; do
+for f in browser/README.md browser/AGENTS.md browser/skills/use-browser/references/paying.md; do
   tc "T46e $f says a plain Enter in a formless composer is a send" 'a plain Enter in a composer with no form around it' \
      "$(tr -s ' \n' '  ' < "$ROOT/$f")"
 done

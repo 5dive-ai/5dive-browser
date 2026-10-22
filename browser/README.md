@@ -565,7 +565,8 @@ Measured on en.wikipedia.org with real Chrome in CI (`tests/browser_routine_benc
 ### `browser read` — Markdown and provenance from the authenticated page
 
 ```
-5dive browser read <site> <url> [--out=<dir>] [--json] [--wait=<ms>] [--wait-for=<target>]
+5dive browser read <site> <url> [--full] [--out=<dir>] [--json] [--wait=<ms>] [--wait-for=<target>]
+5dive browser read [<site>] <url> <url>… [--full]          # up to 5 pages, one call (DIVE-6732)
 5dive browser links <site> <url> [--out=<dir>] [--wait=<ms>] [--wait-for=<target>]
 ```
 
@@ -577,6 +578,22 @@ schema.org data, word count, capture/browser/extractor versions, and the SHA-256
 With no `--out`, the directory is created mode 0700 beneath the seat's private artifact root;
 each artifact is 0600. An explicit directory must meet that same ownership and mode contract, and
 can never be the live profile or a directory beneath it. A logged-out refusal creates nothing.
+
+**What it prints is the page's head, not the page (DIVE-6732).** The front matter and the
+facts (label/value tables) are printed whole, then the page text up to 6000 characters
+(`FIVEDIVE_BROWSER_READ_PRINT_MAX`), cut at a line, with one line naming the complete `page.md`.
+A Wikipedia article is 40-110 KB of Markdown, and every later model call of a job reads whatever
+a read printed again. `--full` prints all of it; `page.md` on disk always has all of it.
+
+**Several urls, one call, loaded side by side.** `read <url> <url> <url>` takes the browser's
+lease once, has the executor open every page in its own tab of one browser at the same time, and
+derives the pages in parallel (the extractor is seconds of CPU on a big article). Pages print in
+the order asked, each under a `==> <url> <==` line, each with its own artifacts directory named on
+stderr; together they share the print budget. Every url must open in the same profile as the
+first: one with a login of its own beside public ones is refused, not read logged out. A page that
+does not load is named under its url, the others are still read, and the call exits non-zero. A
+served browser renders them one after another (it is one tab). `--out`, `--json` and `--wait-for`
+take one url.
 
 `--json` prints the metadata plus Markdown as one object. `links` is the same one-capture read and
 the same evidence triple, but prints only the extracted article's absolute link objects. It is not

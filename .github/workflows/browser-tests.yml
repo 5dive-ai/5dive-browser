@@ -135,6 +135,11 @@ jobs:
       # stub, and live arms in real Chrome with a 1.45.0-shaped mutant as the control.
       - name: act popup harness
         run: bash tests/browser_act_popup_unit.sh
+      # DIVE-6732: read takes several urls in one call, loaded side by side in one
+      # browser, and prints a page's head. Fake executor arms, then live arms in real
+      # Chrome against a local server that counts the pages it holds at once.
+      - name: read many harness
+        run: bash tests/browser_read_many_unit.sh
       # A manifest or marketplace file that does not parse breaks `5dive plugin
       # add` at install time, where nobody is watching. Cheap, so it is its own
       # named check rather than an assertion buried in the suite.

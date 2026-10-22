@@ -193,7 +193,9 @@ tc 'R6 ...by name' 'nothing to record' "$ERR"
 run "$BROWSER" --help
 tc 'R6 --help names replay' 'browser replay <site> <name>' "$OUT$ERR"
 tc 'R6 --help names --delta' 'snapshot <url> --delta' "$OUT$ERR"
-SKILL="$(cat browser/skills/use-browser/SKILL.md)"
+# DIVE-6732: the core skill names references/repeat.md, and that file teaches the verbs.
+SKILL="$(cat browser/skills/use-browser/SKILL.md browser/skills/use-browser/references/*.md)"
+tc 'R6 the core skill points at the file that teaches them' 'references/repeat.md' "$(cat browser/skills/use-browser/SKILL.md)"
 tc 'R6 the skill teaches --record' '--record=' "$SKILL"
 tc 'R6 the skill teaches replay' '5dive browser replay' "$SKILL"
 tc 'R6 the skill teaches --delta' '--delta' "$SKILL"

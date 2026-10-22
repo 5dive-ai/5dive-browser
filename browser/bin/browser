@@ -6155,19 +6155,27 @@ READ_CAP_DEFAULT=30000
 
 _cmd_read_like() { # _cmd_read_like read|links <site> <url> [flags]
   local kind="$1"; shift
-  local site="" url="" out="" json=0 wait="$READ_WAIT_DEFAULT" wait_for=""
+  local site="" url="" out="" json=0 wait="$READ_WAIT_DEFAULT" wait_for="" full=0
+  local -a more=()
   local cap="${FIVEDIVE_BROWSER_READ_CAP_MS:-$READ_CAP_DEFAULT}"
   while (($#)); do
     case "$1" in
       --out=*) out="${1#*=}" ;;
       --json) [[ "$kind" == read ]] || die "$E_USAGE" "--json belongs to browser read; browser links already prints JSON"; json=1 ;;
+      --full) [[ "$kind" == read ]] || die "$E_USAGE" "--full belongs to browser read; browser links prints every link"; full=1 ;;
       --wait=*) wait="${1#*=}" ;;
       --wait-for=*) wait_for="${1#*=}"; _wait_for_ok "$wait_for" || die "$E_USAGE" "--wait-for takes one CSS selector, ref=<role>/<name> or text=<words>" ;;
       -h|--help)
-        printf '%s %s <site> <url> [--out=<dir>]%s [--wait=<ms>] [--wait-for=<selector|ref=…|text=…>]\n' "$PROG" "$kind" "$([[ "$kind" == read ]] && printf ' [--json]')"
+        if [[ "$kind" == read ]]; then
+          printf '%s read [<site>] <url> [<url>…] [--full] [--out=<dir>] [--json] [--wait=<ms>] [--wait-for=<selector|ref=…|text=…>]\n' "$PROG"
+          printf '  Several urls load side by side in one browser (one call, not one per page). Each page prints its facts and the first %s characters of its text; --full prints all of it, and page.md in the artifacts directory always has all of it.\n' "$READ_PRINT_MAX"
+        else
+          printf '%s links <site> <url> [--out=<dir>] [--wait=<ms>] [--wait-for=<selector|ref=…|text=…>]\n' "$PROG"
+        fi
         return 0 ;;
       -*) die "$E_USAGE" "unknown flag: $1" ;;
-      *) if [[ -z "$site" ]]; then site="$1"; elif [[ -z "$url" ]]; then url="$1"; else die "$E_USAGE" "unexpected argument: $1"; fi ;;
+      *) if [[ -z "$site" ]]; then site="$1"; elif [[ -z "$url" ]]; then url="$1"
+         elif [[ "$kind" == read ]]; then more+=("$1"); else die "$E_USAGE" "unexpected argument: $1"; fi ;;
     esac
     shift
   done
@@ -6178,6 +6186,10 @@ _cmd_read_like() { # _cmd_read_like read|links <site> <url> [flags]
   [[ -r "$READ_EXTRACTOR" ]] || die "$E_UNAVAILABLE" "the pinned page extractor is missing from this install ($READ_EXTRACTOR)"
   command -v node >/dev/null 2>&1 || die "$E_UNAVAILABLE" "node is required to run the pinned page extractor"
   command -v jq >/dev/null 2>&1 || die "$E_UNAVAILABLE" "jq is required to assemble the evidence metadata"
+  if (( ${#more[@]} )); then
+    [[ -z "$out" && -z "$wait_for" ]] && (( ! json )) || die "$E_USAGE" "--out, --json and --wait-for take one url; several urls each get their own artifacts directory, named on stderr"
+    _cmd_read_many "$site" "$full" "$wait" "$url" "${more[@]}"; return $?
+  fi
 
   # Authenticate BEFORE making the destination. A logged-out call writes
   # nothing — not even an empty output directory that looks like a failed read.
@@ -6255,7 +6267,7 @@ _cmd_read_like() { # _cmd_read_like read|links <site> <url> [flags]
   elif (( json )); then
     cat "$stage/full.json"
   else
-    cat "$stage/page.md"
+    _read_print "$stage/page.md" "$out/page.md" "$full" "$READ_PRINT_MAX"
   fi
   printf '%s: artifacts: %s\n' "$PROG" "$out" >&2
 
@@ -6264,6 +6276,142 @@ _cmd_read_like() { # _cmd_read_like read|links <site> <url> [flags]
   _shot_restore
   _lease_release
   trap - EXIT
+  return "$rrc"
+}
+
+# A READ PRINTS THE PAGE'S HEAD, NOT THE WHOLE PAGE (DIVE-6732). A Wikipedia
+# article is 40-110 KB of Markdown, and every later model call of the job reads
+# whatever a read printed again: the bench's R1 carried 40.5 KB and 12.9 KB of
+# it to the end. The front matter and the facts come first in page.md, so they
+# are printed whole within the budget; the page text stops at the last line that
+# fits, and one line says where the rest is. page.md on disk is always complete.
+READ_PRINT_MAX="${FIVEDIVE_BROWSER_READ_PRINT_MAX:-6000}"
+[[ "$READ_PRINT_MAX" =~ ^[0-9]{1,7}$ ]] && (( READ_PRINT_MAX >= 500 )) || READ_PRINT_MAX=6000
+_read_print() {  # _read_print <page.md> <path to name> <full> <budget>
+  local md="$1" path="$2" full="$3" max="$4"
+  if (( full )) || (( $(wc -c < "$md") <= max )); then cat -- "$md"; return 0; fi
+  awk -v max="$max" -v path="$path" '
+    NR == 1 && $0 == "---" { fm = 1; print; next }
+    fm { print; if ($0 == "---") fm = 0; next }
+    { total += length($0) + 1 }
+    cut { next }
+    used + length($0) + 1 > max {
+      if (used == 0) { print substr($0, 1, max); used = max }
+      cut = 1; next
+    }
+    { print; used += length($0) + 1 }
+    END {
+      if (cut) printf "\n[cut: the first %d of this page'"'"'s %d characters are above. The whole page is in %s; grep it there for anything else instead of reading the page again (--full prints all of it).]\n", used, total, path
+    }' "$md"
+}
+
+# SEVERAL PAGES IN ONE CALL, LOADED SIDE BY SIDE (DIVE-6732). The bench's R1
+# (three Wikipedia pages) took ~37 s against OpenClaw's 22 s, all of it three
+# ~9 s reads in a line: the agent sent them at once, and one profile is one
+# Chrome, so the lease queued them. `read <url> <url>…` takes the lease once,
+# has the executor open every page in its own tab of that one browser at the
+# same time, and then derives the pages side by side too (the extractor is
+# seconds of CPU on a big article). Every url opens in the SAME profile as the
+# first, so a url with a login of its own is refused rather than read logged out.
+# A served browser renders them one after another: it is one tab, and the win
+# there is the one call instead of three.
+READ_MANY_MAX=5
+_cmd_read_many() {  # _cmd_read_many <site> <full> <wait-ms> <url>...
+  local site="$1" full="$2" wait="$3"; shift 3
+  local -a urls=("$@") outs=()
+  local n=${#urls[@]} u k host
+  (( n <= READ_MANY_MAX )) || die "$E_USAGE" "read takes at most $READ_MANY_MAX urls in one call; got $n. Split them into two calls."
+  for u in "${urls[@]}"; do
+    [[ "$u" =~ ^https?://[^/]+ ]] || die "$E_USAGE" "browser renders only http(s) pages; got: $u"
+  done
+  for u in "${urls[@]:1}"; do
+    host="${u#*://}"; host="${host%%/*}"; host="${host%%\?*}"; host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
+    if _is_public "$site"; then
+      [[ "$(_route_site "$u" 2>/dev/null)" == "$PUBLIC_SITE" ]] || die "$E_USAGE" "$u has a login of its own on this box, and the other urls open in the public profile (nothing logged in). Read it in its own call: $PROG read $u"
+    else
+      _shot_host_ok "$site" "$host" || die "$E_USAGE" "$u is not a page of '$site' (its host is $host), and one call reads one profile's pages. Read it in its own call: $PROG read $u"
+    fi
+  done
+
+  _PG_WARM=1
+  _page_open "$site" "${urls[0]}"
+  local dir="$_PG_DIR" chrome="$_PG_CHROME"
+  _READ_STAGE="$(mktemp -d /tmp/5dive-browser-read.XXXXXXXX)" || die "$E_UNAVAILABLE" "cannot stage the page evidence"
+  trap '_read_cleanup' EXIT
+  local stage="$_READ_STAGE" capture crc=0 rj rp plan
+  for ((k = 0; k < n; k++)); do mkdir -p -- "$stage/$k"; done
+
+  if (( _SITE_BROKERED )) || _daemon_live "$dir"; then
+    capture=session-daemon
+    for ((k = 0; k < n; k++)); do
+      crc=0; rj=$(_daemon_render "$dir" "${urls[k]}" 1280 800 false "$wait" "") || crc=$?
+      if (( crc == 0 )) && [[ -n "$rj" ]]; then jq -r '.html' <<<"$rj" > "$stage/$k/page.html"; fi
+      [[ -s "$stage/$k/page.html" ]] || printf 'the box session did not capture it (it exited %s)\n' "$crc" > "$stage/$k/error"
+    done
+  else
+    capture=playwright
+    local driver="${FIVEDIVE_BROWSER_DRIVER:-$_SELF_DIR/driver-playwright}"
+    [[ -n "$driver" && -x "$driver" ]] || die "$E_UNAVAILABLE" "several urls load in one browser through the executor, and there is none at $driver. Read them one call each."
+    plan=$(jq -nc --arg p "$dir" --arg s "$stage" \
+      '{profile:$p, mode:"read", pages:($ARGS.positional | to_entries | map({url:.value, html:"\($s)/\(.key)/page.html"}))}' \
+      --args "${urls[@]}")
+    rp=$(FIVEDIVE_BROWSER_PROFILE="$dir" FIVEDIVE_BROWSER_CHROME="$(command -v "$chrome" 2>/dev/null || printf '%s' "$chrome")" \
+         FIVEDIVE_BROWSER_TREE_SETTLE_MS="${FIVEDIVE_BROWSER_TREE_SETTLE_MS:-$SNAP_SETTLE_DEFAULT}" \
+         FIVEDIVE_BROWSER_LEASE="$(_lease_meta "$_LEASE_DIR")" FIVEDIVE_BROWSER_LEASE_TOKEN="$_LEASE_TOKEN" \
+         "$driver" <<<"$plan") || crc=$?
+    (( crc == 0 )) || die "$E_UNAVAILABLE" "the executor did not open the $site browser (it exited $crc; its own reason is above); no evidence files were written"
+    for ((k = 0; k < n; k++)); do
+      if [[ "$(jq -r --argjson k "$k" '.pages[$k].ok // false' <<<"$rp" 2>/dev/null)" != true || ! -s "$stage/$k/page.html" ]]; then
+        jq -r --argjson k "$k" '.pages[$k].error // "the executor gave no answer for it"' <<<"$rp" 2>/dev/null > "$stage/$k/error"
+        [[ -s "$stage/$k/error" ]] || echo "the executor gave no answer for it" > "$stage/$k/error"
+      fi
+    done
+  fi
+
+  # The artifact directories are made HERE, one after another: the first one
+  # also creates the seat's artifact root, and two pages racing to make it would
+  # fail one of them. A page that is not captured gets its empty one removed.
+  for ((k = 0; k < n; k++)); do outs[k]="$(_read_output_dir "$site" "" "$dir")" || exit $?; done
+  local budget=$(( READ_PRINT_MAX / n )); (( budget >= 1500 )) || budget=1500
+  for ((k = 0; k < n; k++)); do
+    ( _read_many_one "$stage/$k" "${urls[k]}" "$site" "$chrome" "$capture" "${outs[k]}" "$full" "$budget" \
+        > "$stage/$k/out" 2> "$stage/$k/err"; echo $? > "$stage/$k/rc" ) &
+  done
+  wait
+
+  local rc=0 r
+  for ((k = 0; k < n; k++)); do
+    r=$(cat "$stage/$k/rc" 2>/dev/null); [[ "$r" =~ ^[0-9]+$ ]] || r=$E_UNAVAILABLE
+    (( r == 0 || rc != 0 )) || rc=$r
+    printf '%s: -- %s\n' "$PROG" "${urls[k]}" >&2
+    cat -- "$stage/$k/err" >&2
+    (( k == 0 )) || printf '\n'
+    printf '==> %s <==\n' "${urls[k]}"
+    if [[ -s "$stage/$k/out" ]]; then cat -- "$stage/$k/out"
+    else printf '(not read, exit %s: %s)\n' "$r" "$(grep -v '^$' "$stage/$k/err" | tail -1 | cut -c1-300)"; fi
+  done
+
+  _READ_STAGE=""
+  rm -rf -- "$stage"
+  _shot_restore
+  _lease_release
+  trap - EXIT
+  return "$rc"
+}
+_read_many_one() {  # <page-stage> <url> <site> <chrome> <capture> <out-dir> <full> <budget>
+  local pd="$1" url="$2" site="$3" chrome="$4" capture="$5" out="$6" full="$7" budget="$8" extra rrc=0
+  _RM_EMPTY="$out"; trap 'rmdir -- "$_RM_EMPTY" 2>/dev/null' EXIT   # kept once a page is in it
+  [[ ! -s "$pd/error" ]] || die "$E_UNAVAILABLE" "$url was not captured: $(head -c 300 "$pd/error"); no evidence files were written for it"
+  _signin_guard "$pd/page.html"
+  _challenge_hint "$pd/page.html" "$url" "" "" "$site"
+  extra=$(_ready_verdict "$url" "" null "$pd/page.html" "" false "$capture") || rrc=$?
+  _derive_capture "$pd" "$url" "$chrome" "$capture" "$extra"
+  local f
+  for f in page.html page.meta.json page.md; do
+    install -m 00600 "$pd/$f" "$out/$f" || die "$E_UNAVAILABLE" "cannot install $f in $out"
+  done
+  _read_print "$pd/page.md" "$out/page.md" "$full" "$budget"
+  printf '%s: artifacts: %s\n' "$PROG" "$out" >&2
   return "$rrc"
 }
 
