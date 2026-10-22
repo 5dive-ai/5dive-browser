@@ -768,8 +768,10 @@ async function snapshotRequest(ctx, req, send, end) {
   try {
     const page = await pageFor(ctx, req.url);
     assertLease(req, 'snapshot');
+    // The document's HTTP status, as the cold driver records it (DIVE-6725).
+    let resp = null;
     if (inPopup(page, req.url)) send({ t: 'log', line: `  the popup an earlier act opened is still on ${req.url}; read as it is, not reloaded` });
-    else await page.goto(req.url, { waitUntil: 'domcontentloaded' });
+    else resp = await page.goto(req.url, { waitUntil: 'domcontentloaded' });
     // A Cloudflare "Just a moment..." clears in this same load, or not at all
     // (DIVE-6317). A --wait-for behind one that never cleared would only wait again.
     const inter = await aria.waitInterstitial(page);
@@ -798,6 +800,7 @@ async function snapshotRequest(ctx, req, send, end) {
       ...(inter ? { interstitial: inter } : {}),
       // A served browser is a headed one (the launch above), recorded as the cold one is.
       browser_mode: 'headed',
+      ...(resp ? { http_status: resp.status() } : {}),
     }) + '\n' });
     end(0);
   } catch (e) {

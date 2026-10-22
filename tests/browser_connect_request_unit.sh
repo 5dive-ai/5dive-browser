@@ -75,6 +75,25 @@ case "$1" in
     # DIVE-6111: a hand-run view says where it listens and how to read its password.
     [[ "$3" == --bind=local && ! -f "$FAKE_CTL.novline" ]] \
       && echo "local view: VNC on 127.0.0.1:5917 of this box only, one connection; its one-time password: sudo cat /var/lib/5dive/browser-profiles/agent-clicker/$2/.5dive-viewer.pw" >&2 ;;
+  snapshot)
+    # DIVE-6725: the look before a challenge ask, and again at its Done. The
+    # default page is a Cloudflare check (a 403 that IS a check); the ctl files
+    # turn it into the incident's 404, a network error, a soft 404, or a page
+    # with no check on it.
+    u=""; for a in "${@:2}"; do [[ "$a" =~ ^https?:// ]] && { u="$a"; break; }; done
+    if [[ -f "$FAKE_CTL.snapneterr" ]]; then
+      echo "browser: could not capture $u: net::ERR_NAME_NOT_RESOLVED at $u" >&2
+      echo "browser: the executor could not capture $u (its own reason is above)." >&2; exit 69
+    fi
+    [[ -f "$FAKE_CTL.snapslow" ]] && sleep 5
+    if [[ -f "$FAKE_CTL.snapstop" ]]; then
+      echo "browser: futuretools.io is presenting a security challenge, so anything rendered now is the challenge page and not the page you asked for. A person clears it. Ask your owner to, then carry on after their Done: 5dive browser connect-request futuretools.io --challenge --url=<the page you asked for>" >&2; exit 75
+    fi
+    st=403 ti="Just a moment..."
+    [[ -f "$FAKE_CTL.snap404" ]] && st=404 ti="Error 404 (Not Found)!!1"
+    [[ -f "$FAKE_CTL.snapsoft404" ]] && st=200 ti="Page not found | FutureTools"
+    [[ -f "$FAKE_CTL.snapclear" ]] && st=200 ti="URL inspection - Search Console"
+    jq -nc --arg u "$u" --arg t "$ti" --argjson s "$st" '{url:$u, title:$t, http_status:$s, nodes:[]}' ;;
   status)
     # DIVE-5638: the real shape of a BROKEN status — the site's verdict line,
     # then a paragraph that ends in a reproducer command, rc 69.
@@ -109,7 +128,7 @@ export FIVEDIVE_BROWSER_CONNECT_PRIV="$BROWSER"
 export FAKE_LOG="$TMP/fake.log" FAKE_CTL="$TMP/ctl"
 
 priv() { printf '%s\0' "$@" | "$BROWSER" _connect; }
-reset() { : >"$TMP/stub.log"; : >"$FAKE_LOG"; rm -f "$TMP"/ctl.{noprofile,authed,bind500,tgfail,badpath,servefail,broken,novline}; }
+reset() { : >"$TMP/stub.log"; : >"$FAKE_LOG"; rm -f "$TMP"/ctl.{noprofile,authed,bind500,tgfail,badpath,servefail,broken,novline,snap404,snapneterr,snapsoft404,snapclear,snapstop,snapslow}; }
 binds() { grep -c '"/shell/browser-viewer-bind"' "$TMP/stub.log" 2>/dev/null || true; }
 last_code() { jq -r 'select(.path|test("sendMessage")) | .form.reply_markup' "$TMP/stub.log" | tail -1 | jq -r '.inline_keyboard[0][0].callback_data' | sed 's/^bconn://'; }
 
@@ -277,7 +296,9 @@ tn "C2 the page's address is NOT in the message (Telegram would preview it)" "ht
 t  "C3 one button, labelled Open <site>" "Open futuretools.io" "$(jq -r '.form.reply_markup' <<<"$msg" | jq -r '.inline_keyboard[0][0].text')"
 CCODE=$(last_code)
 t  "C3 NO TAP -> NO BIND for a challenge either" 0 "$(binds)"
-t  "C3 ... and no browser" "" "$(cat "$FAKE_LOG")"
+# DIVE-6725: the one load before the tap is the asking seat's look at the page,
+# never a served browser or a view for the owner.
+t  "C3 ... and no browser for the owner: only the asking seat's look at the page" "snapshot $PAGE --json --no-shot" "$(cat "$FAKE_LOG")"
 out=$(priv tap "$CCODE" 999999 2>&1); rc=$?
 t  "C4 only the paired owner can open it" 77 "$rc"
 reset
@@ -293,7 +314,7 @@ out=$(priv done "$CDONE" 999999 2>&1); rc=$?
 t  "C6 another person cannot press Done" 77 "$rc"
 out=$(priv done "$CDONE" "$OWNER" 2>&1); rc=$?
 t  "C7 the owner's Done succeeds" 0 "$rc"
-t  "C7 Done REVOKES the view, then serves the page back for the agent: no stop, no probe" "viewer-revoke futuretools.io|serve futuretools.io --url=$PAGE" "$(tr '\n' '|' <"$FAKE_LOG" | sed 's/|$//')"
+t  "C7 Done REVOKES the view, serves the page back for the agent, then reads it: no stop, no probe" "viewer-revoke futuretools.io|serve futuretools.io --url=$PAGE|snapshot futuretools.io $PAGE --json --no-shot" "$(tr '\n' '|' <"$FAKE_LOG" | sed 's/|$//')"
 tc "C7 the verdict says the browser is back with the agent" "status=the view is closed and the browser is back in the agent's hands" "$out"
 tc "C7 ... and is a challenge verdict" "kind=challenge" "$out"
 out=$(priv done "$CDONE" "$OWNER" 2>&1); rc=$?
@@ -339,13 +360,105 @@ CDONE=$(sed -n 's/^done=//p' <<<"$out")
 f="$TMP/req/$(printf '%s' "$CDONE" | sha256sum | cut -d' ' -f1)"; sed -i 's|^url=.*|url=https://evil.example/|' "$f"; : >"$FAKE_LOG"
 out=$(priv done "$CDONE" "$OWNER" 2>&1); rc=$?
 t  "C16 a Done with a tampered page still closes the view" 0 "$rc"
-t  "C16 ... and serves the site back with NO foreign page" "viewer-revoke futuretools.io|serve futuretools.io" "$(tr '\n' '|' <"$FAKE_LOG" | sed 's/|$//')"
+t  "C16 ... and serves the site back with NO foreign page" "viewer-revoke futuretools.io|serve futuretools.io|snapshot futuretools.io https://futuretools.io/ --json --no-shot" "$(tr '\n' '|' <"$FAKE_LOG" | sed 's/|$//')"
 # the hand-back fails: Done still succeeds (the view is closed) and says what happens next
 reset; "$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" >/dev/null 2>&1; CCODE=$(last_code)
 out=$(priv tap "$CCODE" "$OWNER" 2>&1); CDONE=$(sed -n 's/^done=//p' <<<"$out"); : >"$TMP/ctl.servefail"; : >"$FAKE_LOG"
 out=$(priv done "$CDONE" "$OWNER" 2>&1); rc=$?
 t  "C17 a failed hand-back is still a closed view" 0 "$rc"
 tc "C17 ... and the verdict says the agent's next command starts it, with the check kept" "its next command starts it (the cleared check is kept in the profile)" "$out"
+
+# ---- P: look before asking, and again at Done (DIVE-6725) ---------------------------
+# exact-swallow's ceo sent its owner three "clear the captcha" buttons for a Search
+# Console URL that was a 404 with no captcha on it. Nothing loaded the page first.
+BAD="https://futuretools.io/inspect?id=not-a-page"
+for case in snap404:"HTTP 404" snapneterr:"net::ERR_NAME_NOT_RESOLVED" snapsoft404:"Page not found"; do
+  reset; rm -rf "$TMP/req"/*; : >"$TMP/ctl.${case%%:*}"
+  out=$("$BROWSER" connect-request futuretools.io --challenge --url="$BAD" --reason="tap Got it" 2>&1); rc=$?
+  t  "P1 ${case%%:*}: a page that is an error is refused, not sent" 69 "$rc"
+  tc "P1 ${case%%:*}: ... naming what the box saw" "${case#*:}" "$out"
+  t  "P1 ${case%%:*}: ... nobody was messaged" 0 "$(grep -c sendMessage "$TMP/stub.log")"
+  t  "P1 ${case%%:*}: ... and no request file was written" "" "$(ls "$TMP/req")"
+  t  "P1 ${case%%:*}: the page was loaded first, as the asking seat" "snapshot $BAD --json --no-shot" "$(head -1 "$FAKE_LOG")"
+done
+reset; rm -rf "$TMP/req"/*
+out=$("$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" 2>&1); rc=$?
+t  "P2 a 403 that IS a check (Cloudflare's \"Just a moment...\") is still sent" "0 1" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+tc "P2 ... in captcha words, since the box saw one" "is stuck on a captcha" "$(jq -r 'select(.path|test("sendMessage")) | .form.text' "$TMP/stub.log")"
+reset; rm -rf "$TMP/req"/*; : >"$TMP/ctl.snapslow"
+out=$(FIVEDIVE_BROWSER_CONNECT_LOOK_S=1 "$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" 2>&1); rc=$?
+t  "P2 a look that runs out of time is not an answer: the ask goes out as before" "0 1" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+tc "P2 ... in captcha words" "is stuck on a captcha" "$(jq -r 'select(.path|test("sendMessage")) | .form.text' "$TMP/stub.log")"
+reset; rm -rf "$TMP/req"/*; : >"$TMP/ctl.snapstop"
+out=$("$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" 2>&1); rc=$?
+t  "P2 a page verb that STOPS on a check (no render at all) is a check, and is sent" "0 1" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+tc "P2 ... in captcha words" "is stuck on a captcha" "$(jq -r 'select(.path|test("sendMessage")) | .form.text' "$TMP/stub.log")"
+reset; rm -rf "$TMP/req"/*; : >"$TMP/ctl.snapclear"
+out=$("$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" --reason="tap Got it on the tour bubble" 2>&1); rc=$?
+txt=$(jq -r 'select(.path|test("sendMessage")) | .form.text' "$TMP/stub.log")
+t  "P3 no check on the page: still sent" "0 1" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+tn "P3 ... and never called a captcha" "captcha" "$txt"
+tn "P3 ... nor a check to clear" "Clear the check" "$txt"
+tc "P3 ... it asks the owner to take over, for what" "needs you to take over" "$txt"
+tc "P3 ... with what to do" "What to do: tap Got it on the tour bubble" "$txt"
+t  "P3 ... on the same Open button" "Open futuretools.io" "$(jq -r 'select(.path|test("sendMessage")) | .form.reply_markup' "$TMP/stub.log" | jq -r '.inline_keyboard[0][0].text')"
+tc "P3 the agent is told no check was seen" "no check was seen on" "$out"
+PCODE=$(last_code); reset
+out=$(priv tap "$PCODE" "$OWNER" 2>&1); rc=$?
+t  "P4 the tap tells the plugin there is no check, so its link text says take over" "0 check=0" "$rc $(grep '^check=' <<<"$out")"
+PDONE=$(sed -n 's/^done=//p' <<<"$out"); : >"$TMP/ctl.snapclear"
+out=$(priv done "$PDONE" "$OWNER" 2>&1); rc=$?
+t  "P5 Done says what the box shows now: no check" "0 check=none" "$rc $(grep '^check=' <<<"$out")"
+tc "P5 ... the page's title and address" "It shows \"URL inspection - Search Console\" at $PAGE" "$out"
+tn "P5 ... and never says a check was cleared" "cleared" "$out"
+reset; rm -rf "$TMP/req"/*
+"$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" >/dev/null 2>&1; PCODE=$(last_code)
+out=$(priv tap "$PCODE" "$OWNER" 2>&1); t "P6 a page with a check: the tap says check=1" "check=1" "$(grep '^check=' <<<"$out")"
+PDONE=$(sed -n 's/^done=//p' <<<"$out")
+out=$(priv done "$PDONE" "$OWNER" 2>&1); rc=$?
+t  "P6 Done on a page whose check is still there says so" "0 check=still" "$rc $(grep '^check=' <<<"$out")"
+tc "P6 ... in the verdict" "a check is still on it" "$out"
+reset; rm -rf "$TMP/req"/*
+"$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" >/dev/null 2>&1; PCODE=$(last_code)
+out=$(priv tap "$PCODE" "$OWNER" 2>&1); PDONE=$(sed -n 's/^done=//p' <<<"$out"); : >"$TMP/ctl.snapslow"
+out=$(FIVEDIVE_BROWSER_CONNECT_LOOK_S=1 bash -c 'printf "%s\0" done "$1" "$2" | "$3" _connect' _ "$PDONE" "$OWNER" "$BROWSER" 2>&1); rc=$?
+t  "P7 a Done whose read-back runs out of time still completes, inside its bound" "0 check=unknown" "$rc $(grep '^check=' <<<"$out")"
+tc "P7 ... and says it is not known, never cleared" "whether a check is still on it is not known" "$out"
+
+# ---- L: a tap one minute late (DIVE-6725) --------------------------------------------
+# The owner tapped at 09:32:08Z a button that had expired at 09:31:03Z and got a
+# dead end. A late tap by the owner now gets a fresh button; a very late one does not.
+reset; rm -rf "$TMP/req"/*; : >"$TMP/ctl.snapclear"
+"$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" --reason="tap Got it" >/dev/null 2>&1; LCODE=$(last_code)
+f="$TMP/req/$(printf '%s' "$LCODE" | sha256sum | cut -d' ' -f1)"; sed -i "s/^expires_at=.*/expires_at=$(( $(date -u +%s) - 65 ))/" "$f"
+reset
+out=$(priv tap "$LCODE" "$OWNER" 2>&1); rc=$?
+t  "L1 a tap 65 s late is not a bind" "77 0" "$rc $(binds)"
+tc "L1 ... the owner is told a fresh button was sent" "a fresh one was just sent" "$out"
+msg=$(jq -c 'select(.path|test("sendMessage"))' "$TMP/stub.log" | tail -1)
+t  "L1 ... to the owner who tapped" "$OWNER" "$(jq -r '.form.chat_id' <<<"$msg")"
+tc "L1 ... saying the last one expired" "The last button expired" "$(jq -r '.form.text' <<<"$msg")"
+tc "L1 ... with the same words as the first ask" "What to do: tap Got it" "$(jq -r '.form.text' <<<"$msg")"
+L2CODE=$(last_code)
+t  "L1 ... carrying a NEW code" 1 "$(( ${#L2CODE} == 48 ))"
+tn "L1 ... (not the expired one)" "$LCODE" "$L2CODE"
+reset
+out=$(priv tap "$L2CODE" "$OWNER" 2>&1); rc=$?
+t  "L2 the fresh button opens the same page" "0 serve futuretools.io --login --url=$PAGE" "$rc $(head -1 "$FAKE_LOG")"
+tc "L2 ... with the same no-check wording" "check=0" "$out"
+reset; rm -rf "$TMP/req"/*
+"$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" >/dev/null 2>&1; LCODE=$(last_code)
+f="$TMP/req/$(printf '%s' "$LCODE" | sha256sum | cut -d' ' -f1)"; sed -i "s/^expires_at=.*/expires_at=$(( $(date -u +%s) - 7300 ))/" "$f"
+reset
+out=$(priv tap "$LCODE" "$OWNER" 2>&1); rc=$?
+t  "L3 a tap two hours late is refused, with no fresh button" "77 0" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+tc "L3 ... and says to ask the agent" "Ask the agent to send a new one" "$out"
+reset; rm -rf "$TMP/req"/*
+"$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" >/dev/null 2>&1; LCODE=$(last_code)
+f="$TMP/req/$(printf '%s' "$LCODE" | sha256sum | cut -d' ' -f1)"; sed -i "s/^expires_at=.*/expires_at=$(( $(date -u +%s) - 65 ))/" "$f"
+reset
+out=$(priv tap "$LCODE" 999999 2>&1); rc=$?
+t  "L4 a late tap by someone else gets nothing" "77 0" "$rc $(grep -c sendMessage "$TMP/stub.log")"
 
 # ---- H: the page hint (DIVE-5200) — the public profile is never probed, so a
 # captcha interstitial there is named on the way out, keyed on the TITLE only.
@@ -492,7 +605,7 @@ printf '{"dmPolicy":"allowlist","allowFrom":["%s"],"groups":{}}\n' "$OWNER" >"$A
 seam_block=$(awk '/^if \[\[ \$EUID -ne 0 \]\]; then$/{p=1} p{print} p&&/^fi$/{p=0}' "$BROWSER")
 t  "S0 the scan reads every non-root block" "$(grep -c '^if \[\[ \$EUID -ne 0 \]\]; then$' "$BROWSER")" "$(grep -c '^if \[\[ \$EUID -ne 0 \]\]; then$' <<<"$seam_block")"
 for v in FIVEDIVE_BROWSER_CONNECT_DIR FIVEDIVE_CONNECTOR_DIR FIVEDIVE_CONNECTORD_ENV FIVEDIVE_PROVISIONING_ENV FIVEDIVE_SHELLD_URL FIVEDIVE_TELEGRAM_API FIVEDIVE_BROWSER_CONNECT_SELF FIVEDIVE_BROWSER_CONNECT_PRIV \
-         FIVEDIVE_BROWSER_SSH_USER FIVEDIVE_BROWSER_SSH_ADDR FIVEDIVE_BROWSER_WAKE_PRIV FIVEDIVE_BROWSER_SERVE_MIN_MB FIVEDIVE_BROWSER_MEMINFO FIVEDIVE_BROWSER_SUDOERS_DIR FIVEDIVE_BROWSER_VISUDO; do
+         FIVEDIVE_BROWSER_SSH_USER FIVEDIVE_BROWSER_SSH_ADDR FIVEDIVE_BROWSER_CONNECT_LOOK_S FIVEDIVE_BROWSER_WAKE_PRIV FIVEDIVE_BROWSER_SERVE_MIN_MB FIVEDIVE_BROWSER_MEMINFO FIVEDIVE_BROWSER_SUDOERS_DIR FIVEDIVE_BROWSER_VISUDO; do
   t "S1 $v is used at all (a seam the file never reads grades nothing)" 1 "$(( $(grep -c "$v" "$BROWSER") > 0 ))"
   t "S1 $v is read only inside the non-root block" "$(grep -c "$v" "$BROWSER")" "$(grep -c "$v" <<<"$seam_block")"
 done

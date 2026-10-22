@@ -437,7 +437,9 @@ async function snapshotMode(plan) {
     const page = ctx.pages()[0] || await ctx.newPage();
     page.setDefaultTimeout(STEP_TIMEOUT);
     assertLease('snapshot');
-    await page.goto(plan.url, { waitUntil: 'domcontentloaded' });
+    // The document's own HTTP status (DIVE-6725): a 404 is a page too, and a
+    // caller that hands this URL to a person needs to know it is one.
+    const resp = await page.goto(plan.url, { waitUntil: 'domcontentloaded' });
     // A Cloudflare "Just a moment..." clears in this same load, or not at all
     // (DIVE-6317). A --wait-for behind one that never cleared would only wait again.
     const inter = await aria.waitInterstitial(page);
@@ -463,6 +465,7 @@ async function snapshotMode(plan) {
       ...(waited ? { wait_for: waited } : {}),
       ...(inter ? { interstitial: inter } : {}),
       browser_mode: browserMode,
+      ...(resp ? { http_status: resp.status() } : {}),
     };
   } catch (e) {
     die(E_NOTHING_RAN, `could not capture ${plan.url}: ${e.message}`);

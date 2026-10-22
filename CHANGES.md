@@ -8,6 +8,19 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — the captcha button loads the page first, says "captcha" only when there is one, and a late tap gets a fresh button (DIVE-6725), 1.50.0
+
+On exact-swallow, an agent sent its owner three "clear the captcha" buttons for a Search Console address that was a 404 with no captcha on it. The owner answered: "it was not capture - just broken link". Nothing loaded the page before the message went out. The only wording was about a captcha, Done told the agent "the owner cleared the check" either way, and a tap 65 s after the 15-minute expiry was a dead end.
+
+- **`connect-request --challenge` loads the page first**, as the asking seat, with a snapshot (no `--url`: the site's front page). If the page answers HTTP 4xx/5xx with no check on it, has an error title ("Page not found", "Error 404"), or does not load, the command fails and names what it saw. Nobody is messaged and no request is stored. A 403 that IS a check (Cloudflare's "Just a moment...") is still sent.
+- **Captcha words only when the box saw a check.** The check is found from the interstitial the load waited on, the page title, or the site's challenge marker on the document. When none is found, the owner reads "<agent> … needs you to take over" with "What to do: <reason>". The Open button and the rails are the same. The tap's answer carries `check=0|1`, so the Telegram plugin's link message can match.
+- **Done reads the page back.** After the browser is handed back, it is read once more. The verdict gives its title, its address, its HTTP status and whether a check is still detected (`check=still|none|unknown`), and never says the check was cleared.
+- **A late tap gets a fresh button.** A tap by the paired owner up to two hours after the button expired sends that owner a fresh button with the same ask ("The last button expired, so here is a fresh one."). The expired code still binds nothing. After two hours, and for anyone else, the old refusal stands.
+- **The look is bounded.** It gets 105 s before the ask, which fits a Cloudflare wait inside an agent's 2-minute command, and 60 s at Done, inside the plugin's 150 s for the whole Done. A look that runs out of time is not an answer about the page. Before the ask, it is sent as before, in captcha words. At Done, it is "not known".
+- Snapshot payloads (the cold driver and the served session) carry the document's `http_status`.
+
+Arms P1–P7 and L1–L4, plus C3, C7 and C16 updated, in `tests/browser_connect_request_unit.sh`. P1 is the negative control: on the 1.49.0 tree the stub logs a sendMessage for the 404.
+
 ### Added — a box agent can attach a file when the browser's file chooser will not take the path: the file is dropped on the page (DIVE-6704), 1.49.0
 
 On chill-gorge (Chrome 154), the `upload{x,y,path}` step failed for every path with "no such file, or a folder", so a box agent could not open a pull request with files on GitHub. main's triage found the path typed into the chooser exactly right; it was the Open that never took. CI's Chrome 155 passes the same step, so the chooser's behaviour depends on the box and cannot be relied on.
