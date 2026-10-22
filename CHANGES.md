@@ -8,7 +8,7 @@ that file stays where it is.
 
 ## Unreleased
 
-### Changed — cheaper and faster per browser job: a small skill, several pages in one `read`, a `read` that prints the page's head (DIVE-6732), 1.50.0
+### Changed — cheaper and faster per browser job: a small skill, several pages in one `read`, a `read` that prints the page's head (DIVE-6732), 1.51.0
 
 The public bench prints cost per job, and Hermes beat us 2.5x on it ($0.0023 against $0.0057, Haiku 5.5). main's breakdown of the 1.48.0 runs: steps are not the gap (5D makes 4-7 model calls, Hermes 6). The gap is what every call re-reads. The use-browser skill was 23.7 KB (~5.6k tokens), loaded on every job and re-read by every later call. `read` printed whole articles (40.5 KB plus 12.9 KB in R1-r2). And wasted steps: two runs ran `5dive browser --help` (6.8 KB), one sent `act --steps='[]'`. DIVE-6731 also found R1 at ~37 s against OpenClaw's 22.4 s: three ~9 s Wikipedia reads queued on one profile's lease.
 
@@ -18,6 +18,19 @@ The public bench prints cost per job, and Hermes beat us 2.5x on it ($0.0023 aga
 - Measured on this box: the pinned extractor alone takes 3.3 s (SQLite) and 6.0 s (PostgreSQL) of a Wikipedia read.
 
 Arms: `tests/browser_read_many_unit.sh`, 28 arms; 16 of them fail on 1.49.0. The skill-text pins in `browser_plugin_unit.sh` (T33m, T46e), `browser_routine_delta_unit.sh` (R6) and `browser_claude_in_chrome_unit.sh` (C6) now read the reference file the text moved to, and the core is checked for pointing at it.
+
+### Fixed — the captcha button loads the page first, says "captcha" only when there is one, and a late tap gets a fresh button (DIVE-6725), 1.50.0
+
+On exact-swallow, an agent sent its owner three "clear the captcha" buttons for a Search Console address that was a 404 with no captcha on it. The owner answered: "it was not capture - just broken link". Nothing loaded the page before the message went out. The only wording was about a captcha, Done told the agent "the owner cleared the check" either way, and a tap 65 s after the 15-minute expiry was a dead end.
+
+- **`connect-request --challenge` loads the page first**, as the asking seat, with a snapshot (no `--url`: the site's front page). If the page answers HTTP 4xx/5xx with no check on it, has an error title ("Page not found", "Error 404"), or does not load, the command fails and names what it saw. Nobody is messaged and no request is stored. A 403 that IS a check (Cloudflare's "Just a moment...") is still sent.
+- **Captcha words only when the box saw a check.** The check is found from the interstitial the load waited on, the page title, or the site's challenge marker on the document. When none is found, the owner reads "<agent> … needs you to take over" with "What to do: <reason>". The Open button and the rails are the same. The tap's answer carries `check=0|1`, so the Telegram plugin's link message can match.
+- **Done reads the page back.** After the browser is handed back, it is read once more. The verdict gives its title, its address, its HTTP status and whether a check is still detected (`check=still|none|unknown`), and never says the check was cleared.
+- **A late tap gets a fresh button.** A tap by the paired owner up to two hours after the button expired sends that owner a fresh button with the same ask ("The last button expired, so here is a fresh one."). The expired code still binds nothing. After two hours, and for anyone else, the old refusal stands.
+- **The look is bounded.** It gets 105 s before the ask, which fits a Cloudflare wait inside an agent's 2-minute command, and 60 s at Done, inside the plugin's 150 s for the whole Done. A look that runs out of time is not an answer about the page. Before the ask, it is sent as before, in captcha words. At Done, it is "not known".
+- Snapshot payloads (the cold driver and the served session) carry the document's `http_status`.
+
+Arms P1–P7 and L1–L4, plus C3, C7 and C16 updated, in `tests/browser_connect_request_unit.sh`. P1 is the negative control: on the 1.49.0 tree the stub logs a sendMessage for the 404.
 
 ### Added — a box agent can attach a file when the browser's file chooser will not take the path: the file is dropped on the page (DIVE-6704), 1.49.0
 

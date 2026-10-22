@@ -369,6 +369,14 @@ browser on that page and sends them a one-time link as code, from root, never th
 They clear the check and tap **Done**. Done closes their view and **hands the same browser
 back to you, on that page**, so the check stays cleared for you.
 
+**The box loads the page first** (DIVE-6725). If the page is an error, nobody is messaged and
+the command fails: a 4xx/5xx with no check on it, a "Page not found", or a page that does not
+load at all means the address is wrong. Find the right one first (`5dive browser snapshot <url>`).
+If the page loads with no check on it, the owner is still asked, but to **take over** and not to
+clear a captcha. Then `--reason` is what they read as what to do, so make it the one thing to tap
+(`--reason="tap Got it on the URL inspection bubble"`). Done tells you what the page shows now
+(its title, its address, and whether a check is still on it). It never says the check was cleared.
+
 After the `[browser challenge] … tapped Done` message, carry on **without asking again**:
 
 1. First check what already happened. If the step you were on may have gone through,

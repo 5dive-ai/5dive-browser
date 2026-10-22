@@ -309,6 +309,9 @@ usage() {
                                       # page, taps Done — and that browser comes BACK TO YOU
                                       # on the page, so your next read goes through it. You never
                                       # solve the check; you carry on after their Done.
+                                      # The box loads the page first: an error page is
+                                      # refused and nobody is asked; a page with no check
+                                      # on it is sent as "take over", --reason = what to do.
 
   INPUT MODE (an adapter with "drive": "input", e.g. tiktok.com, or every logged-in site when the
   box default is `config drive=input`): plain Chrome driven through the screen, keyboard and
@@ -8673,6 +8676,12 @@ cmd_broker_audit() {  # _broker-audit <site> <event> [<detail>]
 # request code, read one, or register a bind.
 CONNECT_DIR="$STATE_DIR/browser-connect"
 CONNECT_REQ_TTL=900          # the owner has 15 minutes to tap Connect
+CONNECT_LATE_TTL=7200        # a tap up to two hours late gets a fresh button (DIVE-6725)
+# The look at a challenge page (DIVE-6725). Before the ask it may sit through a
+# Cloudflare wait (up to 90 s) inside an agent's 2-minute command; at Done the
+# plugin gives the whole Done 150 s, revoke and hand-back serve included.
+CONNECT_LOOK_TIMEOUT=105
+CONNECT_DONE_LOOK_TIMEOUT=60
 CONNECT_DONE_TTL=7200        # and two hours to tap Done after that
 CONNECT_VIEW_TTL=$VIEWER_TTL_DEFAULT
 CONNECT_REASON_MAX=200
@@ -8696,6 +8705,8 @@ if [[ $EUID -ne 0 ]]; then
   CONNECT_SHELLD_URL="${FIVEDIVE_SHELLD_URL:-$CONNECT_SHELLD_URL}"
   CONNECT_TG_API="${FIVEDIVE_TELEGRAM_API:-$CONNECT_TG_API}"
   CONNECT_SELF="${FIVEDIVE_BROWSER_CONNECT_SELF:-$CONNECT_SELF}"
+  [[ "${FIVEDIVE_BROWSER_CONNECT_LOOK_S:-}" =~ ^[0-9]+$ ]] \
+    && CONNECT_LOOK_TIMEOUT="$FIVEDIVE_BROWSER_CONNECT_LOOK_S" CONNECT_DONE_LOOK_TIMEOUT="$FIVEDIVE_BROWSER_CONNECT_LOOK_S"
   [[ -n "${FIVEDIVE_BROWSER_CONNECT_PRIV:-}" ]] && CONNECT_PRIV=("$FIVEDIVE_BROWSER_CONNECT_PRIV" _connect)
   # DIVE-6111: who and where the SSH steps name, instead of reading this box's
   # groups and interfaces. Set but empty is the "not known" placeholder case.
@@ -8776,6 +8787,59 @@ _connect_page_ok() {  # <site> <url>
   [[ "$u" =~ ^https?://[^[:space:][:cntrl:]]+$ ]] || return 1
   host="${u#*://}"; host="${host%%/*}"; host="${host%%\?*}"; host="${host%%#*}"; host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
   [[ -n "$host" ]] && _shot_host_ok "$1" "$host"
+}
+
+# DIVE-6725: LOOK BEFORE ASKING, AND AGAIN AT DONE. exact-swallow's agent sent its
+# owner three "clear the captcha" buttons for a Search Console URL that was a 404
+# with no captcha on it: nothing loaded the page before the message went out, the
+# only words were captcha words, and Done told the agent "the owner cleared the
+# check" either way. So a challenge ask first loads the page in the asking seat's
+# own browser (a snapshot, the verb the agent reads pages with), and Done reads it
+# back in the browser it hands over. What the box saw decides the words.
+# A title that is the site saying "no such page" while answering 200.
+CONNECT_ERROR_TITLE='(^|[^0-9])(404|410)([^0-9]|$)|page not found|^not found|that.s an error|page (does not|doesn.t) exist|page (can.t|cannot) be found'
+# Returns 1 when the page could not be loaded (LOOK_WHY says why), 2 when the
+# look ran out of time: that is not an answer about the page either way.
+_connect_look() {  # <seat> <site> <seconds> <snapshot args...>  -> LOOK_{HTTP,TITLE,PAGE,CHECK,WHY}
+  local seat="$1" site="$2" secs="$3" out rc=0 err html art; shift 3
+  LOOK_HTTP="" LOOK_TITLE="" LOOK_PAGE="" LOOK_CHECK=no LOOK_WHY=""
+  err=$(mktemp) html=$(mktemp)
+  out=$(CONNECT_AS_TIMEOUT="$secs" _connect_as_seat "$seat" snapshot "$@" --json --no-shot 2>"$err") || rc=$?
+  if (( rc == 124 )); then
+    LOOK_WHY="the page did not finish loading within ${secs}s"; rm -f "$err" "$html"; return 2
+  fi
+  if ! jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
+    # A page verb that meets a check before it renders (a connected site's probe,
+    # Google's robot page) stops and names this very handoff. That is the box's
+    # detector saying "a check", not a page that failed to load.
+    if grep -qE 'connect-request [^ ]+ --challenge' "$err"; then
+      LOOK_CHECK=yes; rm -f "$err" "$html"; return 0
+    fi
+    # A load that threw (DNS, refused, timed out) has its reason in the driver's
+    # line, not in the wrapper's "its own reason is above".
+    LOOK_WHY=$(grep -oE 'net::ERR_[A-Z_]+' "$err" | head -1)
+    [[ -n "$LOOK_WHY" ]] || LOOK_WHY=$(grep -v '^$' "$err" | tail -1 | sed 's/^[^:]*browser: //')
+    LOOK_WHY=$(printf '%s' "${LOOK_WHY:-the box browser did not answer}" | tr -d '\000-\037\177' | cut -c1-200)
+    rm -f "$err" "$html"; return 1
+  fi
+  LOOK_HTTP=$(jq -r '.http_status // "" | tostring' <<<"$out")
+  [[ "$LOOK_HTTP" =~ ^[0-9]{3}$ ]] || LOOK_HTTP=""
+  LOOK_TITLE=$(jq -r '.title // ""' <<<"$out" | tr -d '\000-\037\177' | cut -c1-120)
+  LOOK_PAGE=$(jq -r '.url // ""' <<<"$out" | tr -d '\000-\037\177' | cut -c1-300)
+  # The box's own challenge detector: the interstitial the load waited out and
+  # did not clear, the title, then the document by the site's marker. The
+  # document is read AS THE SEAT that wrote it: the path came from its output.
+  if [[ "$(jq -r '.interstitial.cleared // "" | tostring' <<<"$out")" == false ]] \
+     || grep -qiE "$CHALLENGE_TITLE_MARKER" <<<"$LOOK_TITLE"; then
+    LOOK_CHECK=yes
+  else
+    art=$(jq -r '.artifacts // ""' <<<"$out")
+    if [[ "$art" == /* ]] && _as_seat "$seat" head -c 4000000 -- "$art/page.html" >"$html" 2>/dev/null \
+       && [[ -s "$html" ]] && _render_is_challenge "$site" "$html" 2>/dev/null; then
+      LOOK_CHECK=yes
+    fi
+  fi
+  rm -f "$err" "$html"
 }
 
 # ------------------------------------------------ handoff over SSH (DIVE-6111)
@@ -9230,8 +9294,57 @@ _connect_handoff_ssh() {  # <caller> <site> <reason>
   _handoff_ssh_steps plain "$site" "$vport" "$pwf" "$caller" "$reason"
 }
 
+# Mint one request code, store it, and send the ask (DIVE-6725: one sender for
+# the first ask and for the fresh button a late tap gets). Sets CONNECT_SENT and
+# CONNECT_EXP; returns 1, with the code removed, when Telegram took no message.
+_connect_send() {  # <caller> <site> <kind> <url> <reason> <check 0|1> <chat ids> [again]
+  local caller="$1" site="$2" kind="$3" url="$4" reason="$5" check="$6" chats="$7" again="${8:-}"
+  local code f now exp label text kb sent=0 o resp
+  mkdir -p "$CONNECT_DIR" && chmod 700 "$CONNECT_DIR" || die "$E_UNAVAILABLE" "cannot create $CONNECT_DIR"
+  code=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  f=$(_connect_file "$code")
+  now=$(date -u +%s); exp=$(( now + CONNECT_REQ_TTL ))
+  ( umask 077; printf 'op=request\nseat=%s\nsite=%s\nexpires_at=%s\ncreated_at=%s\nkind=%s\nurl=%s\ncheck=%s\nreason=%s\n' \
+      "$caller" "$site" "$exp" "$now" "$kind" "$url" "$check" "$reason" > "$f" )
+
+  label="${caller#agent-}"
+  if [[ "$kind" == challenge && "$check" == 1 ]]; then
+    # Plain words, what is blocking and where. The page's address stays out of
+    # the message: Telegram would preview it, and the site is all they need.
+    text="🧩 ${label} is stuck on a captcha on ${site} and cannot go on by itself."
+    [[ -n "$reason" ]] && text+=$'\n'"Doing: ${reason}"
+    text+=$'\n\n'"Tap Open for a one-time link to the browser on your box, on the page ${label} stopped at. Clear the check yourself, then tap Done and ${label} carries on. ${label} never solves these."
+    kb=$(jq -nc --arg t "Open ${site}" --arg d "bconn:${code}" '{inline_keyboard:[[{text:$t,callback_data:$d}]]}')
+  elif [[ "$kind" == challenge ]]; then
+    # DIVE-6725: the box loaded the page and saw no check on it, so this is a
+    # thing to do on a page (a bubble to dismiss), and it is not called a captcha.
+    text="🖐 ${label} is working on ${site} in the browser on your box and needs you to take over."
+    [[ -n "$reason" ]] && text+=$'\n'"What to do: ${reason}"
+    text+=$'\n\n'"Tap Open for a one-time link to that browser, on the page ${label} is on. Do it, then tap Done and ${label} carries on."
+    kb=$(jq -nc --arg t "Open ${site}" --arg d "bconn:${code}" '{inline_keyboard:[[{text:$t,callback_data:$d}]]}')
+  elif [[ "$kind" == handoff ]]; then
+    # DIVE-5287: the SAME Connect button, onto the window the agent was driving.
+    text="🖐 ${label} is working in ${site} on your box and needs you to take over."
+    [[ -n "$reason" ]] && text+=$'\n'"What for: ${reason}"
+    text+=$'\n\n'"Tap Connect to open the same browser window it is using. ${label} is paused while you are in it; tap Done when you are finished and it carries on from the page you left."
+    kb=$(jq -nc --arg t "Connect ${site}" --arg d "bconn:${code}" '{inline_keyboard:[[{text:$t,callback_data:$d}]]}')
+  else
+    text="🔐 ${label} asks you to log in to ${site} in the browser on your box."
+    [[ -n "$reason" ]] && text+=$'\n'"Why: ${reason}"
+    text+=$'\n\n'"Tap Connect for a one-time login link. Nothing opens unless you tap. You log in yourself; ${label} never sees your password."
+    kb=$(jq -nc --arg t "Connect ${site}" --arg d "bconn:${code}" '{inline_keyboard:[[{text:$t,callback_data:$d}]]}')
+  fi
+  [[ -n "$again" ]] && text="⏰ The last button expired, so here is a fresh one."$'\n\n'"$text"
+  for o in $chats; do
+    resp=$(_connect_tg sendMessage --data-urlencode "chat_id=$o" --data-urlencode "text=$text" --data-urlencode "reply_markup=$kb")
+    [[ "$(jq -r '.ok // false' <<<"$resp" 2>/dev/null)" == true ]] && sent=$((sent + 1))
+  done
+  CONNECT_SENT=$sent CONNECT_EXP=$exp
+  (( sent > 0 )) || { rm -f "$f"; return 1; }
+}
+
 _connect_request() {  # <caller> <site> <reason> [challenge <url> | handoff]
-  local caller="$1" site="$2" reason="$3" kind="${4:-login}" url="${5:-}" code f now exp label text kb sent=0 o resp
+  local caller="$1" site="$2" reason="$3" kind="${4:-login}" url="${5:-}" check=1
   _valid_site "$site" && [[ "$site" != "$PUBLIC_SITE" ]] \
     || die "$E_USAGE" "'$site' is not a site a person can log in to"
   if [[ "$kind" == challenge ]]; then
@@ -9257,42 +9370,32 @@ _connect_request() {  # <caller> <site> <reason> [challenge <url> | handoff]
   [[ -n "$CONNECT_TG_OWNERS" ]] \
     || die "$E_UNAVAILABLE" "seat '$caller' has no paired owner on Telegram yet, so there is nobody to ask."
 
-  mkdir -p "$CONNECT_DIR" && chmod 700 "$CONNECT_DIR" || die "$E_UNAVAILABLE" "cannot create $CONNECT_DIR"
-  code=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
-  f=$(_connect_file "$code")
-  now=$(date -u +%s); exp=$(( now + CONNECT_REQ_TTL ))
-  ( umask 077; printf 'op=request\nseat=%s\nsite=%s\nexpires_at=%s\ncreated_at=%s\nkind=%s\nurl=%s\n' \
-      "$caller" "$site" "$exp" "$now" "$kind" "$url" > "$f" )
+  # DIVE-6725: look at the page before anyone is asked. An error page is not
+  # sent at all; a page with no check on it is not called a captcha.
+  if [[ "$kind" == challenge ]]; then
+    local lrc=0; _connect_look "$caller" "$site" "$CONNECT_LOOK_TIMEOUT" "$url" || lrc=$?
+    (( lrc == 1 )) \
+      && die "$E_UNAVAILABLE" "nothing was sent: the box browser could not open $url ($LOOK_WHY). The owner would only have seen an error. Check the address, open it yourself (5dive browser snapshot <url>), then ask again."
+    # A look that ran out of time is most often a check the load sat waiting on,
+    # so the ask goes out as before, in captcha words.
+    (( lrc == 2 )) && LOOK_CHECK=yes
+    if [[ "$LOOK_CHECK" != yes ]]; then
+      [[ -n "$LOOK_HTTP" ]] && (( LOOK_HTTP >= 400 )) \
+        && die "$E_UNAVAILABLE" "nothing was sent: $url answered HTTP $LOOK_HTTP in the box browser (title: \"$LOOK_TITLE\"), with no check on it, so the owner would land on an error page. Find the right address first (open it yourself: 5dive browser snapshot <url>), then ask again."
+      grep -qiE "$CONNECT_ERROR_TITLE" <<<"$LOOK_TITLE" \
+        && die "$E_UNAVAILABLE" "nothing was sent: $url opened in the box browser as \"$LOOK_TITLE\", an error page with no check on it, so the owner would land on it. Find the right address first (open it yourself: 5dive browser snapshot <url>), then ask again."
+      check=0
+    fi
+  fi
 
-  label="${caller#agent-}"
-  if [[ "$kind" == challenge ]]; then
-    # Plain words, what is blocking and where. The page's address stays out of
-    # the message: Telegram would preview it, and the site is all they need.
-    text="🧩 ${label} is stuck on a captcha on ${site} and cannot go on by itself."
-    [[ -n "$reason" ]] && text+=$'\n'"Doing: ${reason}"
-    text+=$'\n\n'"Tap Open for a one-time link to the browser on your box, on the page ${label} stopped at. Clear the check yourself, then tap Done and ${label} carries on. ${label} never solves these."
-    kb=$(jq -nc --arg t "Open ${site}" --arg d "bconn:${code}" '{inline_keyboard:[[{text:$t,callback_data:$d}]]}')
-  elif [[ "$kind" == handoff ]]; then
-    # DIVE-5287: the SAME Connect button, onto the window the agent was driving.
-    text="🖐 ${label} is working in ${site} on your box and needs you to take over."
-    [[ -n "$reason" ]] && text+=$'\n'"What for: ${reason}"
-    text+=$'\n\n'"Tap Connect to open the same browser window it is using. ${label} is paused while you are in it; tap Done when you are finished and it carries on from the page you left."
-    kb=$(jq -nc --arg t "Connect ${site}" --arg d "bconn:${code}" '{inline_keyboard:[[{text:$t,callback_data:$d}]]}')
-  else
-    text="🔐 ${label} asks you to log in to ${site} in the browser on your box."
-    [[ -n "$reason" ]] && text+=$'\n'"Why: ${reason}"
-    text+=$'\n\n'"Tap Connect for a one-time login link. Nothing opens unless you tap. You log in yourself; ${label} never sees your password."
-    kb=$(jq -nc --arg t "Connect ${site}" --arg d "bconn:${code}" '{inline_keyboard:[[{text:$t,callback_data:$d}]]}')
-  fi
-  for o in $CONNECT_TG_OWNERS; do
-    resp=$(_connect_tg sendMessage --data-urlencode "chat_id=$o" --data-urlencode "text=$text" --data-urlencode "reply_markup=$kb")
-    [[ "$(jq -r '.ok // false' <<<"$resp" 2>/dev/null)" == true ]] && sent=$((sent + 1))
-  done
-  if (( sent == 0 )); then
-    rm -f "$f"
-    die "$E_UNAVAILABLE" "Telegram did not accept the Connect message, so nobody was asked. Nothing was bound."
-  fi
-  if [[ "$kind" == challenge ]]; then
+  _connect_send "$caller" "$site" "$kind" "$url" "$reason" "$check" "$CONNECT_TG_OWNERS" \
+    || die "$E_UNAVAILABLE" "Telegram did not accept the Connect message, so nobody was asked. Nothing was bound."
+  local sent="$CONNECT_SENT" exp="$CONNECT_EXP"
+  if [[ "$kind" == challenge && "$check" == 0 ]]; then
+    printf 'no check was seen on %s when the box loaded it ("%s"), so the owner was asked to take over and do what you wrote, not to clear a captcha (%s message%s). Nothing is bound until they tap; the request expires %s.\n' \
+      "$url" "$LOOK_TITLE" "$sent" "$([[ $sent == 1 ]] || echo s)" "$(date -u -d "@$exp" +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'You will get a channel message when they tap and when they finish. Do not poll. After their Done, re-read the page and carry on from the step you stopped on; check what already happened first, so nothing is sent twice.\n'
+  elif [[ "$kind" == challenge ]]; then
     printf 'asked the owner to clear the check on %s (%s message%s). Nothing is bound until they tap; the request expires %s.\n' \
       "$site" "$sent" "$([[ $sent == 1 ]] || echo s)" "$(date -u -d "@$exp" +%Y-%m-%dT%H:%M:%SZ)"
     printf 'You will get a channel message when they tap and when they finish. Do not poll. After their Done, re-read the page and carry on from the step you stopped on; check what already happened first, so nothing is sent twice.\n'
@@ -9320,6 +9423,17 @@ _connect_claim() {  # <caller> <code> <op> <sender>  -> sets CONNECT_SITE; print
   claimed="$f.claimed.$$"
   mv "$f" "$claimed" 2>/dev/null || die "$E_PERM" "that button is not live (already used, expired, or never issued)"
   if [[ ! "$exp" =~ ^[0-9]+$ ]] || (( exp <= $(date -u +%s) )); then
+    # A TAP ONE MINUTE LATE IS NOT A DEAD END (DIVE-6725): the owner tapped at
+    # 09:32:08Z a button that expired at 09:31:03Z and could only start over.
+    # The paired owner (checked above) gets a fresh button with the same ask,
+    # bound by the same rails, so the expired code itself still binds nothing.
+    if [[ "$op" == request && "$exp" =~ ^[0-9]+$ ]] && (( $(date -u +%s) - exp <= CONNECT_LATE_TTL )) \
+       && _connect_send "$caller" "$(_connect_field "$claimed" site)" "$(_connect_field "$claimed" kind)" \
+            "$(_connect_field "$claimed" url)" "$(_connect_field "$claimed" reason)" \
+            "$(_connect_field "$claimed" check | grep -x 0 || echo 1)" "$sender" again; then
+      rm -f "$claimed"
+      die "$E_PERM" "that button had expired, so a fresh one was just sent below. Tap Open or Connect on it."
+    fi
     rm -f "$claimed"
     die "$E_PERM" "that button has expired. Ask the agent to send a new one."
   fi
@@ -9327,6 +9441,7 @@ _connect_claim() {  # <caller> <code> <op> <sender>  -> sets CONNECT_SITE; print
   CONNECT_KIND=$(_connect_field "$claimed" kind)
   CONNECT_URL=$(_connect_field "$claimed" url)
   CONNECT_OWNER=$(_connect_field "$claimed" owner)   # DIVE-6111: an SSH handoff's window seat
+  CONNECT_CHECK=1; [[ "$(_connect_field "$claimed" check)" == 0 ]] && CONNECT_CHECK=0   # DIVE-6725
   [[ "$CONNECT_KIND" == challenge ]] || CONNECT_KIND=login CONNECT_URL=""
   rm -f "$claimed"
 }
@@ -9338,11 +9453,13 @@ _connect_as_box() { _connect_as_seat "$BOX_SEAT" "$@"; }
 # asking agent's own browser, not the relay seat's (DIVE-6111).
 _connect_as_seat() {  # <seat> <browser verb args...>
   local seat="$1"; shift
+  local -a bound=()   # CONNECT_AS_TIMEOUT=<s>: a look must not hold the ask forever (DIVE-6725)
+  [[ "${CONNECT_AS_TIMEOUT:-}" =~ ^[0-9]+$ ]] && bound=(timeout "$CONNECT_AS_TIMEOUT")
   if [[ $EUID -eq 0 ]]; then
-    runuser -u "$seat" -- env -u SUDO_USER -u SUDO_UID -u SUDO_GID -u SUDO_COMMAND \
+    "${bound[@]}" runuser -u "$seat" -- env -u SUDO_USER -u SUDO_UID -u SUDO_GID -u SUDO_COMMAND \
       -u FIVEDIVE_BROWSER_SEAT FIVEDIVE_BROWSER_ON_BEHALF_OF="$CONNECT_CALLER" "$CONNECT_SELF" "$@"
   else
-    "$CONNECT_SELF" "$@"
+    "${bound[@]}" "$CONNECT_SELF" "$@"
   fi
 }
 
@@ -9414,10 +9531,13 @@ _connect_tap() {  # <caller> <code> <sender>
 
   done_code=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
   f=$(_connect_file "$done_code")
-  ( umask 077; printf 'op=done\nseat=%s\nsite=%s\nexpires_at=%s\nkind=%s\nurl=%s\n' \
-      "$caller" "$site" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" "$kind" "$CONNECT_URL" > "$f" )
+  ( umask 077; printf 'op=done\nseat=%s\nsite=%s\nexpires_at=%s\nkind=%s\nurl=%s\ncheck=%s\n' \
+      "$caller" "$site" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" "$kind" "$CONNECT_URL" "$CONNECT_CHECK" > "$f" )
   printf 'site=%s\nurl=https://%s%s\nexpires=%s\ndone=%s\nkind=%s\n' \
     "$site" "$host" "$path" "$(date -u -d "@$exp" +%Y-%m-%dT%H:%M:%SZ)" "$done_code" "$kind"
+  # DIVE-6725: whether the box saw a check on the page, so the plugin's link
+  # message says "clear the check" only when there is one.
+  if [[ "$kind" == challenge ]]; then printf 'check=%s\n' "$CONNECT_CHECK"; fi
 }
 
 # Is the box's <site> an input-mode browser? Read from the box's own files, as
@@ -9447,13 +9567,26 @@ _connect_done() {  # <caller> <code> <sender>
     # (cmd_serve: a login serve with no live view), opened on the stopped page.
     # Doing it here rather than on the agent's next command is what lets a
     # brokered seat, which cannot serve, carry on at all.
-    local st="the view is closed and the browser is back in the agent's hands, on the page it stopped at"
+    local st="the view is closed and the browser is back in the agent's hands, on the page it stopped at" seen=unknown
     _connect_as_box viewer-revoke "$site" >/dev/null 2>&1 || true
-    local -a at=()
-    _connect_page_ok "$site" "$CONNECT_URL" && at=("--url=$CONNECT_URL")
-    _connect_as_box serve "$site" "${at[@]}" >/dev/null 2>&1 \
-      || st="the view is closed; the browser did not restart for the agent, so its next command starts it (the cleared check is kept in the profile)"
-    printf 'site=%s\nkind=challenge\nstatus_rc=0\nstatus=%s\n' "$site" "$st"
+    local -a at=(); local page; page="$(_site_url "$site")"
+    _connect_page_ok "$site" "$CONNECT_URL" && at=("--url=$CONNECT_URL") page="$CONNECT_URL"
+    if _connect_as_box serve "$site" "${at[@]}" >/dev/null 2>&1; then
+      # DIVE-6725: SAY WHAT IS THERE, never "the owner cleared the check". The
+      # browser just handed back is read once more, so the agent is told the
+      # title, the address and whether the box still sees a check on it.
+      if _connect_look "$BOX_SEAT" "$site" "$CONNECT_DONE_LOOK_TIMEOUT" "$site" "$page"; then
+        [[ "$LOOK_CHECK" == yes ]] && seen=still || seen=none
+        st+=". It shows ${LOOK_TITLE:+\"$LOOK_TITLE\" at }${LOOK_PAGE:-$page}${LOOK_HTTP:+ (HTTP $LOOK_HTTP)}; "
+        [[ "$seen" == still ]] && st+="a check is still on it" || st+="no check is detected on it"
+      else
+        st+=". The box could not read the page back ($LOOK_WHY), so whether a check is still on it is not known"
+      fi
+    else
+      st="the view is closed; the browser did not restart for the agent, so its next command starts it (the cleared check is kept in the profile)"
+    fi
+    printf 'site=%s\nkind=challenge\nstatus_rc=0\ncheck=%s\ntitle=%s\npage=%s\nstatus=%s\n' \
+      "$site" "$seen" "${LOOK_TITLE:-}" "${LOOK_PAGE:-}" "$st"
     return 0
   fi
   # AN SSH HANDOFF'S WINDOW IS ITS OWNER SEAT'S (DIVE-6111): on a self-hosted
