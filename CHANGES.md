@@ -8,6 +8,18 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — a box agent can attach a file when the browser's file chooser will not take the path: the file is dropped on the page (DIVE-6704), 1.49.0
+
+On chill-gorge (Chrome 154), the `upload{x,y,path}` step failed for every path with "no such file, or a folder", so a box agent could not open a pull request with files on GitHub. main's triage found the path typed into the chooser exactly right; it was the Open that never took. CI's Chrome 155 passes the same step, so the chooser's behaviour depends on the box and cannot be relied on.
+
+- **New input step `drop{x,y,path}`**: drags the file onto x,y and drops it, the way a person drags one in from a file manager (XDND, `lib/x11.cjs` `dropFile`). No dialog is involved. An `<input type=file>` at the point takes the file; a site's "drag files here" area uploads it. The page gets a trusted drop, and the browser reads the file itself.
+- **`upload` falls back to the drop.** When the chooser is still open after Open, it is closed (Escape) and the same file is dropped on the same point. The step says which way the file went, and fails by name only when the drop does not take either.
+- A drop on a spot that takes no file makes Chrome open the file in the tab. The step says so by name and is not called attached.
+- The path gets the same check as an upload: an absolute path to a regular file the calling seat can read, checked by the CLI as the caller, with an `input-upload` audit row.
+- `FIVEDIVE_BROWSER_CHOOSER_OPEN_KEY` sets the key that presses the chooser's Open (default `alt+o`). The harness uses a key that does nothing, so it can grade the fallback with a real chooser that stays open.
+
+Arms K5 in `tests/browser_input_drive_unit.sh` (a fake browser speaking XDND, on a bare Xvfb) and L14 (live Chrome: a drop onto a file input, an upload whose chooser does not take the path, a drop on a block that takes no file).
+
 ### Changed — a matched `--expect` is the check: the agent moves on instead of re-opening the page (DIVE-6694), 1.48.1
 
 In the 2026-10-21 browser bench (Haiku 5.5, 1.48.0), the "save a note after the button moved" task took 49.9 s and 49.5 s in two of three runs and 21.5 s in the third. In the slow two, the agent saved, `--expect` matched, and it then re-opened the report to confirm a note that page does not show. That re-check is most of the 6.5 s median gap to OpenClaw.
