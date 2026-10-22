@@ -1325,12 +1325,17 @@ async function uploadByChooser(be, s) {
       return `the file chooser took ${s.path} and closed (check the shot: the page should now name the file)`;
     }
   }
-  try { await be.x.focusOn(dlg.id, 1000, 'the file chooser'); await be.x.press('Escape'); } catch (e) { /* reported below */ }
   // DIVE-6704: A CHOOSER THAT WILL NOT TAKE THE PATH IS NOT THE END. chill-gorge's
   // (Chrome 154) showed the typed path in its field and stayed open on Open for
   // every path, while CI's passed. So the same file is dropped on the same
   // point: the upload control the step names takes a drop with no dialog.
-  for (let i = 0; i < 20 && (await be.x.browserDialog(pid)); i++) await sleepMs(100);
+  // Escape up to three times. One Escape left a real chooser open (Chrome 153,
+  // the dev host's grade of L14): with the path's completion list up, the
+  // first Escape can close only the list.
+  for (let k = 0; k < 3 && (await be.x.browserDialog(pid)); k++) {
+    try { await be.x.focusOn(dlg.id, 1000, 'the file chooser'); await be.x.press('Escape'); } catch (e) { /* reported below */ }
+    for (let i = 0; i < 10 && (await be.x.browserDialog(pid)); i++) await sleepMs(100);
+  }
   const what = `the file chooser did not take ${s.path} (still open after Open)`;
   if (await be.x.browserDialog(pid)) throw new Error(`${what}, and it would not close on Escape; nothing was attached`);
   try { await be.x.ensureBrowserFocus(pid, 1000); } catch (e) { /* the drop checks the pointer itself */ }
