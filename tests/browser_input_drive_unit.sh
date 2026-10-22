@@ -39,6 +39,10 @@
 #        K2 the keys left bound are the most recently typed characters, one each
 #        K3 a NEW connection on that display (a daemon restart) reclaims the keys
 #           the last one bound, instead of finding none spare
+#        K5 (DIVE-6704) a file dropped over XDND on a fake browser that says no to
+#           the first position and yes after is fetched as its file:// uri and
+#           finished; one that always says no is told the drag left and the drop
+#           fails by name; a drop target that is not the browser gets nothing
 #        K4 (DIVE-5740) with the browser's file chooser up and the focus fallen
 #           to the root window (chill-gorge's 0x21f), keys are sent to the CHOOSER,
 #           not the page behind it; with it closed, to the page; a popup is not one
@@ -71,6 +75,10 @@
 #           has spare keys reaches the page whole (DIVE-5433)
 #        L13 (DIVE-5740) an upload step on a real <input type=file> attaches the
 #           file through Chrome's own file chooser, and the plan goes on typing
+#        L14 (DIVE-6704) a drop step attaches a file with no chooser at all; an
+#           upload whose chooser will not take the path drops it instead (the
+#           chill-gorge chooser, made here with a dead Open key); a drop on a
+#           spot that takes no file is said by name, not called attached
 #        L10 a FRESH page driven the instant its title appears still gets the
 #           text: the daemon holds input until the page is quiet (the CI race)
 set -uo pipefail
@@ -691,6 +699,18 @@ else
   arm 'K4 with the chooser up and the focus on the root window, keys go to the CHOOSER, not the page' 'focus=dialog' "$(kd chooser)"
   arm 'K4 ...with it closed, keys go back to the page' 'focus=main' "$(kd closed)"
   arm 'K4 ...and a popup (override-redirect) is not taken for a dialog' 'focus=main' "$(kd popup)"
+  # K5 (DIVE-6704) — the drop, against a fake browser speaking XDND as Chrome does.
+  KDF="$TMP/k5 drop é.txt"; printf 'k5\n' > "$KDF"
+  kdrop() { DISPLAY=":$kdisp" FIVEDIVE_BROWSER_INPUT_FAST=1 timeout 30 node "$ROOT/tests/x11_drop.cjs" "$1" "$KDF" 2>&1; }
+  want_uri=$(node -e 'console.log(require("url").pathToFileURL(process.argv[1]).href)' "$KDF")
+  arm 'K5 a drop the browser takes on its second position is fetched as the file uri, dropped and finished' \
+    "drop=ok uri=$want_uri finished=true accepted=true fetched=true positions>1=true dropped=true" "$(kdrop take)"
+  got=$(kdrop refuse)
+  arm 'K5 ...a browser that never takes it is told the drag left, and the drop fails by name' \
+    'drop=refused left=yes did-not-take' "${got%% msg=*}$( [[ "$got" == *'did not take the file'* ]] && echo ' did-not-take')"
+  got=$(kdrop notbrowser)
+  arm 'K5 ...and a drop target that is not the browser is sent nothing' \
+    'drop=refused left=no not-the-browser' "${got%% msg=*}$( [[ "$got" == *'is not the browser'* ]] && echo ' not-the-browser')"
   kill "$KX" 2>/dev/null; wait "$KX" 2>/dev/null
 fi
 
@@ -970,6 +990,67 @@ HTML
     fi
     "$REAL_DAEMON" call "$LP3/s.sock" <<<'{"op":"shutdown"}' >/dev/null 2>&1
     for i in $(seq 1 100); do kill -0 "$LD3" 2>/dev/null || break; sleep 0.05; done
+
+    # L14 (DIVE-6704) — a file attached with no chooser. The page: a file input
+    # (top third), a textarea (middle), and a plain block that takes no file
+    # (bottom). Chrome's UI is about the top 85px of the 800px screen.
+    PAGE4="$TMP/page4.html"
+    cat > "$PAGE4" <<'HTML'
+<html><head><title>dp:none</title></head><body style="margin:0">
+<input id=f type=file style="position:fixed;left:0;top:0;width:100vw;height:33vh;font-size:40px">
+<textarea id=t style="position:fixed;left:0;top:33vh;width:100vw;height:33vh;font-size:30px"></textarea>
+<div style="position:fixed;left:0;top:66vh;width:100vw;height:34vh;background:#eee;font-size:30px">no drop here</div>
+<script>
+const f = document.getElementById('f'), t = document.getElementById('t'); let name = 'none';
+f.addEventListener('change', () => { name = f.files[0] ? f.files[0].name : 'none'; document.title = 'dp:' + name; });
+t.addEventListener('input', () => { document.title = 'dp:' + name + ':typed:' + t.value; });
+</script></body></html>
+HTML
+    l14() {  # l14 <n> [env...] — a daemon of its own on PAGE4; sets L14S to its socket
+      local d="$TMP/lp14$1"; mkdir -m 700 "$d"; shift
+      env DISPLAY=":$disp" FIVEDIVE_BROWSER_CHROME="$REAL_CHROME" FIVEDIVE_BROWSER_CHROME_ARGS="file://$PAGE4" \
+        FIVEDIVE_BROWSER_INPUT_FAST=1 "$@" "$REAL_DAEMON" serve "$d" "$d/s.sock" --input > "$d/ready" 2> "$d/err" &
+      L14P=$!; _KILL+=("$L14P"); L14S="$d/s.sock"
+      for i in $(seq 1 600); do grep -q '^ready' "$d/ready" 2>/dev/null && break; kill -0 "$L14P" 2>/dev/null || break; sleep 0.05; done
+      see_title "$L14S" 'dp:none' >/dev/null
+    }
+    l14_stop() { "$REAL_DAEMON" call "$L14S" <<<'{"op":"shutdown"}' >/dev/null 2>&1
+      for i in $(seq 1 100); do kill -0 "$L14P" 2>/dev/null || break; sleep 0.05; done; }
+    l14_run() {  # l14_run <label> <steps-json> <want-title> — sets GOT14 to "<rc> <title>"
+      "$REAL_DAEMON" call "$L14S" <<<"{\"op\":\"input\",\"steps\":$2,\"settle\":300}" > "$TMP/l14$1.out" 2> "$TMP/l14$1.log"
+      local rc=$? t; t=$(jq -r .title "$TMP/l14$1.out" 2>/dev/null)
+      (( rc == 0 )) && [[ "$t" != "$3" ]] && t=$(see_title "$L14S" "$3")
+      GOT14="$rc $t"
+      if [[ "$GOT14" != "0 $3" ]]; then
+        DISPLAY=":$disp" node "$ROOT/tests/x11_stack.cjs" "l14$1" 640 200 0 ${ART:+"$ART/l14$1.png"} > "$TMP/l14$1.stack" 2>&1
+        gha "input harness: L14 $1" "$(grep -v -i dbus "$TMP/l14$1.log" | tail -6; cat "$TMP/l14$1.stack")"
+      fi
+    }
+    DPF="$TMP/l14-drop.txt"; printf 'drop\n' > "$DPF"
+    l14 a
+    l14_run a "[{\"op\":\"drop\",\"x\":640,\"y\":200,\"path\":\"$DPF\"},{\"op\":\"click\",\"x\":640,\"y\":440},{\"op\":\"type\",\"value\":\"ok\"}]" \
+      'dp:l14-drop.txt:typed:ok'
+    arm 'L14 a drop step attaches the file to a real <input type=file> with no chooser, and the next keys reach the page' \
+      '0 dp:l14-drop.txt:typed:ok' "$GOT14$( [[ "$GOT14" == '0 '* ]] || why "$TMP/l14a.log")"
+    arm 'L14 ...and it says the browser took the drop' yes "$(yn grep -q 'was dropped at 640,200 and the browser took it' "$TMP/l14a.log")"
+    # A drop on the block that takes no file: Chrome opens the file in the tab.
+    PLF="$TMP/l14-plain.txt"; printf 'plain\n' > "$PLF"
+    "$REAL_DAEMON" call "$L14S" <<<"{\"op\":\"input\",\"steps\":[{\"op\":\"drop\",\"x\":640,\"y\":700,\"path\":\"$PLF\"}],\"settle\":300}" \
+      > "$TMP/l14c.out" 2> "$TMP/l14c.log"; rc=$?
+    arm 'L14 ...a drop on a spot that takes no file fails by name (the browser opened it in the tab), not called attached' \
+      "1 yes" "$rc $(yn grep -q 'is not an upload control or a drop area' "$TMP/l14c.log")$( (( rc )) || why "$TMP/l14c.log")"
+    l14_stop
+    # The chill-gorge chooser, made here: Open is pressed with a key that does
+    # nothing, so the chooser stays up with the path in it, as it did there.
+    UPF2="$TMP/l14-up.txt"; printf 'up\n' > "$UPF2"
+    l14 b FIVEDIVE_BROWSER_CHOOSER_OPEN_KEY=F12
+    l14_run b "[{\"op\":\"upload\",\"x\":640,\"y\":200,\"path\":\"$UPF2\"},{\"op\":\"click\",\"x\":640,\"y\":440},{\"op\":\"type\",\"value\":\"ok\"}]" \
+      'dp:l14-up.txt:typed:ok'
+    arm 'L14 an upload whose chooser will not take the path drops the file on the same point instead, and the plan goes on' \
+      '0 dp:l14-up.txt:typed:ok' "$GOT14$( [[ "$GOT14" == '0 '* ]] || why "$TMP/l14b.log")"
+    arm 'L14 ...and it says the chooser did not take it and the file was dropped' yes \
+      "$(yn grep -q 'did not take .* so it was closed and the file was dropped' "$TMP/l14b.log")"
+    l14_stop
   fi
 fi
 

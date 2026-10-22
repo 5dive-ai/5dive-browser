@@ -1291,8 +1291,9 @@ async function clickInBrowser(be, s) {
 // DIVE-5740: an upload as a person does it. Click the page's upload control,
 // let the browser's file chooser open, type the absolute path into it (ctrl+l
 // opens its location field), Open (alt+o), and confirm the chooser CLOSED. A chooser
-// still up means the path was not taken (no such file, a folder): Escape, and
-// fail by name, so nothing goes on to type into a dialog or a page by mistake.
+// still up means the path was not taken: Escape, then drop the file on the same
+// point (DIVE-6704), and fail by name if that does not take either, so nothing
+// goes on to type into a dialog or a page by mistake.
 async function uploadByChooser(be, s) {
   const pid = be.child.pid;
   if (await be.x.browserDialog(pid)) throw new Error('a file chooser is already open; finish or close it (press Escape) first');
@@ -1314,7 +1315,9 @@ async function uploadByChooser(be, s) {
   // alt+o is the chooser's own mnemonic for its Open button, so it is that
   // click without needing the button's position: with no window manager the
   // chooser can be taller than the screen, and Open is then cut off.
-  await be.x.press('alt+o');
+  // FIVEDIVE_BROWSER_CHOOSER_OPEN_KEY: another key for a box whose chooser
+  // wants one; the harness sets a dead key to grade the drop below.
+  await be.x.press(process.env.FIVEDIVE_BROWSER_CHOOSER_OPEN_KEY || 'alt+o');
   for (let i = 0; i < 50; i++) {
     await sleepMs(100);
     if (!(await be.x.browserDialog(pid))) {
@@ -1323,7 +1326,44 @@ async function uploadByChooser(be, s) {
     }
   }
   try { await be.x.focusOn(dlg.id, 1000, 'the file chooser'); await be.x.press('Escape'); } catch (e) { /* reported below */ }
-  throw new Error(`the file chooser did not take ${s.path} (still open after Open: no such file, or a folder); it was closed with Escape and nothing was attached`);
+  // DIVE-6704: A CHOOSER THAT WILL NOT TAKE THE PATH IS NOT THE END. chill-gorge's
+  // (Chrome 154) showed the typed path in its field and stayed open on Open for
+  // every path, while CI's passed. So the same file is dropped on the same
+  // point: the upload control the step names takes a drop with no dialog.
+  for (let i = 0; i < 20 && (await be.x.browserDialog(pid)); i++) await sleepMs(100);
+  const what = `the file chooser did not take ${s.path} (still open after Open)`;
+  if (await be.x.browserDialog(pid)) throw new Error(`${what}, and it would not close on Escape; nothing was attached`);
+  try { await be.x.ensureBrowserFocus(pid, 1000); } catch (e) { /* the drop checks the pointer itself */ }
+  try {
+    return `${what}, so it was closed and the file ${await dropOnPage(be, s)}`;
+  } catch (e) {
+    throw new Error(`${what}; it was closed, and dropping the file on ${s.x},${s.y} instead failed too: ${e.message}`);
+  }
+}
+
+// DIVE-6704: a file DROPPED on the page, the way a person drags one in from a
+// file manager (lib/x11.cjs dropFile: XDND). There is no chooser, so nothing
+// rests on GTK taking a typed path. Whatever is at the point gets the drop: an
+// <input type=file> takes the file, a site's drop area uploads it. A point that
+// is neither makes Chrome OPEN the file in the tab instead; the title says so,
+// and that is said by name rather than called a success.
+async function dropOnPage(be, s) {
+  const pid = be.child.pid;
+  if (await be.x.browserDialog(pid)) throw new Error('a file chooser is open; close it (press Escape) before dropping a file');
+  await be.x.move(s.x, s.y);
+  await pointerOnBrowser(be, 'dropped');
+  const before = (await be.x.windowTitle()).page;
+  const r = await be.x.dropFile(s.x, s.y, s.path, pid);
+  await sleepMs(500);
+  const after = (await be.x.windowTitle()).page, base = path.basename(s.path);
+  if (after !== before && (after === base || after === s.path || after.startsWith('file://'))) {
+    throw new Error(`the point ${s.x},${s.y} is not an upload control or a drop area, so the browser opened ${base} ` +
+      'in the tab instead of attaching it (go back with alt+Left, then point at the upload control or drop area)');
+  }
+  try { await be.x.ensureBrowserFocus(pid, 1000); } catch (e) { /* the next key step says so */ }
+  return r.finished
+    ? `was dropped at ${s.x},${s.y} and the browser took it (check the shot: the page should now name the file)`
+    : `was dropped at ${s.x},${s.y}; the browser did not confirm it (check the shot: the page should name the file)`;
 }
 
 async function gotoByKeys(be, url) {
@@ -1357,9 +1397,10 @@ const INPUT_STEPS = {
   goto:   (s) => typeof s.url === 'string' && /^https?:\/\/[^\s]+$/.test(s.url) && s.url.length <= 2000,
   wait:   (s) => Number.isInteger(s.ms) && s.ms >= 0 && s.ms <= INPUT_MAX_WAIT_MS,
   upload: (s) => num(s.x) && num(s.y) && typeof s.path === 'string' && /^\/[^\n\r\0]{1,4095}$/.test(s.path),
+  drop:   (s) => num(s.x) && num(s.y) && typeof s.path === 'string' && /^\/[^\n\r\0]{1,4095}$/.test(s.path),
 };
 function num(v) { return Number.isInteger(v) && v >= 0 && v < 10000; }
-const INPUT_VOCAB = 'click{x,y[,button,count]} move{x,y} type{value} press{key} scroll{dy[,dx,x,y]} goto{url} wait{ms} upload{x,y,path}';
+const INPUT_VOCAB = 'click{x,y[,button,count]} move{x,y} type{value} press{key} scroll{dy[,dx,x,y]} goto{url} wait{ms} upload{x,y,path} drop{x,y,path}';
 
 async function inputRequest(be, profile, req, send, end, behalf) {
   const site = path.basename(profile);
@@ -1467,7 +1508,7 @@ async function inputRequest(be, profile, req, send, end, behalf) {
           `Input mode takes: ${INPUT_VOCAB} — coordinates are pixels of the ${be.x.width}x${be.x.height} screenshot. Nothing ran.` });
         return end(E_NOTHING_RAN);
       }
-      if ((s.op === 'click' || s.op === 'upload' || s.op === 'move' || (s.op === 'scroll' && s.x !== undefined)) &&
+      if ((s.op === 'click' || s.op === 'upload' || s.op === 'drop' || s.op === 'move' || (s.op === 'scroll' && s.x !== undefined)) &&
           ((s.x !== undefined && s.x >= be.x.width) || (s.y !== undefined && s.y >= be.x.height))) {
         send({ t: 'err', msg: `step ${i + 1} (${s.op}) points at ${s.x},${s.y}, outside the ${be.x.width}x${be.x.height} screen. Nothing ran.` });
         return end(E_NOTHING_RAN);
@@ -1488,10 +1529,11 @@ async function inputRequest(be, profile, req, send, end, behalf) {
           switch (s.op) {
             case 'click': {
               const r = await clickInBrowser(be, s);
-              if (r && r.dialog) send({ t: 'log', line: `  ${where}: the browser opened its "${r.dialog}" window, which now has the keyboard (a file chooser: type the file's absolute path and press alt+o (Open; Return can close it with nothing attached), or use an upload{x,y,path} step)` });
+              if (r && r.dialog) send({ t: 'log', line: `  ${where}: the browser opened its "${r.dialog}" window, which now has the keyboard (a file chooser: type the file's absolute path and press alt+o (Open; Return can close it with nothing attached), or use an upload{x,y,path} step, or drop{x,y,path} onto the page instead)` });
               break;
             }
             case 'upload': send({ t: 'log', line: `  ${where}: ${await uploadByChooser(be, s)}` }); break;
+            case 'drop': send({ t: 'log', line: `  ${where}: the file ${await dropOnPage(be, s)}` }); break;
             case 'move': await be.x.move(s.x, s.y); break;
             case 'type': await keysReachBrowser(be); await be.x.type(s.value); break;
             case 'press': await keysReachBrowser(be); await be.x.press(s.key); break;

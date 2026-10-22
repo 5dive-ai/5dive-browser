@@ -8,7 +8,7 @@
 // --remote-debugging-*, no --enable-automation — and the agent acts on it the
 // way the person at the viewer does: through the X display it is drawn on.
 //
-// It does three things and nothing else:
+// It does four things and nothing else:
 //   1. SCREENSHOT the display (GetImage on the root window -> PNG).
 //   2. INPUT through the XTEST extension — pointer moves, clicks, scroll
 //      notches, key presses. XTEST events enter the X server exactly where a
@@ -18,6 +18,10 @@
 //   3. READ THE WINDOW TITLE (WM_NAME / _NET_WM_NAME), which is the page title
 //      Chrome publishes to the window system. It is the one piece of page state
 //      that is readable with no channel into the browser at all.
+//   4. DROP A FILE onto the page (DIVE-6704), over XDND: the drag-and-drop
+//      protocol a file manager speaks to Chrome. Chrome reads the dropped file
+//      itself and the page gets a trusted `drop`, as from a person's drag. No
+//      file chooser is involved, so nothing depends on GTK taking a typed path.
 //
 // WHY NOT xdotool / ImageMagick. They would be two more packages a box has to
 // carry and `setup` has to install, for a protocol this small. The X11 wire
@@ -41,10 +45,13 @@ const X11_DIR = process.env.FIVEDIVE_BROWSER_X11_DIR || '/tmp/.X11-unix';
 
 // Core request opcodes used here.
 const OP = {
-  GetWindowAttributes: 3, ConfigureWindow: 12, GetGeometry: 14, QueryTree: 15, InternAtom: 16, GetProperty: 20,
+  CreateWindow: 1, GetWindowAttributes: 3, DestroyWindow: 4, ConfigureWindow: 12, GetGeometry: 14, QueryTree: 15,
+  InternAtom: 16, ChangeProperty: 18, GetProperty: 20, SetSelectionOwner: 22, ConvertSelection: 24, SendEvent: 25,
   QueryPointer: 38, SetInputFocus: 42, GetInputFocus: 43, GetImage: 73, QueryExtension: 98,
   ChangeKeyboardMapping: 100, GetKeyboardMapping: 101,
 };
+// Core event codes the drop listens for (the sent-event bit 0x80 is masked off).
+const XE = { PropertyNotify: 28, SelectionRequest: 30, SelectionNotify: 31, ClientMessage: 33 };
 // XTEST FakeInput event types.
 const EV = { KeyPress: 2, KeyRelease: 3, ButtonPress: 4, ButtonRelease: 5, Motion: 6 };
 
@@ -66,6 +73,8 @@ class X11 {
     this.setup = null;
     this.atoms = new Map();
     this.keymap = null;
+    this.listeners = new Set();   // fn(event) for every event the server sends
+    this.nextId = 0;
   }
 
   connect() {
@@ -127,9 +136,11 @@ class X11 {
           const err = new Error(`X error ${msg[1]} (request ${msg[10]}.${msg.readUInt16LE(8)})`);
           if (p) { this.pending.delete(seq); p.reject(err); } else this.voidErrors.push(err);
         } else if (p) { this.pending.delete(seq); p.resolve(msg); }
+      } else {
+        // Events. Most (MappingNotify after a keymap change, among others) carry
+        // nothing this client needs; the drop listens for its own (DIVE-6704).
+        for (const fn of this.listeners) { try { fn(msg); } catch (e) { /* a listener's own fault */ } }
       }
-      // Events (MappingNotify after a keymap change, among others) are not
-      // selected for and carry nothing this client needs.
     }
   }
 
@@ -443,6 +454,198 @@ class X11 {
     throw new Error(`the keyboard focus could not be put on ${what} (it is on 0x${f.toString(16)})`);
   }
 
+  // ---- dropping a file (DIVE-6704) ----------------------------------------
+  // WHY A DROP. chill-gorge, Chrome 154, 2026-10-21: the upload step's file
+  // chooser showed the typed path in its location field and still did not take
+  // it on Open, for every path, while CI's Chrome 155 passed the same step. A
+  // drop has no dialog in it. The daemon offers the file as text/uri-list on
+  // the XdndSelection, the browser fetches it and reads the file itself, and
+  // the page gets a trusted `drop` on whatever is at the point: an
+  // <input type=file>, or a site's drop area. The protocol is XDND version 5
+  // (freedesktop.org/wiki/Specifications/XDND), which every file manager speaks.
+
+  newId() {
+    const m = this.setup.ridMask, shift = Math.log2(m & -m);
+    this.nextId++;
+    return (this.setup.ridBase | ((this.nextId << shift) & m)) >>> 0;
+  }
+
+  // An unmapped 1x1 window of this connection's own: the drag's source, and the
+  // owner of the selection the browser reads the file's name from.
+  async createInputWindow() {
+    const id = this.newId(), b = Buffer.alloc(32);
+    b.writeUInt32LE(id, 0); b.writeUInt32LE(this.root, 4);
+    b.writeInt16LE(-10, 8); b.writeInt16LE(-10, 10); b.writeUInt16LE(1, 12); b.writeUInt16LE(1, 14);
+    b.writeUInt16LE(0, 16); b.writeUInt16LE(2, 18);              // border 0, InputOnly
+    b.writeUInt32LE(0, 20);                                      // visual: CopyFromParent
+    b.writeUInt32LE(0x800, 24); b.writeUInt32LE(0x400000, 28);   // CWEventMask: PropertyChangeMask
+    this.req(OP.CreateWindow, 0, b, false);
+    await this.sync();
+    return id;
+  }
+
+  async destroyWindow(win) {
+    const b = Buffer.alloc(4); b.writeUInt32LE(win, 0);
+    this.req(OP.DestroyWindow, 0, b, false);
+    await this.sync();
+  }
+
+  // ChangeProperty with atoms already interned, so it is sent at once (an
+  // answer to a SelectionRequest must reach the server before its notify).
+  changeProp(win, prop, type, data, mode) {
+    const fmt = Buffer.isBuffer(data) ? 8 : 32;
+    const bytes = fmt === 8 ? data : Buffer.alloc(data.length * 4);
+    if (fmt === 32) data.forEach((v, i) => bytes.writeUInt32LE(v >>> 0, i * 4));
+    const b = Buffer.alloc(20 + bytes.length);
+    b.writeUInt32LE(win, 0); b.writeUInt32LE(prop, 4); b.writeUInt32LE(type, 8);
+    b[12] = fmt; b.writeUInt32LE(fmt === 8 ? bytes.length : data.length, 16); bytes.copy(b, 20);
+    this.req(OP.ChangeProperty, mode || 0, b, false);
+  }
+
+  // SendEvent of a 32-byte event to <dest>, with no event mask: the server
+  // hands it to the client that created <dest>, which is how XDND talks.
+  sendEvent(dest, ev) {
+    const b = Buffer.alloc(40);
+    b.writeUInt32LE(dest, 0); b.writeUInt32LE(0, 4); ev.copy(b, 8);
+    this.req(OP.SendEvent, 0, b, false);
+  }
+
+  async clientMessage(dest, type, data) {
+    const ev = Buffer.alloc(32);
+    ev[0] = XE.ClientMessage; ev[1] = 32;
+    ev.writeUInt32LE(dest, 4); ev.writeUInt32LE(await this.atom(type), 8);
+    for (let i = 0; i < 5; i++) ev.writeUInt32LE((data[i] || 0) >>> 0, 12 + i * 4);
+    this.sendEvent(dest, ev);
+    await this.sync();
+  }
+
+  // The events that match `pred`, from now on: next(ms) resolves the oldest,
+  // or null when none comes within ms. stop() when done.
+  events(pred) {
+    const q = [], waiters = [];
+    const fn = (e) => { if (!pred(e)) return; const w = waiters.shift(); if (w) w(e); else q.push(e); };
+    this.listeners.add(fn);
+    return {
+      next: (ms) => q.length ? Promise.resolve(q.shift()) : new Promise((resolve) => {
+        const w = (e) => { clearTimeout(t); resolve(e); };
+        const t = setTimeout(() => { const i = waiters.indexOf(w); if (i >= 0) waiters.splice(i, 1); resolve(null); },
+          Math.max(0, ms));
+        waiters.push(w);
+      }),
+      stop: () => { this.listeners.delete(fn); },
+    };
+  }
+
+  // The server's clock, which a selection owner has to name: a zero-length
+  // append to a property of our own window, and the time on its PropertyNotify.
+  async serverTime(win) {
+    const ev = this.events((e) => (e[0] & 0x7f) === XE.PropertyNotify && e.readUInt32LE(4) === win);
+    try {
+      this.changeProp(win, await this.atom('_5DIVE_TIME'), await this.atom('STRING'), Buffer.alloc(0), 2 /* Append */);
+      const e = await ev.next(2000);
+      if (!e) throw new Error('the X server never said what time it is, so nothing can be offered to the browser');
+      return e.readUInt32LE(12);
+    } finally { ev.stop(); }
+  }
+
+  // Own <selection> on <win> from <time>, and answer every request for it from
+  // `offers` ({ 'text/uri-list': Buffer }) and TARGETS. `served` lists the
+  // targets handed out, so a caller can say whether the browser ever asked.
+  async ownSelection(selection, win, time, offers) {
+    const sel = await this.atom(selection), TARGETS = await this.atom('TARGETS'), ATOM = await this.atom('ATOM');
+    const types = new Map();
+    for (const [k, v] of Object.entries(offers)) types.set(await this.atom(k), v);
+    const served = [];
+    const fn = (e) => {
+      if ((e[0] & 0x7f) !== XE.SelectionRequest || e.readUInt32LE(8) !== win || e.readUInt32LE(16) !== sel) return;
+      const t = e.readUInt32LE(4), requestor = e.readUInt32LE(12), target = e.readUInt32LE(20);
+      let property = e.readUInt32LE(24) || target;     // an obsolete client names none: the target, by the ICCCM
+      if (target === TARGETS) this.changeProp(requestor, property, ATOM, [TARGETS, ...types.keys()]);
+      else if (types.has(target)) { this.changeProp(requestor, property, target, types.get(target)); served.push(target); }
+      else property = 0;                                // not offered: the requestor reads None
+      const ev = Buffer.alloc(32);
+      ev[0] = XE.SelectionNotify;
+      ev.writeUInt32LE(t, 4); ev.writeUInt32LE(requestor, 8); ev.writeUInt32LE(sel, 12);
+      ev.writeUInt32LE(target, 16); ev.writeUInt32LE(property, 20);
+      this.sendEvent(requestor, ev);
+    };
+    this.listeners.add(fn);
+    const b = Buffer.alloc(12);
+    b.writeUInt32LE(win, 0); b.writeUInt32LE(sel, 4); b.writeUInt32LE(time, 8);
+    this.req(OP.SetSelectionOwner, 0, b, false);
+    await this.sync();
+    return { served, stop: () => { this.listeners.delete(fn); } };
+  }
+
+  // The window at the pointer that takes drops: the outermost one with
+  // XdndAware (the browser's top-level window), and the version it speaks.
+  async dropTarget() {
+    for (const w of await this.underPointer()) {
+      const v = await this.prop32(w, 'XdndAware');
+      if (v !== null) return { win: w, version: v };
+    }
+    return null;
+  }
+
+  // Drag <file> onto x,y and drop it, as a file manager does. Resolves
+  // { finished, accepted, fetched } when the browser has said it is done;
+  // throws, having sent XdndLeave so the page sees the drag go, when what is at
+  // the point never takes a file.
+  async dropFile(x, y, file, pid, opts) {
+    const o = opts || {};
+    await this.move(x, y);
+    const tgt = await this.dropTarget();
+    if (!tgt) throw new Error(`nothing at ${x},${y} takes a dropped file: no window there speaks drag-and-drop`);
+    if (pid && !(await this.isBrowserWindow(tgt.win, pid))) {
+      throw new Error(`the window at ${x},${y} that takes drops is not the browser (0x${tgt.win.toString(16)}), so nothing was dropped`);
+    }
+    const version = Math.min(5, tgt.version);
+    if (version < 3) throw new Error(`the browser speaks drag-and-drop version ${tgt.version}, older than this needs (3)`);
+    const uri = require('url').pathToFileURL(file).href;
+    const src = await this.createInputWindow();
+    const [STATUS, FINISHED, COPY, URIS] = await Promise.all(
+      ['XdndStatus', 'XdndFinished', 'XdndActionCopy', 'text/uri-list'].map((a) => this.atom(a)));
+    const said = this.events((e) => (e[0] & 0x7f) === XE.ClientMessage && e.readUInt32LE(4) === src);
+    let sel = null;
+    try {
+      const t = await this.serverTime(src);
+      sel = await this.ownSelection('XdndSelection', src, t, { 'text/uri-list': Buffer.from(uri + '\r\n') });
+      await this.clientMessage(tgt.win, 'XdndEnter', [src, version << 24, URIS]);
+      // The first answers are "no" while the page has not seen the drag yet:
+      // Chrome answers each position with what the page said to the one before.
+      // So keep the drag over the point, as a hand does, until it says yes.
+      let yes = false, answers = 0;
+      const until = Date.now() + (o.acceptMs || 5000);
+      while (!yes && Date.now() < until) {
+        await this.clientMessage(tgt.win, 'XdndPosition', [src, 0, ((x & 0xffff) << 16) | (y & 0xffff), t, COPY]);
+        for (let e; (e = await said.next(400));) {
+          if (e.readUInt32LE(8) !== STATUS) continue;
+          answers++; yes = !!(e.readUInt32LE(16) & 1);
+          break;
+        }
+        if (!yes) await sleep(100);
+      }
+      if (!yes) {
+        await this.clientMessage(tgt.win, 'XdndLeave', [src]);
+        throw new Error(`the page at ${x},${y} did not take the file: ` + (answers
+          ? `the browser answered ${answers} drag position(s) with "no drop here"`
+          : 'the browser never answered the drag'));
+      }
+      await this.clientMessage(tgt.win, 'XdndDrop', [src, 0, t]);
+      let fin = null;
+      const until2 = Date.now() + (o.finishMs || 8000);
+      while (!fin && Date.now() < until2) {
+        const e = await said.next(until2 - Date.now());
+        if (!e) break;
+        if (e.readUInt32LE(8) === FINISHED) fin = e;
+      }
+      return { finished: !!fin, accepted: !!fin && (version < 5 || !!(fin.readUInt32LE(16) & 1)), fetched: sel.served.length };
+    } finally {
+      said.stop(); if (sel) sel.stop();
+      try { await this.destroyWindow(src); } catch (e) { /* the connection is going anyway */ }
+    }
+  }
+
   // ---- input --------------------------------------------------------------
   async move(x, y, opts) {
     const o = opts || {};
@@ -695,4 +898,4 @@ async function open(display) {
   return x;
 }
 
-module.exports = { open, displaySocket, keysymOf, charKeysym, encodePNG, crc32, KEYSYM };
+module.exports = { open, displaySocket, keysymOf, charKeysym, encodePNG, crc32, KEYSYM, XE };
