@@ -22,8 +22,8 @@
 #      C3 what changed is printed: + and - refs, the new text, the counts
 #      C4 nothing changed says so
 #      C5 the plan asks for look and split, and sends the extract sha only on --full
-#   V  --expect also reads what the form fields hold (a typed ZIP is on screen,
-#      innerText never has it): _valuesIn, pageAfter, bin/browser's grep
+#   V  what the form fields hold is reported, NEVER graded (a failed save still
+#      shows the typed title): _valuesIn, pageAfter, bin/browser's not_verified line
 #   E  a failed step's error has no Playwright "Call log:" (30 lines per failure)
 #   R  snapshot --interactive prints up to 300 refs inline (past 60 the agent Read
 #      tree.json: 20-42 KB of JSON a page on the bench)
@@ -106,10 +106,11 @@ const page = { url: async () => "https://x.test/rate", title: async () => "Rates
   waitForTimeout: async () => {}, evaluate: async (fn, arg) => arg && arg.valuesOf ? vals : arg && arg.textOf ? "Origin ZIP code" : "" };
 A.pageAfter(page, { expect: "75201", expectWaitMs: 1000, pollMs: 250 }).then((o) => console.log(o.expect_polled_ms, JSON.stringify(o.values)));
 ' "$ROOT/browser/lib/aria.cjs" "$1" 2>&1; }
-t  'V2 --expect matches a typed value at once: no polling' '0 "75201"' "$(pa 75201)"
-t  'V2 ...(control) a field without it polls the full wait' '1000 ""' "$(pa '')"
-tc 'V3 bin/browser grades --expect against the field values too' '[.text, .title, .url, .values]' "$(cat "$BROWSER")"
-tc 'V3 ...and after.json keeps them' '{url, title, text, values, wait_for' "$(cat "$BROWSER")"
+t  'V2 a typed value is reported beside the text, and NOT graded: the poll runs its full wait' '1000 "75201"' "$(pa 75201)"
+tc 'V3 bin/browser grades --expect on text, title and url only' '[.text, .title, .url] | map(. // "") | join' "$(cat "$BROWSER")"
+tn 'V3 ...never the field values' '[.text, .title, .url, .values]' "$(cat "$BROWSER")"
+tc 'V3 ...after.json keeps them, to say why' '{url, title, text, values, wait_for' "$(cat "$BROWSER")"
+tc 'V4 a miss that only a field holds says so, not "look at the picture"' 'matches only what a form field holds' "$(cat "$BROWSER")"
 
 # ============================================================= E  what a failed step prints
 e="$(node -e '

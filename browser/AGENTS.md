@@ -149,7 +149,7 @@ own step:
 Without a URL, `act` continues on the page a served browser is holding. `--expect=<regex>` is
 graded against the page as the steps left it, re-read for up to 5 s (`--expect-wait=<ms>`) so a
 toast that lands after the click counts. It matches the text on screen (toasts and live regions
-included), what the form fields hold (a typed value counts), the title and the url, never hidden markup: a success message the page keeps hidden
+included), the title and the url, never hidden markup or what a form field holds (what you typed proves the typing, not the site's answer): a success message the page keeps hidden
 while it shows an error reads NOT VERIFIED. Without it the command only says the steps ran — look at the `page.png` it writes
 before you tell anyone it worked. `act` also writes `tree.json` of the page it left, and on a
 served browser prints what the steps changed since you last saw the tab: the refs that appeared

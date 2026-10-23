@@ -928,11 +928,13 @@ function _textIn() {
   return parts.join('\n').replace(/[ \t]+/g, ' ');
 }
 
-// WHAT THE FORM FIELDS HOLD (DIVE-6795): a typed ZIP code is on screen, but
-// innerText never carries an input's value, so `fill 75201 --expect=75201`
-// polled the full --expect-wait and printed NOT VERIFIED over a field showing
-// it. Text fields, text areas and the chosen option of a select; never a
-// password or a hidden input.
+// WHAT THE FORM FIELDS HOLD (DIVE-6795), reported beside the text and NEVER
+// graded: `fill 75201 --expect=75201` read NOT VERIFIED over a field showing
+// it, and the model opened the picture to find out why. A field holds what the
+// agent typed, so a failed save still shows the title it typed, and grading it
+// would say `verified` (the DIVE-6651 shape). bin/browser says why instead.
+// Text fields, text areas and the chosen option of a select; never a password
+// or a hidden input.
 function _valuesIn() {
   var out = [];
   var els = document.querySelectorAll('input,textarea,select');
@@ -1138,8 +1140,7 @@ async function pageAfter(page, { settleMs = 0, waitFor = null, waitTimeoutMs = 3
     return o;
   };
   const re = expectRe(expect);
-  const seen = (o) => re.test(o.text) || re.test(o.title) || re.test(o.url) || re.test(o.values || '')
-    || (expectDoc && re.test(o.html));
+  const seen = (o) => re.test(o.text) || re.test(o.title) || re.test(o.url) || (expectDoc && re.test(o.html));
   let out = await readNow(), polled = 0;
   while (re && !seen(out) && polled < expectWaitMs) {
     const step = Math.min(pollMs, expectWaitMs - polled);

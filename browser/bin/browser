@@ -7355,7 +7355,7 @@ cmd_act() {
     # No pipe into `grep -q`: under pipefail its early exit SIGPIPEs the writer on
     # a large page, and a page that matched would read as NOT VERIFIED.
     if [[ -s "$out/page.html" ]] \
-       && grep -qiE -- "$expect" <<<"$(jq -r '[.text, .title, .url, .values] | map(. // "") | join("\n")' "$stage/after.json" 2>/dev/null)"; then
+       && grep -qiE -- "$expect" <<<"$(jq -r '[.text, .title, .url] | map(. // "") | join("\n")' "$stage/after.json" 2>/dev/null)"; then
       verdict=verified; rc=0
     else verdict=not_verified; rc=1; fi
   else
@@ -7389,7 +7389,14 @@ cmd_act() {
   local seen="the page.md above"; (( _ACT_LOOK )) && seen="what changed, above,"
   case "$verdict" in
     verified)     printf 'verified: the page after the steps matches --expect\n' ;;
-    not_verified) printf '%s: NOT VERIFIED — the executor exited %s, but the page after the steps does not match --expect. Check %s before retrying (the picture is %s/page.png): if it went through and we misread, a retry does it twice.\n' "$PROG" "$drc" "$seen" "$out" >&2 ;;
+    not_verified)
+      # ONLY IN A FIELD (DIVE-6795): the words are what was typed, which proves
+      # the typing and never the site's answer, so it is said, not graded.
+      if grep -qiE -- "$expect" <<<"$(jq -r '.values // ""' "$stage/after.json" 2>/dev/null)"; then
+        printf '%s: NOT VERIFIED — --expect matches only what a form field holds (what was typed), not the page. The typing took; to check the site took it, --expect the words the site shows after it.\n' "$PROG" >&2
+      else
+        printf '%s: NOT VERIFIED — the executor exited %s, but the page after the steps does not match --expect. Check %s before retrying (the picture is %s/page.png): if it went through and we misread, a retry does it twice.\n' "$PROG" "$drc" "$seen" "$out" >&2
+      fi ;;
     # The page.md printed above, not page.png (DIVE-6778): on the bench the model
     # opened the picture after 12 of 34 acts, at 5.6 s each and an image in every later call.
     executed)     printf 'done: every step ran. Nothing re-graded it (no --expect) — check %s says the steps took before you report success (the picture is %s/page.png).\n' "$seen" "$out" ;;

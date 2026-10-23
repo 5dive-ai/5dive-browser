@@ -723,8 +723,9 @@ because its one re-read came before the toast.
   `page.md` and `page.meta.json` are derived only for `--full` (or a cold run): Defuddle cost each
   act 0.9-4 s for text the agent mostly did not read. Otherwise `page.md` is the page's plain text,
   the same text `--expect` is graded on.
-- `--expect` also reads what the form fields hold (`lib/aria.cjs` `_valuesIn`): a typed value is on
-  screen, and a page's text never carries it. `snapshot --interactive` prints up to 300 refs
+- What the form fields hold is read too (`lib/aria.cjs` `_valuesIn`, `after.json` `values`) and
+  never graded: a failed save still shows the title that was typed. An `--expect` only a field
+  matches says so instead of pointing at the picture. `snapshot --interactive` prints up to 300 refs
   (`FIVEDIVE_BROWSER_INLINE_SNAP_REFS_MAX`), and `snapshot <site>` with no URL reads the page the
   last act or snapshot on it left.
 
