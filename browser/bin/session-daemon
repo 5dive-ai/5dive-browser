@@ -468,6 +468,7 @@ async function serveMode(profile, sock, broker, input) {
         else if (req.op === 'tree') await treeRequest(ctx, req, send, end);
         else if (req.op === 'snapshot') await snapshotRequest(ctx, req, send, end);
         else if (req.op === 'render') await renderRequest(ctx, req, send, end);
+        else if (req.op === 'read') await readRequest(ctx, req, send, end);
         else if (req.op === 'plan') await planRequest(ctx, req, send, end);
         else if (req.op === 'totp') await totpRequest(ctx, profile, req, send, end);
         else { send({ t: 'err', msg: `unknown op '${req.op}'` }); end(E_NOTHING_RAN); }
@@ -700,6 +701,43 @@ async function renderRequest(ctx, req, send, end) {
   } finally {
     try { if (page) await page.close(); } catch (e) { /* the tab is going anyway */ }
   }
+}
+
+// ---- read: several pages in ONE request, loaded side by side (DIVE-6771) ----
+//
+// `read <url> <url>…` on a served profile used to send one `render` per page,
+// and this loop takes one request at a time: on the bench rig the three R1
+// pages came back ~10 s apart (35.7 s, against 9.4 s for one), each one also
+// sitting through `read`'s 8 s --virtual-time-budget as a REAL wait and taking
+// a screenshot nobody asked for. Here every page gets its own tab (a person at
+// the viewer is not navigated away), all of them load at once, and each waits
+// only the settle the cold executor's readMode waits. No PNG: a read keeps the
+// document. A page that fails is named in its own entry; the others still land.
+async function readRequest(ctx, req, send, end) {
+  const urls = Array.isArray(req.urls) ? req.urls : [];
+  if (!urls.length || urls.length > 5 || !urls.every((u) => typeof u === 'string' && /^https?:\/\//.test(u))) {
+    send({ t: 'err', msg: 'read needs one to five http(s) urls' }); return end(E_NOTHING_RAN);
+  }
+  try { assertLease(req, 'read'); } catch (e) { send({ t: 'err', msg: e.message }); return end(E_FAILED); }
+  const settle = Number(req.wait) || TREE_SETTLE_MS;
+  const pages = await Promise.all(urls.map(async (url) => {
+    let page;
+    try {
+      page = await ctx.newPage();
+      page.setDefaultTimeout(Number(process.env.FIVEDIVE_BROWSER_STEP_TIMEOUT || STEP_TIMEOUT));
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      const inter = await aria.waitInterstitial(page);
+      await page.waitForTimeout(settle);
+      const html = await page.content();
+      return { url, ok: true, html, ...(inter ? { interstitial: inter } : {}) };
+    } catch (e) {
+      return { url, ok: false, error: e.message };
+    } finally {
+      try { if (page) await page.close(); } catch (e) { /* the tab is going anyway */ }
+    }
+  }));
+  send({ t: 'out', data: JSON.stringify({ pages }) + '\n' });
+  end(0);
 }
 
 async function treeRequest(ctx, req, send, end) {

@@ -62,6 +62,7 @@ for f in $(jq -r '.pages[].html + ".res"' <<<"$plan"); do rm -f "$f"; done
 DRIVER
 chmod +x "$TMP/bin/google-chrome" "$TMP/bin/driver"
 REALPATH="$PATH"
+SNAP_SETTLE=1200; export FIVEDIVE_BROWSER_TREE_SETTLE_MS=$SNAP_SETTLE
 export PATH="$TMP/bin:$PATH" PAGES="$TMP/pages"
 
 for h in a.test b.test c.test; do
@@ -133,6 +134,58 @@ run read https://big.test/p https://a.test/x https://b.test/y
 t 'C10 several pages share the budget, so three print about what one does' yes \
   "$( (( ${#OUT} <= 6600 + 3 * 600 )) && echo yes || echo "no (${#OUT} chars)")"
 t 'C11 ...and the big one still prints its facts' yes "$(yn '- Initial release: 8 July 1996' <<<"$OUT")"
+
+# ---- D: a SERVED profile — the session daemon is live (DIVE-6771) ---------------------
+# The bench rig's R1 ran here, not through the executor: `serve` was up, so each page was
+# one `render` request (the daemon takes one at a time), each waiting --wait's 8 s for real
+# and taking a screenshot. 35.7 s for three, 9.4 s for one. The fake daemon takes 2 s per
+# page; FAKE_DAEMON_OLD=1 is a daemon from before the `read` op, which refuses it.
+cat > "$TMP/bin/daemon" <<'DAEMON'
+#!/usr/bin/env bash
+[[ "$1" == call ]] || exit 64
+req=$(cat); printf '%s\n' "$req" >> "$DAEMON_LOG"
+op=$(jq -r .op <<<"$req")
+page() { local host="${1#*://}"; host="${host%%/*}"; sleep 2
+  if [[ "$host" == fail.test ]]; then printf '{"url":"%s","ok":false,"error":"net::ERR_NAME_NOT_RESOLVED"}' "$1" > "$2"
+  else jq -n --arg u "$1" --rawfile h "$PAGES/$host.html" '{url:$u, ok:true, html:$h}' > "$2"; fi; }
+case "$op" in
+  ping) echo pong ;;
+  read)
+    [[ "${FAKE_DAEMON_OLD:-0}" == 1 ]] && { echo "unknown op 'read'" >&2; exit 64; }
+    d=$(mktemp -d); n=$(jq '.urls | length' <<<"$req")
+    for ((k = 0; k < n; k++)); do page "$(jq -r --argjson k "$k" '.urls[$k]' <<<"$req")" "$d/$k" & done; wait
+    jq -s '{pages: .}' $(for ((k = 0; k < n; k++)); do echo "$d/$k"; done); rm -rf "$d" ;;
+  render) page "$(jq -r .url <<<"$req")" "$TMP_DAEMON.one"; jq '{url, html}' "$TMP_DAEMON.one" ;;
+  *) echo "unknown op '$op'" >&2; exit 64 ;;
+esac
+DAEMON
+chmod +x "$TMP/bin/daemon"
+PUBD="$SEATD/_public"; mkdir -p "$PUBD"; chmod 700 "$PUBD"
+python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$TMP/d.sock"
+sleep 600 & HOLDER=$!
+printf 'daemon_pid=%s\nsock=%s\n' "$HOLDER" "$TMP/d.sock" > "$PUBD/.5dive-serve"
+dlive() { FIVEDIVE_BROWSER_SESSION_DAEMON="$TMP/bin/daemon" DAEMON_LOG="$TMP/daemon.log" TMP_DAEMON="$TMP/dd" "$@"; }
+: > "$TMP/daemon.log"; : > "$FAKE_LOG"
+dlive run read https://a.test/x https://b.test/y https://c.test/z
+t 'D1 three urls on a served profile exit 0' 0 "$RC"
+t 'D2 ...through ONE session request, a read' 'read' "$(jq -r .op "$TMP/daemon.log" | xargs)"
+t 'D3 ...that carries all three urls' 3 "$(jq '.urls | length' "$TMP/daemon.log" 2>/dev/null | head -1)"
+t 'D4 ...and waits the settle, not --wait'"'"'s 8 s' "$SNAP_SETTLE" "$(jq '.wait' "$TMP/daemon.log" 2>/dev/null | head -1)"
+t 'D5 three 2 s pages finish well inside the 6 s a line of them takes' yes "$( (( MS < 5000 )) && echo yes || echo "no (${MS} ms)")"
+t 'D6 ...each printed under its url with its own text' 'yes yes yes' \
+  "$(for h in a.test b.test c.test; do grep -A12 "^==> https://$h/" <<<"$OUT" | yn "This is the article of $h"; done | xargs)"
+t 'D7 ...and the executor was not called (the daemon holds the profile)' 0 "$(wc -l < "$FAKE_LOG")"
+: > "$TMP/daemon.log"
+dlive run read https://a.test/x https://fail.test/y https://c.test/z
+t 'D8 a page the session cannot load fails the call, names itself, the others are read' '69 yes yes yes' \
+  "$RC $(grep -A1 '^==> https://fail.test/y <==' <<<"$OUT" | yn 'net::ERR_NAME_NOT_RESOLVED') $(for h in a.test c.test; do yn "This is the article of $h" <<<"$OUT"; done | xargs)"
+: > "$TMP/daemon.log"
+FAKE_DAEMON_OLD=1 dlive run read https://a.test/x https://b.test/y https://c.test/z
+t 'D9 a session from before the read op: one render per page, all read' '0 read render render render yes yes yes' \
+  "$RC $(jq -r .op "$TMP/daemon.log" | xargs) $(for h in a.test b.test c.test; do yn "This is the article of $h" <<<"$OUT"; done | xargs)"
+t 'D10 ...its refusal of the read op is not shown' no "$(yn "unknown op" <<<"$ERR")"
+t 'D11 ...and the renders wait the settle too' "$SNAP_SETTLE $SNAP_SETTLE $SNAP_SETTLE" "$(jq -r 'select(.op == "render") | .wait' "$TMP/daemon.log" | xargs)"
+kill "$HOLDER" 2>/dev/null; rm -f "$PUBD/.5dive-serve" "$TMP/d.sock"
 
 # ---- L: LIVE, where this machine has Chrome and playwright-core (CI installs it) ------
 # The real executor and real Chrome against a local server that holds every page for

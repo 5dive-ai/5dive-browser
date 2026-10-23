@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — several pages in one `read` really load at the same time when the browser is served (DIVE-6771), 1.52.1
+
+On the bench rig, R1's `read <PostgreSQL> <MySQL> <SQLite>` took 35-40 s in 1.51.0, slower than three separate reads (about 9 s each). The rig's profile was served (a warm session up), and on that path `read` sent the session one `render` per page. The session takes one request at a time, and each render waited `--wait`'s 8 s for real (to `--dump-dom` it is a virtual time budget), then took a screenshot a read never uses.
+
+- **One `read` request to the session, every page in its own tab, all loading at once** (new session op `read`). Each page waits the short settle the cold executor's `read` waits (1.2 s); an explicit `--wait=` still wins. No screenshot.
+- **A session started by an older release, or an input-mode site, falls back** to one render per page, with the settle instead of 8 s. The old session's refusal of the new op is not shown.
+- Measured on the bench rig (2 cores, another bench running): the three pages in one call took 20.2, 13.2 and 11.8 s, against the slowest single read of 18.9, 14.8 and 11.8 s back to back. On 1.51.0 the same three took 39.4, 41.1 and 39.4 s.
+
+Arms D1-D11 in `tests/browser_read_many_unit.sh` (a fake served session): one `read` request carrying all three urls and the settle, three 2 s pages in under 5 s, a failed page named while the others land, and the fallback for an old session. 7 are red on 1.52.0.
+
 ### Fixed — `upload` closes a file chooser that ignores its keys, so the drop fallback runs (DIVE-6775), 1.52.0
 
 On chill-gorge, `upload{x,y,path}` still failed every time after 1.49.0: "the file chooser did not take … (still open after Open), and it would not close on Escape; nothing was attached". The chooser stayed open over the page. It took neither alt+o nor Escape, but a mouse click on its Cancel closed it, and a `drop` then attached the file.

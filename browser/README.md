@@ -592,7 +592,8 @@ the order asked, each under a `==> <url> <==` line, each with its own artifacts 
 stderr; together they share the print budget. Every url must open in the same profile as the
 first: one with a login of its own beside public ones is refused, not read logged out. A page that
 does not load is named under its url, the others are still read, and the call exits non-zero. A
-served browser renders them one after another (it is one tab). `--out`, `--json` and `--wait-for`
+served browser gets them in one request too, a tab each, all loading at once (a session started
+by a release before 1.52.1 renders them one after another). `--out`, `--json` and `--wait-for`
 take one url.
 
 `--json` prints the metadata plus Markdown as one object. `links` is the same one-capture read and
