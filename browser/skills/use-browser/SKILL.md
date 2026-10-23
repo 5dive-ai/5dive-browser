@@ -29,7 +29,9 @@ needs nothing connected.
    A selector is `ref=<role>/<name>` from the snapshot. Use `type` for search boxes and
    autocompletes that react to keystrokes, and `fill` for plain inputs. An act with a URL loads
    the page fresh, so fill and submit a form in one act; without a URL it carries on in the page
-   the browser is on.
+   the browser is on. **An act prints what it changed**: the refs that appeared (`+ ref=…`), the
+   ones that went and the new text. Act on those refs next; snapshot again only when the ref you
+   need is not there.
 3. **Verify** with `--expect=<regex>`: the words that prove the job (the saved value, or the
    site's own success message), matched on screen for up to 5 s. **A matched `--expect` IS the
    check:** report and move on, never re-open the page to confirm. Between steps, go by the
@@ -47,7 +49,8 @@ needs nothing connected.
   table), then the head of its text. Take a fact from the facts when it is there.
 - **Read a page once.** The whole page is in the `page.md` it names: grep that file for more,
   do not read the page again. `--full` prints all of it.
-- `snapshot` and `act` print a small page's text and refs too; `cat page.md` only for a big one.
+- `snapshot --interactive` prints every ref (up to 300) and a small page's text; `cat page.md`
+  only for a big one. `snapshot _public` with no URL reads the page the browser is on.
 - `links <url>` gives a page's links, `shot <url>` a picture of it.
 
 ## Paying, posting, sending and deleting are the owner's call

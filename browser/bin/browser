@@ -6633,7 +6633,11 @@ cmd_snapshot() {
       *) if [[ -z "$site" ]]; then site="$1"; elif [[ -z "$url" ]]; then url="$1"; else die "$E_USAGE" "unexpected argument: $1"; fi ;;
     esac; shift
   done
-  [[ -n "$site" && -n "$url" ]] || die "$E_USAGE" "usage: 5dive browser snapshot <site> <url> [--out=<dir>] [--interactive] [--json] [--no-shot]"
+  # `snapshot _public` WITH NO URL is the page that browser is on (DIVE-6795), as
+  # an act without one already is: on the bench it was a usage error, then a
+  # second call with the URL, and each is a model turn.
+  [[ -n "$site" && -z "$url" ]] && url="$(_crumb_url "$site")"
+  [[ -n "$site" && -n "$url" ]] || die "$E_USAGE" "usage: 5dive browser snapshot <site> <url> [--out=<dir>] [--interactive] [--json] [--no-shot] (the url may be left out right after an act or snapshot on <site>)"
   _valid_site "$site" || die "$E_USAGE" "'$site' is not a usable profile name"
   [[ -z "$settle" || "$settle" =~ ^[0-9]{1,7}$ ]] || die "$E_USAGE" "--settle takes milliseconds; got: $settle"
   [[ -r "$READ_EXTRACTOR" ]] || die "$E_UNAVAILABLE" "the pinned page extractor is missing from this install ($READ_EXTRACTOR)"
@@ -6688,7 +6692,7 @@ cmd_snapshot() {
     plan=$(jq -nc --arg u "$url" --arg h "$stage/page.html" --arg s "$png" \
         --argjson i "$interactive" --argjson f "$full" --argjson l "$(_daemon_lease_json)" \
         --argjson n "$inline" --argjson st "$(_settle_json "$settle")" --arg wf "$wait_for" --arg xs "$(_extract_sha)" \
-        '{op:"snapshot", url:$u, extract:$xs,
+        '{op:"snapshot", url:$u, extract:$xs, look:true,
           html:(if $n==1 then null else $h end),
           shot:(if $n==1 then (if $s=="" then null else true end) elif $s=="" then null else $s end),
           inline:($n==1), interactive:($i==1), full:($f==1)}
@@ -6798,7 +6802,7 @@ cmd_snapshot() {
   printf '    tree.json       what you can act on: ref=<role>/<name>[#n]\n'
   printf '    page.html       the document the two above came from\n'
   (( shot )) && [[ -s "$out/page.png" ]] && printf '    page.png        the same tab, the same instant\n'
-  _inline_page "$out"
+  if (( interactive )); then _inline_page "$out" "$INLINE_SNAP_REFS_MAX"; else _inline_page "$out"; fi
   (( rrc )) && return "$rrc"
   printf '%s: one browser cycle for all of it — quote a ref straight into `run`.\n' "$PROG" >&2
   return 0
@@ -6812,9 +6816,13 @@ cmd_snapshot() {
 # not dumped into the agent's context unasked.
 INLINE_MD_MAX="${FIVEDIVE_BROWSER_INLINE_MD_MAX:-4000}"
 INLINE_REFS_MAX="${FIVEDIVE_BROWSER_INLINE_REFS_MAX:-60}"
-_inline_page() { # _inline_page <artifact dir>
-  local out="$1" body n
-  [[ "$INLINE_MD_MAX" =~ ^[0-9]{1,7}$ && "$INLINE_REFS_MAX" =~ ^[0-9]{1,5}$ ]] || return 0
+# AN INTERACTIVE SNAPSHOT PRINTS ITS REFS up to this many (DIVE-6795): it is asked
+# for exactly to get them, and past 60 the agent Read tree.json instead, 20-42 KB
+# of JSON per page on the bench, where the refs alone are a line each.
+INLINE_SNAP_REFS_MAX="${FIVEDIVE_BROWSER_INLINE_SNAP_REFS_MAX:-300}"
+_inline_page() { # _inline_page <artifact dir> [<refs cap>]
+  local out="$1" body n refs_max="${2:-$INLINE_REFS_MAX}"
+  [[ "$INLINE_MD_MAX" =~ ^[0-9]{1,7}$ && "$refs_max" =~ ^[0-9]{1,5}$ ]] || return 0
   if [[ -s "$out/page.md" ]]; then
     # The body without the front matter: url and title are already the two lines above.
     body=$(awk 'NR==1 && $0=="---"{fm=1; next} fm && $0=="---"{fm=0; next} !fm' "$out/page.md")
@@ -6824,7 +6832,7 @@ _inline_page() { # _inline_page <artifact dir>
   fi
   if [[ -s "$out/tree.json" ]]; then
     n=$(jq -r '.nodes | length' "$out/tree.json" 2>/dev/null) || n=-1
-    if (( n > 0 && n <= INLINE_REFS_MAX )); then
+    if (( n > 0 && n <= refs_max )); then
       printf '  --- refs (tree.json: act on these) ---\n'
       jq -r '.nodes[] | "  ref=\(.ref)"' "$out/tree.json" 2>/dev/null
     fi
@@ -7105,8 +7113,10 @@ _act_keep_page() {  # <site> <url>; runs with the lease held, before _page_open
 cmd_act() {
   local site="" url="" steps="" expect="" approved="" out="" json=0 wait="no" settle="" shot=1
   local wait_for="" interactive=0 expect_wait="${FIVEDIVE_BROWSER_EXPECT_WAIT_MS:-$ACT_EXPECT_WAIT_DEFAULT}" record=""
+  _ACT_FULL=0; _ACT_LOOK=0
   while (($#)); do
     case "$1" in
+      --full)       _ACT_FULL=1 ;;
       --record=*) record="${1#*=}"; _valid_routine "$record" || die "$E_USAGE" "--record takes a routine name: lowercase letters, digits, . _ - (up to 64); got: $record" ;;
       --wait-for=*) wait_for="${1#*=}"; _wait_for_ok "$wait_for" || die "$E_USAGE" "--wait-for takes one CSS selector, ref=<role>/<name> or text=<words>" ;;
       --expect-wait=*) expect_wait="${1#*=}" ;;
@@ -7126,7 +7136,9 @@ cmd_act() {
       --wait)       wait="$LEASE_WAIT_DEFAULT" ;;
       --wait=*)     wait="${1#*=}" ;;
       -h|--help)
-        printf '%s act [<site>] <url> --steps=<json> [--expect=<regex>] [--expect-wait=<ms>] [--wait-for=<selector|ref=…|text=…>] [--interactive] [--approved=<id>] [--out=<dir>] [--json] [--record=<routine>]\n' "$PROG"
+        printf '%s act [<site>] <url> --steps=<json> [--expect=<regex>] [--expect-wait=<ms>] [--wait-for=<selector|ref=…|text=…>] [--interactive] [--approved=<id>] [--out=<dir>] [--json] [--record=<routine>] [--full]\n' "$PROG"
+        printf '  A served browser answers with what the steps changed (new refs, new text) since you last\n'
+        printf '  saw the page; --full derives page.md and prints the whole page instead.\n'
         printf '  --record=<routine> saves these steps (never the values typed) for `5dive browser replay`.\n'
         printf '  <url> may be omitted to continue on the page a served browser is already on. A served browser\n'
         printf '  already ON <url> is not reloaded (a goto step of your own does reload). An act on the public\n'
@@ -7306,7 +7318,17 @@ cmd_act() {
     extra=$(_ready_verdict "$final" "$wait_for" "$(jq -c '.wait_for // null' "$stage/after.json" 2>/dev/null || echo null)" \
               "$stage/page.html" "$stage/tree.json") || rrc=$?
     extra=$(_capture_facts "$extra" "$stage/after.json")
-    if [[ -r "$READ_EXTRACTOR" ]] && _have node \
+    # A SERVED ACT SAYS WHAT CHANGED, and page.md is not derived (DIVE-6795): it
+    # cost 0.9-4 s of Defuddle per act for text the agent mostly did not read.
+    # --full, or a session too old to send the look, derives it as before.
+    if (( ! _ACT_FULL )) && jq -e '.look | objects' "$stage/after.json" >/dev/null 2>&1; then
+      _ACT_LOOK=1
+      # page.md IS THE PAGE'S TEXT, as read for --expect: no extractor, no cost.
+      # The agent opened page.md after an act anyway, and found no file (bench).
+      ( umask 077; { jq -r '"---", "url: \(.url // "" | @json)", "title: \(.title // "" | @json)",
+                       "source: \("the page text; act --full extracts the page" | @json)", "---", "", (.text // "")' \
+                       "$stage/after.json"; } > "$out/page.md" ) 2>/dev/null || rm -f -- "$out/page.md"
+    elif [[ -r "$READ_EXTRACTOR" ]] && _have node \
        && ( _derive_capture "$stage" "${final:-$url}" "$_PG_CHROME" act "$extra" ) 2>"$stage/derive.err"; then
       for f in page.md page.meta.json; do install -m 00600 "$stage/$f" "$out/$f"; done
     else
@@ -7357,29 +7379,60 @@ cmd_act() {
     jq -nc --arg v "$verdict" --arg u "$final" --arg t "$title" --arg o "$out" --argjson d "$drc" --argjson x "$extra" \
       --argjson fs "$([[ "$verdict" == step_failed && -n "$fstep" ]] && echo "$fstep" || echo null)" \
       --argjson dl "$dls" \
+      --argjson lk "$(jq -c '.look // null' "$stage/after.json" 2>/dev/null || echo null)" \
       '{verdict:$v, url:$u, title:$t, executor_rc:$d, failed_step:$fs, artifacts:$o} + $x
-       + (if ($dl|length) > 0 then {downloads:$dl} else {} end)'
+       + (if ($dl|length) > 0 then {downloads:$dl} else {} end) + (if $lk == null then {} else {changed:$lk} end)'
     return "$rc"
   fi
   printf '%s\n  %s\n  %s\n' "$title" "$final" "$out"
-  _inline_page "$out"
+  if (( _ACT_LOOK )); then _act_look_say "$stage/after.json"; else _inline_page "$out"; fi
+  local seen="the page.md above"; (( _ACT_LOOK )) && seen="what changed, above,"
   case "$verdict" in
     verified)     printf 'verified: the page after the steps matches --expect\n' ;;
-    not_verified) printf '%s: NOT VERIFIED — the executor exited %s, but the page after the steps does not match --expect. Look at %s/page.png before retrying: if it went through and we misread, a retry does it twice.\n' "$PROG" "$drc" "$out" >&2 ;;
+    not_verified)
+      # ONLY IN A FIELD (DIVE-6795): the words are what was typed, which proves
+      # the typing and never the site's answer, so it is said, not graded.
+      if grep -qiE -- "$expect" <<<"$(jq -r '.values // ""' "$stage/after.json" 2>/dev/null)"; then
+        printf '%s: NOT VERIFIED — --expect matches only what a form field holds (what was typed), not the page. The typing took; to check the site took it, --expect the words the site shows after it.\n' "$PROG" >&2
+      else
+        printf '%s: NOT VERIFIED — the executor exited %s, but the page after the steps does not match --expect. Check %s before retrying (the picture is %s/page.png): if it went through and we misread, a retry does it twice.\n' "$PROG" "$drc" "$seen" "$out" >&2
+      fi ;;
     # The page.md printed above, not page.png (DIVE-6778): on the bench the model
     # opened the picture after 12 of 34 acts, at 5.6 s each and an image in every later call.
-    executed)     printf 'done: every step ran. Nothing re-graded it (no --expect) — check the page.md above says the steps took before you report success (the picture is %s/page.png).\n' "$out" ;;
+    executed)     printf 'done: every step ran. Nothing re-graded it (no --expect) — check %s says the steps took before you report success (the picture is %s/page.png).\n' "$seen" "$out" ;;
     step_failed)
       local why="a step failed (the executor exited $drc)"
       # The error's first sentence: the executor printed all of it just above.
       [[ -n "$fstep" ]] && why=$(jq -r '"step \(.index) (\(.op)\(if .selector then " " + .selector else "" end)) failed: \(.error | split(". ")[0])"' <<<"$fstep")
       [[ -n "$expect" ]] && why+=" — the run is NOT verified, whatever --expect matched"
-      printf '%s: %s. Some steps may have run; look at %s/page.png before retrying.\n' "$PROG" "$why" "$out" >&2 ;;
+      printf '%s: %s. Some steps may have run; check %s before retrying (the picture is %s/page.png).\n' "$PROG" "$why" "$seen" "$out" >&2 ;;
     not_ready)    printf '%s: NOT READY — every step ran, but the page they left is not ready (the reason is above). Look at %s/page.png; wait for the page, do not re-run the steps.\n' "$PROG" "$out" >&2 ;;
   esac
   _act_popup_say "$stage/after.json"
   _act_downloads_say
   return "$rc"
+}
+
+# WHAT THE STEPS CHANGED (DIVE-6795), from the served browser's look
+# (lib/look.cjs): the refs that appeared and went away, and the new text, against
+# the last time the agent saw this tab. A tab it had not seen, or a new page, is
+# all new, capped; the rest is in tree.json, and `act --full` prints page.md.
+_act_look_say() {  # <after.json>
+  jq -r '.look as $l | ($l.refs_added | length) as $ra | ($l.text_added | length) as $ta
+    | (if $l.first then "  --- the page: \($l.refs_total) refs (your first look at this tab) ---"
+       elif ($l.same_url | not) then "  --- what changed (the url changed; \($l.refs_total) refs now) ---"
+       else "  --- what changed (\($l.refs_total) refs now) ---" end),
+      ($l.refs_added[] | "  + ref=\(.)"),
+      (if $l.refs_added_total > $ra then "  + \($l.refs_added_total - $ra) more: tree.json" else empty end),
+      ($l.refs_removed[] | "  - ref=\(.)"),
+      (if $l.refs_removed_total > ($l.refs_removed | length) then "  - \($l.refs_removed_total) refs gone" else empty end),
+      (if $ta > 0 then (if $l.same_url then "  new text:" else "  text:" end) else empty end),
+      ($l.text_added[] | "    \(.)"),
+      (if $l.text_added_total > $ta then "    … \($l.text_added_total - $ta) more lines (act --full prints page.md)" else empty end),
+      (if $l.same_url and $l.text_removed_total > 0 then "  \($l.text_removed_total) lines of text gone" else empty end),
+      (if ($l.refs_added_total + $l.refs_removed_total + $l.text_added_total + $l.text_removed_total) == 0
+       then "  nothing on the page changed" else empty end)' "$1" 2>/dev/null
+  return 0
 }
 
 # A POPUP IN VIEW AFTER THE STEPS (DIVE-6392), said where the agent reads the
@@ -7412,23 +7465,35 @@ ACT_STEP_MS="${FIVEDIVE_BROWSER_ACT_STEP_MS:-10000}"
 [[ "$ACT_STEP_MS" =~ ^[0-9]{1,7}$ ]] && (( ACT_STEP_MS > 0 )) || ACT_STEP_MS=10000
 _act_session() {  # <site> <steps> <approved> <shot> <settle> <report> <allow-kinds> <stage> <errf>
   local site="$1" steps="$2" is_approved="$3" shot="$4" settle="$5" report="$6" allow_kinds="$7" stage="$8" errf="$9"
-  local plan rc=0 rep payload="$stage/daemon.out"
+  local plan rc=0 rep payload="$stage/daemon.out" xs=""
+  # The page text is derived only for --full (DIVE-6795); otherwise the look says what changed.
+  if (( _ACT_FULL )); then xs="$(_extract_sha)"; fi
   plan=$(jq -nc --argjson s "$steps" --argjson a "$is_approved" --argjson sh "$shot" \
       --argjson l "$(_daemon_lease_json)" --argjson st "$(_settle_json "$settle")" --argjson r "$report" \
       --argjson ak "$allow_kinds" --argjson lj "$(_landing_json "$site" 0)" --argjson stay "$_ACT_STAY" \
-      --argjson sm "$ACT_STEP_MS" --arg xs "$(_extract_sha)" \
-      '{op:"plan", steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak, stay:($stay==1), step_ms:$sm, extract:$xs,
-        report:({shot:($sh==1), tree:true, downloads:true} + $r)} + $st + $l + $lj')
+      --argjson sm "$ACT_STEP_MS" --arg xs "$xs" \
+      '{op:"plan", steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak, stay:($stay==1), step_ms:$sm,
+        look:true, split:true, report:({shot:($sh==1), tree:true, downloads:true} + $r)}
+       + (if $xs == "" then {} else {extract:$xs} end) + $st + $l + $lj')
   # To a FILE, not a variable: a download comes back in this payload (DIVE-5751).
   _daemon_call "$_PG_DIR" "$plan" >"$payload" 2>>"$errf" || rc=$?
   _act_downloads_unpack "$payload" "$stage/downloads"
   rep=$(grep -F '"act_report":true' "$payload" | tail -1)
-  if [[ -n "$rep" ]]; then
+  if [[ -n "$rep" ]] && grep -q '^{"act_html_b64":"' "$payload"; then
+    # THE SPLIT REPORT (DIVE-6795): the document, the picture and the refs each
+    # arrived on a line of their own, so nothing here parses the HTML as JSON.
+    grep '^{"act_html_b64":"' "$payload" | tail -1 | sed 's/^{"act_html_b64":"//; s/"}$//' | base64 -d > "$stage/page.html" 2>/dev/null || :
+    grep '^{"act_tree":true,' "$payload" | tail -1 | sed 's/^{"act_tree":true,/{/' > "$stage/tree.json"
+    [[ -s "$stage/tree.json" ]] || rm -f -- "$stage/tree.json"
+    if (( shot )); then grep '^{"act_png_b64":"' "$payload" | tail -1 | sed 's/^{"act_png_b64":"//; s/"}$//' | base64 -d > "$stage/page.png" 2>/dev/null || :; fi
+  elif [[ -n "$rep" ]]; then
     jq -r '.html_inline // ""' <<<"$rep" > "$stage/page.html"
-    _take_extracted "$rep" .extracted "$stage"
-    jq -c '{url, title, text, wait_for, expect_polled_ms, browser_mode, popup}' <<<"$rep" > "$stage/after.json"
     jq -e '.nodes | type == "array"' <<<"$rep" >/dev/null 2>&1 && jq -c '{url, title, nodes}' <<<"$rep" > "$stage/tree.json"
     if (( shot )); then jq -r '.png_b64 // ""' <<<"$rep" | base64 -d > "$stage/page.png" 2>/dev/null || :; fi
+  fi
+  if [[ -n "$rep" ]]; then
+    _take_extracted "$rep" .extracted "$stage"
+    jq -c '{url, title, text, values, wait_for, expect_polled_ms, browser_mode, popup} + (if .look then {look} else {} end)' <<<"$rep" > "$stage/after.json"
   fi
   return "$rc"
 }
@@ -7924,6 +7989,14 @@ _page_crumb() {  # <site> <url> — never fatal: it only steers the next act
   [[ -d "${f%/*}" && -w "${f%/*}" ]] || return 0
   ( umask 077; printf '%s\t%s\t%s\n' "$1" "$(date +%s)" "$2" > "$f.$$" && mv -f -- "$f.$$" "$f" ) 2>/dev/null || rm -f -- "$f.$$" 2>/dev/null
   return 0
+}
+_crumb_url() {  # <site> -> the page the last act or snapshot on <site> left, rc 1 when none is fresh
+  local f site at url
+  f="$(_flow_crumb_file)"; [[ -r "$f" ]] || return 1
+  IFS=$'\t' read -r site at url < "$f" || return 1
+  [[ "$site" == "$1" && "$at" =~ ^[0-9]+$ && "$url" =~ ^https?:// ]] || return 1
+  (( $(date +%s) - at <= FLOW_CRUMB_TTL )) || return 1
+  printf '%s\n' "$url"
 }
 _flow_site() {  # <url> -> the profile whose served browser is ON that page, rc 1 otherwise
   local want="$1" f site at url now

@@ -2537,6 +2537,7 @@ const page = {
       if (cfBlocked()) return false;
       return !process.env.PWLATE_MS || late(); }
     if (arg && arg.textOf) return (lateNow() && process.env.PWTEXT_LATE) || process.env.PWTEXT || '';
+    if (arg && arg.valuesOf) return process.env.PWVALUES || '';   // DIVE-6795: what the form fields hold
     // DIVE-4984: a verify's scope — the one element it grades. PWSCOPE parks what
     // the page's first match would say ({html,text}); unset, nothing matched.
     if (arg && arg.scopeOf) { rec({ call: 'scope', scope: arg.scope, at: clock });
@@ -3703,6 +3704,7 @@ cat > "$DSTUB/node_modules/playwright-core/index.js" <<'DPWJS'
 const fs = require('fs');
 const rec = (o) => fs.appendFileSync(process.env.PWREC, JSON.stringify(o) + '\n');
 let markWalks = 0;   // DIVE-4674, see the driver stub
+let gotoInterrupted = false;   // DIVE-6795, DPWGOTO_INTERRUPT
 // DIVE-4983: the driver stub's page clock, per tab, with the late state named by
 // FILES (DPWSNAP_LATE, DPWDOM_LATE) and DPWTEXT/DPWTEXT_LATE, fixed at `serve`.
 // DPWSUGGEST: the driver stub's keystroke-driven search box (PWSUGGEST), per tab.
@@ -3731,7 +3733,11 @@ const mkpage = (kind) => { let clock = 0, keydowns = 0, lastGoto = '';
   // DPWGOTO_MS: a page that takes real time to load, so two requests can
   // overlap in the daemon (DIVE-4927, T27m). Unset, a goto is instant as before.
   goto: async (url) => { clock = 0; keydowns = 0; lastGoto = url; rec({ call: 'goto', url, kind });
-    if (process.env.DPWGOTO_MS) await new Promise((r) => setTimeout(r, Number(process.env.DPWGOTO_MS))); },
+    if (process.env.DPWGOTO_MS) await new Promise((r) => setTimeout(r, Number(process.env.DPWGOTO_MS)));
+    // DIVE-6795: the site's own redirect interrupts this goto, once.
+    if (process.env.DPWGOTO_INTERRUPT && !gotoInterrupted) { gotoInterrupted = true;
+      throw new Error(`page.goto: Navigation to "${url}" is interrupted by another navigation to "${url}home"`); } },
+  waitForLoadState: async (state) => { rec({ call: 'waitForLoadState', state, kind }); },
   // DPWHANG_URL: a page whose script never yields, so content() never answers
   // (DIVE-6778, T34i). Unset, content answers as it always did.
   content: async () => { rec({ call: 'content', kind });
@@ -3777,6 +3783,7 @@ const mkpage = (kind) => { let clock = 0, keydowns = 0, lastGoto = '';
     if (arg && arg.visibleOf) { rec({ call: 'visible', target: arg.target, kind, at: clock });
       return !process.env.DPWLATE_MS || late(); }
     if (arg && arg.textOf) return (late() && process.env.DPWTEXT_LATE) || process.env.DPWTEXT || '';
+    if (arg && arg.valuesOf) return process.env.DPWVALUES || '';   // DIVE-6795: what the form fields hold
     // DIVE-4984: the scope a verify grades, from a FILE (the env is fixed at serve).
     if (arg && arg.scopeOf) { rec({ call: 'scope', scope: arg.scope, kind });
       try { return JSON.parse(fs.readFileSync(process.env.DPWSCOPE, 'utf8')); } catch (e) { return null; } }

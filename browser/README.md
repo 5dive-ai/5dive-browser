@@ -714,8 +714,20 @@ because its one re-read came before the toast.
   read that matched is the one that ships, so `page.png` shows the toast. `--expect-wait=0` is the
   old single read. The verdict is still `grep -iE` in `bin/browser`; the executor's poll is only an
   early exit, so a pattern JavaScript reads differently costs the window, never a wrong answer.
-- **`act` leaves what `snapshot` leaves:** `tree.json` (`--interactive` narrows it), `page.md` and
-  `page.meta.json`, beside `page.html`, `page.png` and `after.json`, all from the page the steps left.
+- **`act` leaves what `snapshot` leaves:** `tree.json` (`--interactive` narrows it), beside
+  `page.html`, `page.png` and `after.json`, all from the page the steps left. On a served browser it
+  prints **what the steps changed** (DIVE-6795, `lib/look.cjs`): the served browser remembers each
+  tab as the agent last saw it (a snapshot or an act) and answers with the interactive refs that
+  appeared and went away and the lines of text that are new, capped (60 refs, 8 of a list's options,
+  1.5 KB of text). `after.json` carries it as `look`, `--json` as `changed`. The extracted
+  `page.md` and `page.meta.json` are derived only for `--full` (or a cold run): Defuddle cost each
+  act 0.9-4 s for text the agent mostly did not read. Otherwise `page.md` is the page's plain text,
+  the same text `--expect` is graded on.
+- What the form fields hold is read too (`lib/aria.cjs` `_valuesIn`, `after.json` `values`) and
+  never graded: a failed save still shows the title that was typed. An `--expect` only a field
+  matches says so instead of pointing at the picture. `snapshot --interactive` prints up to 300 refs
+  (`FIVEDIVE_BROWSER_INLINE_SNAP_REFS_MAX`), and `snapshot <site>` with no URL reads the page the
+  last act or snapshot on it left.
 
 **76 is not 75.** 75 means the session is cold and a person has to log in again. 76 means the
 session is fine and the page was not ready: wait for it. Do not re-authenticate, and do not re-run
