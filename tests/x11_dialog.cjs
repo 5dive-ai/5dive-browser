@@ -14,6 +14,10 @@
 //   closed    the chooser gone  -> "focus=main": with nothing open, keys go to the page
 //   popup     an override-redirect "Open File"-named popup instead of a dialog
 //                               -> "focus=main": menus and popups are not dialogs
+//   delete    (DIVE-6775) the chooser up, and a second connection (the daemon's)
+//             closes it with x.closeWindow; this one answers the way GTK does,
+//             by unmapping it on WM_PROTOCOLS/WM_DELETE_WINDOW
+//                               -> "delete=received closed=yes"
 //
 // DISPLAY names the display.
 'use strict';
@@ -54,6 +58,21 @@ async function win(x, id, geo, name, opts) {
   await win(x, main, [0, 0, 600, 400], 'Ad draft - Google Chrome');
   if (scene === 'chooser') await win(x, dlg, [100, 80, 300, 200], 'Open File', { transientFor: main });
   if (scene === 'popup') await win(x, dlg, [100, 80, 300, 200], 'Open File', { override: true });
+  if (scene === 'delete') {
+    await win(x, dlg, [100, 80, 300, 200], 'Open File', { transientFor: main });
+    const proto = await x.atom('WM_PROTOCOLS'), del = await x.atom('WM_DELETE_WINDOW');
+    await prop(x, dlg, 'WM_PROTOCOLS', 'ATOM', 32, u32(del));
+    const said = x.events((e) => (e[0] & 0x7f) === x11.XE.ClientMessage && e.readUInt32LE(4) === dlg);
+    const d = await x11.open(process.env.DISPLAY);
+    await d.closeWindow(dlg);
+    const e = await said.next(2000); said.stop();
+    const ok = !!e && e.readUInt32LE(8) === proto && e.readUInt32LE(12) === del;
+    if (ok) { x.req(10, 0, u32(dlg), false); await x.sync(); }    // UnmapWindow, as GTK's Cancel
+    const left = await d.browserDialog(PID);
+    process.stdout.write(`delete=${ok ? 'received' : e ? 'wrong-message' : 'none'} closed=${left ? 'no' : 'yes'}\n`);
+    d.close(); x.close();
+    process.exit(0);
+  }
   await x.setFocus(x.root);                                       // where chill-gorge found it
   let got;
   try {

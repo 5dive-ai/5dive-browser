@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — `upload` closes a file chooser that ignores its keys, so the drop fallback runs (DIVE-6775), 1.52.0
+
+On chill-gorge, `upload{x,y,path}` still failed every time after 1.49.0: "the file chooser did not take … (still open after Open), and it would not close on Escape; nothing was attached". The chooser stayed open over the page. It took neither alt+o nor Escape, but a mouse click on its Cancel closed it, and a `drop` then attached the file.
+
+- **A chooser that will not close on Escape is closed with no key**: the step sends it WM_DELETE_WINDOW (`lib/x11.cjs` `closeWindow`), which is what a window manager's close button sends, and GTK treats it as Cancel. Then the same file is dropped on the same point, as before.
+- **The step says which way the file went**: "so it was closed (Escape) and the file was dropped…" or "(a window close)".
+- **A chooser nothing closes names the way out**: "Click its Cancel at about x,y with a click step, then drop the file instead". The point is worked out from the chooser's size (bottom right, left of Open).
+- `FIVEDIVE_BROWSER_CHOOSER_CLOSE_KEY` sets the close key (default `Escape`), and `FIVEDIVE_BROWSER_CHOOSER_WINDOW_CLOSE=0` skips the window close. Both are for the harness, the same as the Open key.
+
+Arms in `tests/browser_input_drive_unit.sh`: K6 (bare Xvfb: the close message reaches the dialog and it is gone once it answers), L14d (live Chrome, Open and Escape both dead: the window close shuts the chooser and the drop attaches the file), and L14e (the window close skipped too, which is 1.51.0's path with a dead Escape: the step fails with "nothing was attached" and names Cancel's point). K6 is red on 1.51.0 (`closeWindow is not a function`). L14b now also checks it says "(Escape)".
+
 ### Changed — cheaper and faster per browser job: a small skill, several pages in one `read`, a `read` that prints the page's head (DIVE-6732), 1.51.0
 
 The public bench prints cost per job, and Hermes beat us 2.5x on it ($0.0023 against $0.0057, Haiku 5.5). main's breakdown of the 1.48.0 runs: steps are not the gap (5D makes 4-7 model calls, Hermes 6). The gap is what every call re-reads. The use-browser skill was 23.7 KB (~5.6k tokens), loaded on every job and re-read by every later call. `read` printed whole articles (40.5 KB plus 12.9 KB in R1-r2). And wasted steps: two runs ran `5dive browser --help` (6.8 KB), one sent `act --steps='[]'`. DIVE-6731 also found R1 at ~37 s against OpenClaw's 22.4 s: three ~9 s Wikipedia reads queued on one profile's lease.
