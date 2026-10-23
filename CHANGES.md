@@ -8,6 +8,29 @@ that file stays where it is.
 
 ## Unreleased
 
+### Changed — each browser step costs less: no reload, no fixed waits, a warm extractor, a quick fail (DIVE-6778), 1.53.0
+
+On the Online-Mind2Web matrix (cic-arm-b, Haiku 5.5 on every arm) a 5dive step took 13.3 s, against 4.6 s for agent-browser and 4.3 s for playwright-mcp. The step counts were close. Six of those jobs (four that timed out at 10 minutes, two that passed) were timed call by call, then phase by phase inside the session (a timing build of the served browser, not shipped).
+
+What a step paid, and what it pays now:
+
+- **`snapshot <url>` reloaded the page it was already on**, after every act: a full load plus the settle (8.8 s median), and it threw away what the act had done. The page the browser is on is now read as it is (`tree` and `links` too). `snapshot https://www.amtrak.com/` that lands on `/home` counts as on that page, so the next `links` does not load the site again.
+- **`read` and `links` on a served profile stopped the browser and read cold.** They read in a tab of the served browser now, and the page text is extracted there, warm, by the same pinned extractor (`lib/extract.bundle.cjs` keeps its CLI).
+- **A fixed 1.2 s settle after every act, act goto, snapshot load and read tab.** It now ends once no document, XHR or fetch request is in flight and the DOM has been still for 0.25 s, which is how playwright-mcp waits for an action. A page that polls or animates waits the old 1.2 s, never more.
+- **A 1 s wait for a popup after every click or key press**, then the settle on top. The popup wait now ends when the page is quiet (a window a click opens arrives in its handler; one that waits on a request keeps that request in flight), and the re-read does not settle again.
+- **A click under a cookie banner waited 5 s, then failed.** When something else sits on the element's centre, the click gets 1.5 s and the step says what covers it. A ref whose element is not rendered at all (a closed menu's link) is not offered, and a styled checkbox's hidden input is clicked through its label.
+- **An agent's step waited 30 s** (a `wait_for`, or a click on something that never becomes clickable). `act` steps get 10 s (`FIVEDIVE_BROWSER_ACT_STEP_MS`); a recipe keeps 30 s. After a failed step nothing is waited for, and the re-read settles 0.3 s.
+- **`5dive reflex status` was asked on every act** (0.5 s). The answer is kept for a minute.
+- **One `read` of a page whose script never yields held the session for over seven minutes**, and every call behind it was refused as busy. Each page of a `read` gets 40 s (`FIVEDIVE_BROWSER_READ_PAGE_MS`), a loading screen 20 s.
+- **`--expect='(?i)store'` never matched.** A leading `(?i)` is how a model writes "any case"; `grep -E` and the JS poll read it as a broken group, so an act on a page that matched waited out `--expect-wait` and then read NOT VERIFIED (four Best Buy acts in one job). The match is case-blind already, so the flag is dropped.
+- **`act` told the model to open `page.png`** when nothing re-graded it, and it did after 12 of 34 acts (5.6 s each, and an image in every later call). It now points at the `page.md` it has just printed.
+
+Bench adapter: it rendered the `read`/`links` pictures with a second Chrome beside the agent's, on 2 cores. That half was the adapter's, and it is fixed in the bench, not here.
+
+Measured on the six jobs (per-call wall, median over jobs): 1.51.0 14.5 s with four of six timed out; over the last three builds 7.7, 8.2 and 8.9 s with six of six finished on the last, against agent-browser 3.8 s and playwright-mcp 3.9 s. That is not yet the 5 s the row asked for. What is left is about half the model's own time between calls (2-4 s against their 1.8 s) and half the act itself (6.9-8.3 s median, against about 2 s for a whole agent-browser call), which still extracts `page.md` in a fresh process after every act. Our 12-task set was 12/12 on the build before the settle and popup changes; the re-run on this one is owed (the rig's plan is out until 27 October).
+
+Arms: `tests/browser_settle_unit.sh` S1-S21 (the quiet settle, the request watch, the covered click, the popup wait), T23a/T23h, T34i, T40g/T40h in `tests/browser_plugin_unit.sh`, V7 in `tests/browser_act_expect_visible_unit.sh`.
+
 ### Fixed — several pages in one `read` really load at the same time when the browser is served (DIVE-6771), 1.52.1
 
 On the bench rig, R1's `read <PostgreSQL> <MySQL> <SQLite>` took 35-40 s in 1.51.0, slower than three separate reads (about 9 s each). The rig's profile was served (a warm session up), and on that path `read` sent the session one `render` per page. The session takes one request at a time, and each render waited `--wait`'s 8 s for real (to `--dump-dom` it is a virtual time budget), then took a screenshot a read never uses.

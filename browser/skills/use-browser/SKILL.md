@@ -32,8 +32,9 @@ needs nothing connected.
    the browser is on.
 3. **Verify** with `--expect=<regex>`: the words that prove the job (the saved value, or the
    site's own success message), matched on screen for up to 5 s. **A matched `--expect` IS the
-   check:** report and move on, never re-open the page to confirm. No `--expect`, or no match:
-   open the `page.png` the act wrote before you say it worked.
+   check:** report and move on, never re-open the page to confirm. Between steps, go by the
+   text and refs the act printed, never the picture. Open the `page.png` once, at the end, only
+   when no `--expect` matched, before you say the job worked.
 
 ## Reading pages
 

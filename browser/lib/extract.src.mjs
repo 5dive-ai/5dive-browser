@@ -123,12 +123,12 @@ function factTables(document) {
   return out;
 }
 
-(async () => {
-  const url = arg('url');
-  if (!url) { process.stderr.write('extract: --url=<url> is required\n'); process.exit(64); }
-  const html = readStdin();
-  if (!html.trim()) { process.stderr.write('extract: empty HTML on stdin\n'); process.exit(65); }
-
+// ONE FUNCTION, TWO CALLERS (DIVE-6778). The CLI below reads stdin, as it always
+// did. The served browser's session daemon requires this same bundle once and calls
+// extract() on the HTML it already holds: a fresh `node` per page paid the 3 MB
+// load and a cold JIT on every snapshot, act and read (1.4 s against 0.75 s warm,
+// Wikipedia). Same code, same bytes in, same JSON out.
+export async function extract(html, url) {
   const { document } = parseHTML(html);
 
   // canonical_url is NOT part of Defuddle's metadata, and it is the one field the
@@ -192,7 +192,7 @@ function factTables(document) {
   const markdown = factLines.length
     ? `## Facts on the page (its label/value tables)\n\n${factLines.join('\n\n')}\n\n## Page text\n\n${body}`
     : body;
-  process.stdout.write(JSON.stringify({
+  return {
     url,
     canonical_url,
     title: res.title || '',
@@ -208,8 +208,19 @@ function factTables(document) {
     defuddle_version: PINS.defuddle,
     linkedom_version: PINS.linkedom,
     markdown,
-  }));
-})().catch((e) => {
-  process.stderr.write('extract: ' + (e && e.stack ? e.stack : String(e)) + '\n');
-  process.exit(70);
-});
+  };
+}
+
+// The daemon sets this before it requires the bundle, so requiring it runs no CLI.
+if (!globalThis.__FIVEDIVE_EXTRACT_LIB) {
+  (async () => {
+    const url = arg('url');
+    if (!url) { process.stderr.write('extract: --url=<url> is required\n'); process.exit(64); }
+    const html = readStdin();
+    if (!html.trim()) { process.stderr.write('extract: empty HTML on stdin\n'); process.exit(65); }
+    process.stdout.write(JSON.stringify(await extract(html, url)));
+  })().catch((e) => {
+    process.stderr.write('extract: ' + (e && e.stack ? e.stack : String(e)) + '\n');
+    process.exit(70);
+  });
+}

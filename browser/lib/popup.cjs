@@ -53,8 +53,11 @@ function urlOf(p) {
 
 // follow(<the page the act starts on>, {log, onOpen, stepTimeout}) -> a follower.
 //   .page            the page in view now
-//   .sync(op)        call before a step and before the re-read, with the op that
-//                    ran last (or null); returns the page in view
+//   .sync(op, quiet) call before a step and before the re-read, with the op that
+//                    ran last (or null); returns the page in view. `quiet(ms)`, when
+//                    given, resolves true once the page is quiet (DIVE-6778): the wait
+//                    ends then too, as a window the click opens has arrived by then
+//   .settled         the last sync ended because the page went quiet, no popup came
 //   .popup           what the act output names: {url, host, opener} of the popup
 //                    in view, or null when the page it started on is in view
 //   .pageFor(url)    the served browser's question, below
@@ -73,7 +76,7 @@ function follow(start, opts = {}) {
   const stack = [start];
   const arrived = [];
   const watched = [];
-  let wake = null;
+  let wake = null, settled = false;
   const onPopup = (p) => { arrived.push(p); if (wake) { const w = wake; wake = null; w(); } };
   const watch = (p) => {
     if (!p || typeof p.on !== 'function' || watched.includes(p)) return;
@@ -120,14 +123,24 @@ function follow(start, opts = {}) {
       if (stack.length < 2) return null;
       return { url: urlOf(top()), host: hostOf(urlOf(top())), opener: urlOf(stack[stack.length - 2]) };
     },
-    async sync(lastOp) {
+    get settled() { return settled; },
+    // THE WAIT ENDS WHEN THE PAGE IS QUIET (DIVE-6778). The full second was paid after
+    // every click, then the re-read settled 1.2 s more: 2.2 s of waiting on a page
+    // that was done in 0.3 s. A click's window.open fires in its handler; one that
+    // waits on a request first keeps that request in flight, so the page is not quiet.
+    async sync(lastOp, quiet = null) {
       dropClosed();
       const ms = OPENS.has(lastOp) ? WAIT_MS() : 0;
+      let calm = false;
       if (!arrived.length && ms > 0) {
         let timer;
-        await new Promise((resolve) => { wake = resolve; timer = setTimeout(resolve, ms); });
+        await new Promise((resolve) => {
+          wake = resolve; timer = setTimeout(resolve, ms);
+          if (quiet) Promise.resolve(quiet(ms)).then((q) => { if (q) { calm = true; resolve(); } }, () => {});
+        });
         clearTimeout(timer); wake = null;
       }
+      settled = calm && !arrived.length;
       while (arrived.length) await take(arrived.shift());
       dropClosed();
       return top();

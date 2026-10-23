@@ -46,7 +46,10 @@ connected site); a refusal naming the accounts when there are several (`github.c
 `act` runs agent-written steps in the fixed vocabulary (`goto fill type click wait_for select press`)
 through the same executors, lease and login gate as `run`, and grades `--expect` against the page
 as the steps left it; a step that fails fails the run, whatever --expect matched, and the failure
-names the step (`--json`: `failed_step`). **A file a step downloads reaches the seat (DIVE-5751):**
+names the step (`--json`: `failed_step`). **One of the agent's steps waits 10 s, not 30 s
+(DIVE-6778):** a `wait_for`, or a click or fill on an element that never becomes clickable, gives
+up after `FIVEDIVE_BROWSER_ACT_STEP_MS` (10000); a `goto` keeps the page-load bound, and `run`'s
+reviewed recipes keep `FIVEDIVE_BROWSER_STEP_TIMEOUT` (30 s). **A file a step downloads reaches the seat (DIVE-5751):**
 both step loops watch the act's tabs for Playwright's `download` event and save each file after the
 re-read (`lib/downloads.cjs`), under the site's suggested name made safe (last path segment, no
 leading dot, `-2` on a repeat). `act` moves it into its artifact directory as `downloads/<name>`
@@ -518,9 +521,12 @@ The artifacts, 0600 in a 0700 directory chosen exactly as `read` chooses one:
 | `page.png` | the same tab at the same instant (`--no-shot` skips it; `--full` is a tall viewport) |
 
 **On a served profile it runs inside the warm browser** (DIVE-4621's daemon) — no launch, no stop,
-no restart, and a person at a viewer is not disturbed. This is the render op that daemon did not
-have, which is why `shot` and `read` still cycle a cold chrome of their own; `snapshot` does not
-retrofit them, and they remain the right verbs when one field is all you want.
+no restart, and a person at a viewer is not disturbed. **A page the served browser is already on is
+read as it is, not reloaded** (DIVE-6778), so a snapshot after an act shows what the act left (a
+typed value, an open menu) and costs no page load; `tree` does the same. **The first snapshot of
+the public profile starts its served browser** on that page, as the first `act` does, so the calls
+after it are warm. `read` and `links` also read in a tab of a served browser (DIVE-6778); only
+`shot` still cycles a cold chrome of its own.
 
 Every guard the other render verbs carry applies unchanged: the site boundary, the 0700 profile
 audit, the live-viewer refusal, the positive authenticated-session probe, the per-site lease, and
@@ -593,8 +599,10 @@ stderr; together they share the print budget. Every url must open in the same pr
 first: one with a login of its own beside public ones is refused, not read logged out. A page that
 does not load is named under its url, the others are still read, and the call exits non-zero. A
 served browser gets them in one request too, a tab each, all loading at once (a session started
-by a release before 1.52.1 renders them one after another). `--out`, `--json` and `--wait-for`
-take one url.
+by a release before 1.52.1 renders them one after another). One url on a served browser is read
+the same way, in a tab of its own (DIVE-6778): before 1.53.0 it stopped the served browser, read
+cold and started it again, losing the page the agent was acting on. `--out`, `--json` and
+`--wait-for` take one url.
 
 `--json` prints the metadata plus Markdown as one object. `links` is the same one-capture read and
 the same evidence triple, but prints only the extracted article's absolute link objects. It is not

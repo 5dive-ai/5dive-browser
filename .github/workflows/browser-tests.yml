@@ -31,6 +31,10 @@ jobs:
       # before it is a stop. A fake page, pure node.
       - name: interstitial wait harness
         run: bash tests/browser_interstitial_unit.sh
+      # DIVE-6778: the act settle ends when the page is quiet, and a covered click
+      # gets 1.5 s. Fake pages, pure node, real timers.
+      - name: settle harness
+        run: bash tests/browser_settle_unit.sh
       # DIVE-6089: setup installs a missing box stack. apt, npm, curl, gpg faked on
       # a sandbox PATH, so the runner's own chrome, Xvfb and node are invisible.
       - name: setup stack harness

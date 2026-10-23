@@ -4031,9 +4031,21 @@ _reflex_cli() {  # [<reflex verb>]
   _RFX=(5dive reflex)
 }
 # `configured`, not "has a key": a custom endpoint needs none (DIVE-4932).
+# THE ANSWER IS KEPT FOR A MINUTE (DIVE-6778). Asked on every act, a status call
+# is a whole `5dive` CLI start, ~0.5 s of a step that rivals finish in ~1 s, to
+# re-learn an answer that changes when someone sets a key. Kept per seat, beside
+# the seat's own profiles.
+REFLEX_CACHE_S="${FIVEDIVE_BROWSER_REFLEX_CACHE_S:-60}"
 _reflex_configured() {
-  local o; o=$(timeout 20 "${_RFX[@]}" status --json 2>/dev/null) || return 1
-  [[ "$(jq -r '.configured // false' <<<"$o" 2>/dev/null)" == true ]]
+  local cf="" o v
+  [[ "$REFLEX_CACHE_S" =~ ^[0-9]{1,5}$ ]] && (( REFLEX_CACHE_S > 0 )) && cf="$(_seat_dir 2>/dev/null)/.reflex-configured"
+  if [[ -n "$cf" && -f "$cf" ]] && (( $(date +%s) - $(stat -c %Y "$cf" 2>/dev/null || echo 0) < REFLEX_CACHE_S )); then
+    v=$(<"$cf"); [[ "$v" == true || "$v" == false ]] && { [[ "$v" == true ]]; return; }
+  fi
+  o=$(timeout 20 "${_RFX[@]}" status --json 2>/dev/null) || return 1
+  v=$(jq -r 'if .configured == true then "true" else "false" end' <<<"$o" 2>/dev/null) || return 1
+  [[ -n "$cf" && -d "${cf%/*}" ]] && (umask 077; printf '%s\n' "$v" > "$cf") 2>/dev/null
+  [[ "$v" == true ]]
 }
 
 # THE LANDING CHECK'S OPTIONAL TIER (DIVE-4991), asked by the two step loops
@@ -6022,10 +6034,26 @@ _capture_facts() { # _capture_facts <extra-json> <executor-json-file>
     <<<"$x" 2>/dev/null || printf '%s\n' "$x"
 }
 
+# THE SERVED BROWSER MAY HAVE EXTRACTED IT ALREADY (DIVE-6778): <stage>/extracted.json,
+# written by the caller from the session's answer, which the session gives only when
+# its bundle is this one (_extract_sha) over this page.html and this url. Otherwise
+# the pinned extractor runs here, as it always did.
+_EXTRACT_SHA=""
+_extract_sha() {
+  [[ -n "$_EXTRACT_SHA" ]] || _EXTRACT_SHA=$(sha256sum "$READ_EXTRACTOR" 2>/dev/null | cut -d' ' -f1)
+  printf '%s' "$_EXTRACT_SHA"
+}
+# _take_extracted <json> <jq path> <stage>: the session's extraction, when it sent one.
+_take_extracted() {
+  jq -ce "$2 | objects | select(.markdown | type == \"string\")" <<<"$1" > "$3/extracted.json" 2>/dev/null \
+    || rm -f -- "$3/extracted.json"
+}
 _derive_capture() { # _derive_capture <stage> <url> <chrome> <capture-kind> [<extra-json>]
   local stage="$1" url="$2" chrome="$3" capture="$4" extra="${5:-}"
   [[ -n "$extra" ]] || extra='{}'
-  if ! node "$READ_EXTRACTOR" --url="$url" <"$stage/page.html" >"$stage/extracted.json"; then
+  if [[ -s "$stage/extracted.json" ]] && [[ "$(jq -r '.url // ""' "$stage/extracted.json" 2>/dev/null)" == "$url" ]]; then
+    :
+  elif ! node "$READ_EXTRACTOR" --url="$url" <"$stage/page.html" >"$stage/extracted.json"; then
     die "$E_UNAVAILABLE" "the pinned Defuddle extractor rejected the captured DOM; no evidence files were written"
   fi
   jq -e '.markdown | type == "string"' "$stage/extracted.json" >/dev/null || \
@@ -6196,9 +6224,13 @@ _cmd_read_like() { # _cmd_read_like read|links <site> <url> [flags]
 
   # Authenticate BEFORE making the destination. A logged-out call writes
   # nothing — not even an empty output directory that looks like a failed read.
-  # --wait-for renders through a browser that can be ASKED what is on the page
-  # (--dump-dom cannot), so it takes the warm session when one is up.
-  [[ -z "$wait_for" ]] || _PG_WARM=1
+  # A SERVED BROWSER READS IT IN A TAB OF ITS OWN (DIVE-6778). The cold
+  # --dump-dom needs the profile to itself, so on a served profile it stopped the
+  # browser the agent was acting in, launched a second Chrome and put the first
+  # back: ~10 s a read on the bench, ~20 s a `links`. --wait-for always took the
+  # warm session; now every read does when one is up. With none up, the cold
+  # path below is unchanged.
+  _PG_WARM=1
   _page_open "$site" "$url"
   local dir="$_PG_DIR" chrome="$_PG_CHROME"
   out="$(_read_output_dir "$site" "$out" "$dir")" || exit $?
@@ -6210,12 +6242,33 @@ _cmd_read_like() { # _cmd_read_like read|links <site> <url> [flags]
   # One render, one source of truth. page.html is byte-for-byte stdout from this
   # invocation and every derived field below comes from that exact file.
   local crc=0 capture=dump-dom partial=false waitj=null
-  if (( _SITE_BROKERED )) || { [[ -n "$wait_for" ]] && _daemon_live "$dir"; }; then
+  if (( _SITE_BROKERED )) || _daemon_live "$dir"; then
     capture=session-daemon
     local rj=""
-    rj=$(_daemon_render "$dir" "$url" 1280 800 false "$wait" "$wait_for") || crc=$?
-    if (( crc == 0 )) && [[ -n "$rj" ]]; then
-      jq -r '.html' <<<"$rj" > "$stage/page.html"; waitj=$(jq -c '.wait_for // null' <<<"$rj")
+    # The settle, not the 8 s, as `read <url> <url>…` waits it (DIVE-6771): to a
+    # live tab --wait is a REAL wait, to --dump-dom a virtual one. An explicit
+    # --wait still wins. No --wait-for: the one-request `read` op, no PNG; a
+    # daemon from before that op falls through to the render.
+    local settle="${FIVEDIVE_BROWSER_TREE_SETTLE_MS:-$SNAP_SETTLE_DEFAULT}"
+    [[ "$wait" == "$READ_WAIT_DEFAULT" ]] || settle="$wait"
+    if [[ -z "$wait_for" ]]; then
+      rj=$(_daemon_call "$dir" "$(jq -nc --arg u "$url" --argjson t "$settle" --argjson l "$(_daemon_lease_json)" \
+           --arg xs "$(_extract_sha)" '{op:"read", urls:[$u], wait:$t, extract:$xs} + $l')" 2>"$stage/read.err") || crc=$?
+      if (( crc == 0 )) && [[ "$(jq -r '.pages[0].ok // false' <<<"$rj" 2>/dev/null)" == true ]]; then
+        jq -r '.pages[0].html' <<<"$rj" > "$stage/page.html"
+        _take_extracted "$rj" '.pages[0].extracted' "$stage"
+      elif (( crc == 0 )); then
+        crc=$E_UNAVAILABLE
+        printf '%s: %s\n' "$PROG" "$(jq -r '.pages[0].error // "the box session gave no answer for it"' <<<"$rj" 2>/dev/null)" >&2
+      else
+        crc=0; rj=""
+      fi
+    fi
+    if [[ ! -s "$stage/page.html" ]] && (( crc == 0 )); then
+      rj=$(_daemon_render "$dir" "$url" 1280 800 false "$settle" "$wait_for") || crc=$?
+      if (( crc == 0 )) && [[ -n "$rj" ]]; then
+        jq -r '.html' <<<"$rj" > "$stage/page.html"; waitj=$(jq -c '.wait_for // null' <<<"$rj")
+      fi
     fi
     if (( crc != 0 )) || [[ ! -s "$stage/page.html" ]]; then
       die "$E_UNAVAILABLE" "the box session did not capture $url (it exited $crc; its own reason is above); no evidence files were written"
@@ -6355,12 +6408,13 @@ _cmd_read_many() {  # _cmd_read_many <site> <full> <wait-ms> <url>...
     # readMode waits; an explicit --wait still wins.
     local settle="${FIVEDIVE_BROWSER_TREE_SETTLE_MS:-$SNAP_SETTLE_DEFAULT}"
     [[ "$wait" == "$READ_WAIT_DEFAULT" ]] || settle="$wait"
-    rj=$(_daemon_call "$dir" "$(jq -nc --argjson t "$settle" --argjson l "$(_daemon_lease_json)" \
-         '{op:"read", urls:$ARGS.positional, wait:$t} + $l' --args "${urls[@]}")" 2>"$stage/read.err") || crc=$?
+    rj=$(_daemon_call "$dir" "$(jq -nc --argjson t "$settle" --argjson l "$(_daemon_lease_json)" --arg xs "$(_extract_sha)" \
+         '{op:"read", urls:$ARGS.positional, wait:$t, extract:$xs} + $l' --args "${urls[@]}")" 2>"$stage/read.err") || crc=$?
     if (( crc == 0 )) && jq -e '.pages | length > 0' <<<"$rj" >/dev/null 2>&1; then
       for ((k = 0; k < n; k++)); do
         if [[ "$(jq -r --argjson k "$k" '.pages[$k].ok // false' <<<"$rj")" == true ]]; then
           jq -r --argjson k "$k" '.pages[$k].html' <<<"$rj" > "$stage/$k/page.html"
+          _take_extracted "$rj" ".pages[$k].extracted" "$stage/$k"
         fi
         [[ -s "$stage/$k/page.html" ]] || jq -r --argjson k "$k" '.pages[$k].error // "the box session gave no answer for it"' <<<"$rj" > "$stage/$k/error"
       done
@@ -6592,6 +6646,15 @@ cmd_snapshot() {
   _lease_take "$site" "$dir" "snapshot" "$wait"
   trap '_lease_and_serve_release' EXIT
 
+  # THE FIRST SNAPSHOT OF THE PUBLIC PROFILE STARTS ITS SERVED BROWSER (DIVE-6778),
+  # on this page, as the first act already did (_act_keep_page). The snapshot an
+  # agent opens a job with was a one-off Chrome, launched and thrown away, and the
+  # act after it then launched the served one: two launches where one does. Now
+  # the snapshot reads the page the served browser just opened, and every call
+  # after it is warm. The public profile only: a login's served browser is the
+  # act's decision, as before.
+  _is_public "$site" && _act_keep_page "$site" "$url"
+
   # A snapshot is a navigation and a read — exactly the shape the warm session
   # serves, and the verb an agent runs most in a loop.
   _PG_WARM=1
@@ -6622,14 +6685,15 @@ cmd_snapshot() {
     local inline=0; (( _SITE_BROKERED )) && inline=1
     plan=$(jq -nc --arg u "$url" --arg h "$stage/page.html" --arg s "$png" \
         --argjson i "$interactive" --argjson f "$full" --argjson l "$(_daemon_lease_json)" \
-        --argjson n "$inline" --argjson st "$(_settle_json "$settle")" --arg wf "$wait_for" \
-        '{op:"snapshot", url:$u,
+        --argjson n "$inline" --argjson st "$(_settle_json "$settle")" --arg wf "$wait_for" --arg xs "$(_extract_sha)" \
+        '{op:"snapshot", url:$u, extract:$xs,
           html:(if $n==1 then null else $h end),
           shot:(if $n==1 then (if $s=="" then null else true end) elif $s=="" then null else $s end),
           inline:($n==1), interactive:($i==1), full:($f==1)}
          + (if $wf == "" then {} else {wait_for:$wf} end) + $st + $l')
     payload=$(_daemon_call "$_PG_DIR" "$plan") \
       || die "$E_UNAVAILABLE" "the warm session could not capture $url (its own reason is above)."
+    _take_extracted "$payload" .extracted "$stage"
     if (( inline )); then
       jq -r '.html_inline // ""' <<<"$payload" > "$stage/page.html" \
         || die "$E_UNAVAILABLE" "the box session returned a capture this seat could not read"
@@ -7047,7 +7111,11 @@ cmd_act() {
       --interactive) interactive=1 ;;
       --steps=*)    steps="${1#*=}" ;;
       --steps-file=*) [[ -r "${1#*=}" ]] || die "$E_USAGE" "cannot read ${1#*=}"; steps="$(cat -- "${1#*=}")" ;;
-      --expect=*)   expect="${1#*=}" ;;
+      # A leading (?i) is how a model writes "any case" (PCRE); grep -E and JS read
+      # it as a broken group, so a page that matched waited out --expect-wait and
+      # then read NOT VERIFIED (DIVE-6778: 4 Best Buy acts in one job). The match
+      # is case-blind already, so the flag is dropped, never translated.
+      --expect=*)   expect="${1#*=}"; expect="${expect#'(?i)'}" ;;
       --approved=*) approved="${1#*=}" ;;
       --out=*)      out="${1#*=}" ;;
       --json)       json=1 ;;
@@ -7155,8 +7223,8 @@ cmd_act() {
     plan=$(jq -nc --arg p "$_PG_DIR" --argjson s "$steps" --argjson a "$is_approved" \
         --arg h "$stage/page.html" --arg m "$stage/after.json" --arg sh "$png" \
         --arg t "$stage/tree.json" --argjson r "$report" --argjson ak "$allow_kinds" \
-        --argjson lj "$(_landing_json "$site" "$may")" --arg dl "$stage/downloads" \
-        '{profile:$p, steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak,
+        --argjson lj "$(_landing_json "$site" "$may")" --arg dl "$stage/downloads" --argjson sm "$ACT_STEP_MS" \
+        '{profile:$p, steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak, step_ms:$sm,
           report:({html:$h, meta:$m, tree:$t, shot:(if $sh=="" then null else $sh end), downloads:$dl} + $r)} + $lj')
     FIVEDIVE_BROWSER_PROFILE="$_PG_DIR" FIVEDIVE_BROWSER_CHROME="$chrome" \
       FIVEDIVE_BROWSER_RUN_SETTLE_MS="${settle:-${FIVEDIVE_BROWSER_RUN_SETTLE_MS:-$SNAP_SETTLE_DEFAULT}}" \
@@ -7296,7 +7364,9 @@ cmd_act() {
   case "$verdict" in
     verified)     printf 'verified: the page after the steps matches --expect\n' ;;
     not_verified) printf '%s: NOT VERIFIED — the executor exited %s, but the page after the steps does not match --expect. Look at %s/page.png before retrying: if it went through and we misread, a retry does it twice.\n' "$PROG" "$drc" "$out" >&2 ;;
-    executed)     printf 'done: every step ran. Nothing re-graded it (no --expect) — read %s/page.png or snapshot the page before you report success.\n' "$out" ;;
+    # The page.md printed above, not page.png (DIVE-6778): on the bench the model
+    # opened the picture after 12 of 34 acts, at 5.6 s each and an image in every later call.
+    executed)     printf 'done: every step ran. Nothing re-graded it (no --expect) — check the page.md above says the steps took before you report success (the picture is %s/page.png).\n' "$out" ;;
     step_failed)
       local why="a step failed (the executor exited $drc)"
       # The error's first sentence: the executor printed all of it just above.
@@ -7332,13 +7402,20 @@ _act_popup_say() { # <after.json>
 # 1 when the plan's first step is the goto `act <url>` put there itself: the served
 # browser skips it when it is already on that page (DIVE-5817; session-daemon).
 _ACT_STAY=0
+# HOW LONG ONE OF THE AGENT'S STEPS MAY WAIT (DIVE-6778): 10 s, not the 30 s a
+# reviewed `run` recipe keeps. A wait_for for text that never showed, or a click on
+# an element a banner covers, waited the full 30 s and failed anyway; the bench's
+# slowest acts were exactly those (40-45 s). A goto keeps its page-load bound.
+ACT_STEP_MS="${FIVEDIVE_BROWSER_ACT_STEP_MS:-10000}"
+[[ "$ACT_STEP_MS" =~ ^[0-9]{1,7}$ ]] && (( ACT_STEP_MS > 0 )) || ACT_STEP_MS=10000
 _act_session() {  # <site> <steps> <approved> <shot> <settle> <report> <allow-kinds> <stage> <errf>
   local site="$1" steps="$2" is_approved="$3" shot="$4" settle="$5" report="$6" allow_kinds="$7" stage="$8" errf="$9"
   local plan rc=0 rep payload="$stage/daemon.out"
   plan=$(jq -nc --argjson s "$steps" --argjson a "$is_approved" --argjson sh "$shot" \
       --argjson l "$(_daemon_lease_json)" --argjson st "$(_settle_json "$settle")" --argjson r "$report" \
       --argjson ak "$allow_kinds" --argjson lj "$(_landing_json "$site" 0)" --argjson stay "$_ACT_STAY" \
-      '{op:"plan", steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak, stay:($stay==1),
+      --argjson sm "$ACT_STEP_MS" --arg xs "$(_extract_sha)" \
+      '{op:"plan", steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak, stay:($stay==1), step_ms:$sm, extract:$xs,
         report:({shot:($sh==1), tree:true, downloads:true} + $r)} + $st + $l + $lj')
   # To a FILE, not a variable: a download comes back in this payload (DIVE-5751).
   _daemon_call "$_PG_DIR" "$plan" >"$payload" 2>>"$errf" || rc=$?
@@ -7346,6 +7423,7 @@ _act_session() {  # <site> <steps> <approved> <shot> <settle> <report> <allow-ki
   rep=$(grep -F '"act_report":true' "$payload" | tail -1)
   if [[ -n "$rep" ]]; then
     jq -r '.html_inline // ""' <<<"$rep" > "$stage/page.html"
+    _take_extracted "$rep" .extracted "$stage"
     jq -c '{url, title, text, wait_for, expect_polled_ms, browser_mode, popup}' <<<"$rep" > "$stage/after.json"
     jq -e '.nodes | type == "array"' <<<"$rep" >/dev/null 2>&1 && jq -c '{url, title, nodes}' <<<"$rep" > "$stage/tree.json"
     if (( shot )); then jq -r '.png_b64 // ""' <<<"$rep" | base64 -d > "$stage/page.png" 2>/dev/null || :; fi

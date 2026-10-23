@@ -70,6 +70,35 @@ IO=$(_inline_page "$D")
 t 'I5 ...nor a tree of 80 refs' no "$(yn 'ref=button/B1' <<<"$IO")"
 rm -rf "$D"
 
+# ---- X: the served browser's warm extraction is the CLI's, byte for byte (DIVE-6778) --
+# The session daemon requires this same bundle as a library and calls extract(); page.md
+# must not depend on which of the two ran it.
+for f in "$FX"/*.html; do
+  CLI_OUT=$(node "$EXTRACTOR" --url=https://x.test/p < "$f")
+  LIB_OUT=$(node -e 'globalThis.__FIVEDIVE_EXTRACT_LIB = 1;
+    const m = require(process.argv[1]);
+    m.extract(require("fs").readFileSync(process.argv[2], "utf8"), "https://x.test/p").then((o) => process.stdout.write(JSON.stringify(o)));' "$EXTRACTOR" "$f")
+  t "X1 $(basename "$f"): extract() as a library is the CLI's JSON, byte for byte" yes "$([[ -n "$CLI_OUT" && "$CLI_OUT" == "$LIB_OUT" ]] && echo yes || echo no)"
+done
+t 'X1 ...and requiring it as a library runs no CLI (no stdin read, no exit)' 'function' \
+  "$(node -e 'globalThis.__FIVEDIVE_EXTRACT_LIB = 1; process.stdout.write(typeof require(process.argv[1]).extract)' "$EXTRACTOR" </dev/null)"
+# _derive_capture takes the session's extraction for THIS url and runs no extractor;
+# for another url it runs the extractor, as before.
+eval "$(awk '/^_take_extracted\(\) \{/{f=1} /^_derive_capture\(\) \{/{f=1} f{print} f&&/^}/{f=0}' "$PWD/browser/bin/browser")"
+die() { echo "DIE $*"; exit 1; }
+D=$(mktemp -d); printf '<html><body><p>hello</p></body></html>' > "$D/page.html"
+_take_extracted '{"extracted":{"url":"https://x.test/p","title":"T","markdown":"from the session","word_count":3}}' .extracted "$D"
+READ_EXTRACTOR="$D/no-such-extractor.cjs" X2=$( (_derive_capture "$D" "https://x.test/p" "" snapshot) 2>&1; echo "rc=$?")
+t 'X2 the session'"'"'s extraction of this url is used: no extractor runs' 'rc=0 yes' \
+  "$(tail -1 <<<"$X2") $(grep -q 'from the session' "$D/page.md" && echo yes || echo no)"
+_take_extracted '{"extracted":{"url":"https://x.test/OTHER","markdown":"stale"}}' .extracted "$D"
+READ_EXTRACTOR="$EXTRACTOR" X3=$( (_derive_capture "$D" "https://x.test/p" "" snapshot) 2>&1; echo "rc=$?")
+t 'X3 an extraction of another url is not used: the extractor runs over page.html' 'rc=0 no yes' \
+  "$(tail -1 <<<"$X3") $(grep -q 'stale' "$D/page.md" && echo yes || echo no) $(grep -q 'hello' "$D/page.md" && echo yes || echo no)"
+_take_extracted '{"pages":[{"ok":true}]}' '.pages[0].extracted' "$D"
+t 'X4 a session that sent none leaves no extracted.json behind' no "$([[ -e "$D/extracted.json" ]] && echo yes || echo no)"
+rm -rf "$D"
+
 # ---- Q: a bare `status` probes its sites side by side -------------------------------
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 unset BASH_ENV ENV

@@ -158,6 +158,9 @@ export FIVEDIVE_BROWSER_PUBLIC_KEEP=0
 # DIVE-6334: the same for an act on the seat's own login. The act arms here grade the
 # one-off executor; T52 turns it on and grades the kept browser.
 export FIVEDIVE_BROWSER_ACT_KEEP=0
+# DIVE-6778: whether reflex is configured is kept for a minute per seat. The arms here
+# switch it on and off between acts, so they ask every time; T40g grades the keeping.
+export FIVEDIVE_BROWSER_REFLEX_CACHE_S=0
 # NO ARM FILES AN ASK IN THE SEAT'S REAL APPROVAL STORE (DIVE-5429). With this
 # unset, `_approval_dir` finds the seat's home through `getent passwd` (not
 # $HOME), so an arm that stops a send without naming its own store files a real
@@ -2496,8 +2499,8 @@ const page = {
     fireDownloads(process.env.PWDOWNLOAD);
     if (process.env.PWFAIL) throw new Error('stub: the step failed');
   },
-  waitForSelector: async (sel) => {
-    rec({ call: 'waitForSelector', sel });
+  waitForSelector: async (sel, o) => {
+    rec({ call: 'waitForSelector', sel, timeout: o && o.timeout });
     if (process.env.PWSUGGEST && sel === `text=${process.env.PWSUGGEST}` && !keydowns) {
       throw new Error('page.waitForSelector: Timeout 30000ms exceeded.');
     }
@@ -3352,6 +3355,8 @@ class El {
   closest(sel) { let n = this; const tag = sel.toUpperCase();
     while (n) { if (n.tagName === tag) return n; n = n.parent; } return null; }
   get ownerDocument() { return doc; }
+  // DIVE-6778: data-norender is an element with no layout box (inside a closed menu).
+  getClientRects() { return this.hasAttribute('data-norender') ? [] : [{}]; }
 }
 function flatten(el, out = []) { out.push(el); el.kids.forEach(k => flatten(k, out)); return out; }
 const body = new El('body', {}, '', [
@@ -3365,6 +3370,7 @@ const body = new El('body', {}, '', [
   new El('button', { hidden: '' }, 'Delete forever'),
   new El('div', { role: 'button', 'aria-hidden': 'true' }, 'Archive'),
   new El('span', {}, 'just text'),
+  new El('a', { href: '/menu', 'data-norender': '' }, 'Closed menu link'),
 ]);
 const all = flatten(body).slice(1);
 const doc = {
@@ -3404,6 +3410,41 @@ t  'T23a ...and reports the marker the selector is built from' 'yes' \
    "$(jq -r '.marker' <<<"$MARKED" | grep -q '^r[0-9]' && echo yes || echo no)"
 t  'T23a a ref that matches nothing marks NOTHING' '0' \
    "$(ARIA="$ARIA" node "$TMP/walk-test.js" all 'button/Nope' | jq -r '.marked')"
+tn 'T23a a link that renders no box (a closed menu'"'"'s, DIVE-6778) is not offered' 'Closed menu link' "$WALKREFS"
+tc 'T23a (control) its open sibling links still are' 'link/Inbox#1' "$WALKREFS"
+
+# --- T23h a ref the page draws elsewhere is clicked through, not waited out (DIVE-6778)
+cat > "$TMP/click-test.js" <<'CLK'
+const { clickStep } = require(process.env.ARIA);
+const tape = [];
+const page = (shown, labelled) => ({
+  click: async (x, o) => tape.push(`click ${x} ${o.timeout}`),
+  locator: (x) => ({
+    isVisible: async () => shown,
+    waitFor: async (o) => { tape.push(`waitFor ${o.state} ${o.timeout}`); throw new Error('Timeout'); },
+    evaluate: async (fn) => { const lab = { getClientRects: () => [{}], click: () => tape.push('label.click') };
+      return fn({ labels: labelled ? [lab] : [], click: () => tape.push('el.click') }); },
+  }),
+});
+const log = (l) => tape.push(`log ${l}`);
+(async () => {
+  const ref = { selector: 'ref=checkbox/Fall 2023' }, css = { selector: '#go' };
+  await clickStep(page(false, false), css, '#go', 5000, { log }); tape.push('|');
+  await clickStep(page(true, false), ref, '[data-5dive-ref="r1"]', 5000, { log }); tape.push('|');
+  await clickStep(page(false, true), ref, '[data-5dive-ref="r1"]', 5000, { log }); tape.push('|');
+  await clickStep(page(false, false), ref, '[data-5dive-ref="r1"]', 5000, { log });
+  console.log(tape.join('\n'));
+})();
+CLK
+CLK="$(ARIA="$ARIA" node "$TMP/click-test.js" 2>&1)"
+t  'T23h a CSS selector is Playwright'"'"'s click, whatever it shows' 'click #go 5000' "$(sed -n 1p <<<"$CLK")"
+t  'T23h a visible ref is Playwright'"'"'s click' 'click [data-5dive-ref="r1"] 5000' "$(sed -n 3p <<<"$CLK")"
+t  'T23h an invisible ref gets one second to show, then its label is clicked' 'waitFor visible 1000|label.click' \
+   "$(sed -n 5,6p <<<"$CLK" | paste -sd'|')"
+tc 'T23h ...and the step says so' 'not visible; clicked it through its label' "$CLK"
+t  'T23h an invisible ref with no label is clicked through the page' 'waitFor visible 1000|el.click' \
+   "$(sed -n 9,10p <<<"$CLK" | paste -sd'|')"
+tn 'T23h ...and neither invisible ref went to Playwright'"'"'s click, which waits for it to show' 'click [' "$(sed -n '5,$p' <<<"$CLK")"
 
 # --- the canned walk the stub hands back for the plumbing arms ---------------
 TREESITE=treehost.test
@@ -3691,7 +3732,10 @@ const mkpage = (kind) => { let clock = 0, keydowns = 0, lastGoto = '';
   // overlap in the daemon (DIVE-4927, T27m). Unset, a goto is instant as before.
   goto: async (url) => { clock = 0; keydowns = 0; lastGoto = url; rec({ call: 'goto', url, kind });
     if (process.env.DPWGOTO_MS) await new Promise((r) => setTimeout(r, Number(process.env.DPWGOTO_MS))); },
+  // DPWHANG_URL: a page whose script never yields, so content() never answers
+  // (DIVE-6778, T34i). Unset, content answers as it always did.
   content: async () => { rec({ call: 'content', kind });
+    if (process.env.DPWHANG_URL && lastGoto.includes(process.env.DPWHANG_URL)) return new Promise(() => {});
     return fs.readFileSync((late() && process.env.DPWDOM_LATE) || process.env.DPWDOM, 'utf8'); },
   fill: async (sel, val) => {
     rec({ call: 'fill', sel, val, kind });
@@ -6147,6 +6191,21 @@ t  'T34e read --wait-for on a served profile renders in the warm session' '0 ses
    "$RC $(jq -r '"\(.capture) \(.wait_for.met)"' "$TMP/t34e4/page.meta.json" 2>/dev/null)"
 env PATH="$SPATH" "$BROWSER" serve warm34.test --stop >/dev/null 2>&1
 
+# --- T34i a page of a warm read that never answers gives up, the others land (DIVE-6778)
+mkprofile hang34.test "$LIVE_DOM" >/dev/null
+dserve hang34.test DPWHANG_URL=/hangs FIVEDIVE_BROWSER_READ_PAGE_MS=1500
+t  'T34i (precondition) the warm session is up' 0 "$RC"
+T0=$(date +%s)
+dwarm "$BROWSER" read hang34.test "https://hang34.test/fine" "https://hang34.test/hangs"
+T34I=$(( $(date +%s) - T0 ))
+t  'T34i a read whose second page never answers returns, and fails the call' 69 "$RC"
+t  'T34i ...inside the page limit, not forever' yes "$( (( T34I < 20 )) && echo yes || echo "no (${T34I} s)")"
+tc 'T34i ...it names the page and the limit' 'did not finish loading within 2 s' "$(grep -A2 '^==> https://hang34.test/hangs <==' <<<"$OUT$ERR")"
+tc 'T34i ...and the page that answered is still read' 'hang34.test/fine' "$OUT"
+dwarm "$BROWSER" read hang34.test "https://hang34.test/fine"
+t  'T34i ...and the session is free for the next call' 0 "$RC"
+env PATH="$SPATH" "$BROWSER" serve hang34.test --stop >/dev/null 2>&1
+
 # --- T34f MUTANT: gut the wait in a copy, and T34d must go red ----------------
 # Non-vacuous both ways: the UNMUTATED copy passes T34d's claim first.
 MUT34="$TMP/t34-mutant"; rm -rf "$MUT34"; cp -r "$ROOT/browser" "$MUT34"
@@ -7232,6 +7291,34 @@ pick40 '' null
 act40 "$CLICK40"
 t  'T40c reflex picks none: nothing is clicked (1)' '1 ' "$RC $(tape40 click)"
 tc 'T40c ...and it says so' 'Reflex proposed no element for it.' "$ERR"
+
+# --- T40g the answer to "is reflex on" is kept for a minute (DIVE-6778) -------------------
+rm -f "$P31/$SEAT/.reflex-configured"
+pick40 'button/Decline all' 0.99
+act40 "$CLICK40" FIVEDIVE_BROWSER_REFLEX_CACHE_S=60
+t  'T40g kept: the first act asks whether reflex is on, and picks' '0 1 1' \
+   "$RC $(grep -c '^reflex status' "$RFXREC40") $(picks40)"
+t  'T40g ...the answer is written beside the seat'"'"'s profiles' 'true' "$(cat "$P31/$SEAT/.reflex-configured" 2>/dev/null)"
+pick40 'button/Decline all' 0.99
+act40 "$CLICK40" FIVEDIVE_BROWSER_REFLEX_CACHE_S=60
+t  'T40g ...the next act within the minute does not ask again, and still picks' '0 0 1' \
+   "$RC $(grep -c '^reflex status' "$RFXREC40") $(picks40)"
+touch -d '2 minutes ago' "$P31/$SEAT/.reflex-configured"
+pick40 'button/Decline all' 0.99
+act40 "$CLICK40" FIVEDIVE_BROWSER_REFLEX_CACHE_S=60
+t  'T40g ...an answer older than the minute is asked again' 1 "$(grep -c '^reflex status' "$RFXREC40")"
+rm -f "$P31/$SEAT/.reflex-configured"
+
+# --- T40h an agent's step waits 10 s, a recipe's 30 s (DIVE-6778) ------------------------
+act40 '[{"op":"wait_for","selector":"text=Stays"}]'
+t  'T40h act: a wait_for waits 10 s, not the recipe'"'"'s 30 s' '0 10000' \
+   "$RC $(jq -rs '[.[]|select(.call=="waitForSelector")|.timeout]|first' "$PWREC")"
+act40 '[{"op":"wait_for","selector":"text=Stays"}]' FIVEDIVE_BROWSER_ACT_STEP_MS=2500
+t  'T40h ...FIVEDIVE_BROWSER_ACT_STEP_MS sets it' '0 2500' \
+   "$RC $(jq -rs '[.[]|select(.call=="waitForSelector")|.timeout]|first' "$PWREC")"
+act40 '[{"op":"wait_for","selector":"text=Stays"}]' FIVEDIVE_BROWSER_ACT_STEP_MS=junk
+t  'T40h ...and a value that is not milliseconds is the 10 s' '0 10000' \
+   "$RC $(jq -rs '[.[]|select(.call=="waitForSelector")|.timeout]|first' "$PWREC")"
 
 # --- T40d reflex not configured: never asked ----------------------------------------------
 touch "$T40/rfx-off"

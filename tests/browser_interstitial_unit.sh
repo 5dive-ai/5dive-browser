@@ -54,7 +54,7 @@ t 'I15 FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS still sets the bound' \
 
 # Every executor goto calls it: the two snapshot paths, render, both act gotos, and readMode's goto.
 t "I8 driver-playwright calls it after its snapshot goto, its act goto and readMode's goto" 3 "$(grep -c 'aria.waitInterstitial(page)' browser/bin/driver-playwright)"
-t 'I9 session-daemon calls it after snapshot, render, read (DIVE-6771) and the act goto' 4 "$(grep -c 'aria.waitInterstitial(page)' browser/bin/session-daemon)"
+t 'I9 session-daemon calls it after snapshot, render, read (DIVE-6771) and the act goto' 4 "$(grep -cE 'aria\.waitInterstitial\(page[,)]' browser/bin/session-daemon)"
 
 # bin/browser's STOP says the wait happened when the payload says it did not clear.
 HTML=$(mktemp); trap 'rm -f "$HTML"' EXIT

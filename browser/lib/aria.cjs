@@ -135,6 +135,14 @@ function pageWalk(opts) {
     if (el.tagName.toLowerCase() === 'input' && (el.getAttribute('type') || '') === 'hidden') return true;
     var st = el.ownerDocument.defaultView.getComputedStyle(el);
     if (st && (st.display === 'none' || st.visibility === 'hidden')) return true;
+    // NOT RENDERED AT ALL (DIVE-6778). display:none is not inherited, so a link in a
+    // closed menu reads display:inline and was offered; on the bench a third of the
+    // failed clicks were such links, each waiting out the click's bound for an element
+    // that can never show. A node that renders has at least one layout box (fixed
+    // ones too); an <option> draws none of its own, and display:contents none by design.
+    var tag = el.tagName.toLowerCase();
+    if (tag !== 'option' && tag !== 'optgroup' && !(st && st.display === 'contents')
+        && typeof el.getClientRects === 'function' && el.getClientRects().length === 0) return true;
     return false;
   }
 
@@ -414,11 +422,13 @@ async function onRef(page, step, sel, act, { timeoutMs = 30000, attemptMs = REFI
       if (Date.now() >= deadline - 50) throw e;
       let gone = false;
       try { gone = (await page.locator(cur).count()) === 0; } catch (x) { throw e; }
-      if (!gone) {
-        // Still on the page: only slow. A non-timeout failure is a real one.
-        if (!(e && e.name === 'TimeoutError')) throw e;
-        continue;
-      }
+      // STILL ON THE PAGE IS A FAILURE, NOT A RETRY (DIVE-6778). Playwright's own
+      // attempt already waited the whole attemptMs for it to be visible, enabled
+      // and not covered; going round again only repeated that wait until the 30 s
+      // step bound. On the bench every such click was a consent overlay over the
+      // element, so each one cost 30 s and still failed. The error names what
+      // covers it, which is what the next act needs.
+      if (!gone) throw e;
       let urlNow = '';
       try { urlNow = String(await page.url()); } catch (x) { /* compared as '' */ }
       if (actedAlready(e && e.message) || urlNow !== urlBefore) throw e;
@@ -439,6 +449,62 @@ async function onRef(page, step, sel, act, { timeoutMs = 30000, attemptMs = REFI
       cur = next;
     }
   }
+}
+
+// ---- CLICK: A CONTROL THE PAGE DRAWS ELSEWHERE (DIVE-6778) ------------------
+//
+// A styled checkbox is a 0x0 <input> under the label a person clicks, and
+// page.click waits its whole bound for that input to become visible, which it
+// never does: on the bench a filter checkbox cost 5 s and a failed step, then the
+// agent's retry cost the same again. A REF only (the walk offered it, so it is on
+// the page): given a second to show, else its label is clicked, else the element
+// itself through the page, and the step says which. A CSS selector, a recipe's,
+// keeps Playwright's click exactly. A stub page without isVisible keeps it too.
+const CLICK_SHOW_MS = 1000;
+// The re-read after a FAILED step settles this long, not the run's 1.2 s: the step
+// that failed timed out or was refused, so the page has nothing new to settle into.
+const FAILED_SETTLE_MS = 300;
+// A CONTROL SOMETHING ELSE SITS ON (DIVE-6778): a cookie banner over the page. Its
+// click waited the whole 5 s while Playwright retried into the banner, then failed
+// anyway, on 8 of 135 bench calls. When the element's own centre hits another
+// element, the click gets 1.5 s: still Playwright's click and its scroll retries
+// (a sticky header clears on the first), but a banner fails in 1.5 s, not 5.
+const COVERED_CLICK_MS = 1500;
+async function coverOf(loc) {   // what sits on the element's centre, or null
+  try {
+    return await loc.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) return null;
+      const root = el.getRootNode && el.getRootNode().elementFromPoint ? el.getRootNode() : document;
+      const t = root.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      if (!t || t === el || el.contains(t) || t.contains(el)) return null;
+      return t.tagName.toLowerCase() + (t.id ? `#${t.id}` : '') +
+        (typeof t.className === 'string' && t.className.trim() ? `.${t.className.trim().split(/\s+/)[0]}` : '');
+    });
+  } catch (e) { return null; }
+}
+async function clickStep(page, step, x, timeout, { log = null } = {}) {
+  if (!isRef(step.selector)) return page.click(x, { timeout });
+  let loc, shown = true;
+  try {
+    loc = page.locator(x);   // a ref's marker is on exactly one element
+    shown = await loc.isVisible();
+    if (!shown) {
+      try { await loc.waitFor({ state: 'visible', timeout: Math.min(CLICK_SHOW_MS, timeout) }); shown = true; }
+      catch (e) { shown = false; }
+    }
+  } catch (e) { shown = true; }
+  if (shown) {
+    const cover = timeout > COVERED_CLICK_MS ? await coverOf(loc) : null;
+    if (cover && log) log(`step ${step.selector}: ${cover} sits on it, so the click gets ${COVERED_CLICK_MS / 1000} s, not ${timeout / 1000} s`);
+    return page.click(x, { timeout: cover ? COVERED_CLICK_MS : timeout });
+  }
+  const how = await loc.evaluate((el) => {
+    const lab = el.labels && el.labels[0];
+    if (lab && lab.getClientRects().length) { lab.click(); return 'its label'; }
+    el.click(); return 'the page (element.click())';
+  });
+  if (log) log(`step ${step.selector}: the element is on the page but not visible; clicked it through ${how}`);
 }
 
 // ---- TYPE: KEY BY KEY --------------------------------------------------------
@@ -979,6 +1045,48 @@ function expectRe(p) {
 // page as it now stands, never by navigating: a reload would throw away the very
 // draft or cart the act just built.
 //
+// ...AFTER A SETTLE THAT ENDS WHEN THE PAGE IS QUIET (DIVE-6778), never later
+// than the fixed one did. The fixed 1.2 s was paid on every act and every goto,
+// a page that was done in 0.2 s included; playwright-mcp waits for the requests
+// the action started instead. So: 0.25 s, then done once no document, XHR or
+// fetch request is in flight and the DOM has not changed for 0.25 s. A page that
+// polls or animates never gets there and waits the full bound, exactly as before.
+// No watch (the one-shot driver, a stub page) keeps the fixed wait.
+const SETTLE_QUIET_MS = 250;
+const WATCHED = new Set(['document', 'xhr', 'fetch']);
+function requestWatch(target) {   // requests in flight on a page or context, from now
+  if (!target || typeof target.on !== 'function' || typeof target.off !== 'function') return null;
+  const live = new Set();
+  const on = (r) => { try { if (WATCHED.has(r.resourceType())) live.add(r); } catch (e) { /* not counted */ } };
+  const off = (r) => { live.delete(r); };
+  target.on('request', on); target.on('requestfinished', off); target.on('requestfailed', off);
+  return {
+    inflight: () => live.size,
+    stop: () => { target.off('request', on); target.off('requestfinished', off); target.off('requestfailed', off); },
+  };
+}
+async function settleQuiet(page, ms, watch) {   // -> true when it ended quiet, not at the bound
+  if (!(ms > 0)) return false;
+  if (!watch || typeof page.evaluate !== 'function') { await page.waitForTimeout(ms); return false; }
+  const end = Date.now() + ms;
+  await page.waitForTimeout(Math.min(SETTLE_QUIET_MS, ms));
+  while (Date.now() < end) {
+    const left = end - Date.now();
+    if (watch.inflight() > 0) { await page.waitForTimeout(Math.min(50, left)); continue; }
+    let quiet = false;
+    try {
+      quiet = await page.evaluate((q) => new Promise((done) => {
+        const o = new MutationObserver(() => { clearTimeout(t); o.disconnect(); done(false); });
+        const t = setTimeout(() => { o.disconnect(); done(true); }, q);
+        o.observe(document, { subtree: true, childList: true, characterData: true,
+          attributeFilter: ['hidden', 'open', 'disabled', 'aria-hidden', 'aria-expanded'] });
+      }), Math.min(SETTLE_QUIET_MS, left));
+    } catch (e) { await page.waitForTimeout(Math.min(50, Math.max(0, end - Date.now()))); }   // navigating
+    if (quiet && watch.inflight() === 0) return true;
+  }
+  return false;
+}
+
 // ...AND READ AGAIN UNTIL --expect MATCHES, for a few seconds (DIVE-4983). A
 // "Message sent" toast arrives after the click; the one read taken at the settle
 // missed it, and `act` printed NOT VERIFIED on a mail that was in the Sent folder.
@@ -988,9 +1096,9 @@ function expectRe(p) {
 // `scope` (DIVE-4984) narrows the read to one element: `run`'s in-session verify.
 async function pageAfter(page, { settleMs = 0, waitFor = null, waitTimeoutMs = 30000,
                                  expect = null, expectWaitMs = 0, pollMs = 250, walk: walkOpts = null,
-                                 scope = null, expectDoc = false } = {}) {
+                                 scope = null, expectDoc = false, watch = null } = {}) {
   const waited = waitFor ? await waitForVisible(page, waitFor, { timeoutMs: waitTimeoutMs, pollMs }) : null;
-  if (settleMs > 0) { try { await page.waitForTimeout(settleMs); } catch (e) { /* the read still runs */ } }
+  if (settleMs > 0) { try { await settleQuiet(page, settleMs, watch); } catch (e) { /* the read still runs */ } }
   const readNow = async () => {
     const o = { url: '', title: '', html: '', text: '' };
     try { o.url = String(await page.url()); } catch (e) { /* recorded empty */ }
@@ -1152,7 +1260,8 @@ function render(nodes, { json = false } = {}) {
 
 module.exports = { INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSelector,
   resolveRefWithin, resolveStepSelector, resolveOrRepick, nameMatches, REPICK_MIN_CONFIDENCE,
-  onRef, refind, REFIND_OPS, _markFocusedIn,
+  onRef, refind, REFIND_OPS, _markFocusedIn, clickStep, FAILED_SETTLE_MS, COVERED_CLICK_MS,
+  requestWatch, settleQuiet,
   isRef, render, REF_PREFIX,
   typeDelay, typeRefusal, typeKeys, TYPE_DELAY_DEFAULT, TYPE_DELAY_MAX,
   classifyLabel, stepRisk, pageAfter, NEEDS_OWNER_PREFIX, E_NEEDS_OWNER, OWNER_ALLOWED_PREFIX,

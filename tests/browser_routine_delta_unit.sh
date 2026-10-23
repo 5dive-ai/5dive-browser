@@ -331,7 +331,7 @@ const calls = [], logs = [];
 let url = 'https://wiki.test/', walks = 0;
 const page = {
   url: () => url,
-  locator: (sel) => ({ count: async () => (sel.includes('"r1"') ? 0 : 1) }),
+  locator: (sel) => ({ count: async () => (sel.includes('"r1"') && scen !== 'covered' ? 0 : 1) }),
   evaluate: async (fn, arg) => {
     if (arg && arg.id) return focused;          // _markFocusedIn
     walks++;
@@ -354,6 +354,9 @@ if (scen === 'done') act = async (sel) => { calls.push(sel); const e = detached(
 if (scen === 'type') step = { op: 'type', selector: 'ref=searchbox/Search#1', value: 'x' };
 if (scen === 'css') step = { op: 'press', selector: '#q', key: 'Enter' };
 if (scen === 'check') check = async () => false;
+// DIVE-6778: the element is still there, under a consent overlay.
+const covered = () => { const e = new Error('page.click: Timeout 200ms exceeded.\n  - <div class="fc-dialog-overlay"></div> subtree intercepts pointer events'); e.name = 'TimeoutError'; return e; };
+if (scen === 'covered') { step = { op: 'click', selector: 'ref=link/Home' }; act = async (sel) => { calls.push(sel); throw covered(); }; }
 if (scen === 'focusclick' || scen === 'family2') step = { op: 'click', selector: 'ref=searchbox/Search#1' };
 if (scen === 'focusclick' || scen === 'family2') act = async (sel) => { calls.push(sel); if (sel.includes('"r1"')) throw detached(); return 'ok'; };
 a.onRef(page, step, '[data-5dive-ref="r1"]', act, { timeoutMs: 3000, attemptMs: 200, check, log: (l) => logs.push(l) })
@@ -383,6 +386,8 @@ O="$(e1 type)"
 t  'E1 type is never re-run (a half-typed value re-typed is wrong)' '1' "$(jq -rc '.calls|length' <<<"$O")"
 O="$(e1 css)"
 t  'E1 a CSS selector is the agent'"'"'s own and never re-resolved' '1 0' "$(jq -rc '"\(.calls|length) \(.walks)"' <<<"$O")"
+O="$(e1 covered)"
+t  'E1 an element still on the page that times out (covered) fails at its first attempt, not at the step bound' '1 true' "$(jq -rc '"\(.calls|length) \(.err | test("intercepts pointer events"))"' <<<"$O")"
 O="$(e1 check)"
 t  'E1 the owner'"'"'s check refuses the element found again: not retried' 'true 1' "$(jq -rc '"\(.notRetried) \(.calls|length)"' <<<"$O")"
 for f in driver-playwright session-daemon; do
@@ -394,6 +399,13 @@ sed -i 's#^  if (!isRef(step.selector) || !REFIND_OPS\[step.op\]) return act(sel
 t  'M4 mutant applied' yes "$(grep -q 'MUTANT (no re-find)' "$TMP/mut-refind/lib/aria.cjs" && echo yes || echo no)"
 O="$(e1 replaced "$TMP/mut-refind/lib/aria.cjs")"
 t  'M4 MUTANT (no re-find): the replaced element fails the step, as on Wikipedia' 'true 1' "$(jq -rc '"\(.err != null) \(.calls|length)"' <<<"$O")"
+
+# MUTANT: the old retry of a still-present element until the step bound (DIVE-6778).
+rm -rf "$TMP/mut-cover"; cp -r "$ROOT/browser" "$TMP/mut-cover"
+sed -i 's#^      if (!gone) throw e;#      if (!gone) continue;  // MUTANT (retry while covered)#' "$TMP/mut-cover/lib/aria.cjs"
+t  'M5 mutant applied' yes "$(grep -q 'MUTANT (retry while covered)' "$TMP/mut-cover/lib/aria.cjs" && echo yes || echo no)"
+O="$(e1 covered "$TMP/mut-cover/lib/aria.cjs")"
+t  'M5 MUTANT (retry while covered): the covered click is tried again and again until the bound' 'true' "$(jq -rc '.calls|length > 3' <<<"$O")"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

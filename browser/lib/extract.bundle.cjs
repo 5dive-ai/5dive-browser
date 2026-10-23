@@ -36936,9 +36936,9 @@ var require_footnotes = __commonJS({
             return;
           }
           let footnoteId = "";
-          for (const { selector, extract } of INLINE_REF_EXTRACTORS) {
+          for (const { selector, extract: extract2 } of INLINE_REF_EXTRACTORS) {
             if (el.matches(selector)) {
-              footnoteId = extract(el);
+              footnoteId = extract2(el);
               break;
             }
           }
@@ -73791,6 +73791,11 @@ var require_node4 = __commonJS({
 });
 
 // extract.src.mjs
+var extract_src_exports = {};
+__export(extract_src_exports, {
+  extract: () => extract
+});
+module.exports = __toCommonJS(extract_src_exports);
 init_define_PINS();
 var import_node11 = __toESM(require_node4(), 1);
 
@@ -82360,17 +82365,7 @@ function factTables(document2) {
   }
   return out;
 }
-(async () => {
-  const url = arg("url");
-  if (!url) {
-    process.stderr.write("extract: --url=<url> is required\n");
-    process.exit(64);
-  }
-  const html = readStdin();
-  if (!html.trim()) {
-    process.stderr.write("extract: empty HTML on stdin\n");
-    process.exit(65);
-  }
+async function extract(html, url) {
   const { document: document2 } = parseHTML(html);
   const canonEl = document2.querySelector('link[rel="canonical"][href]');
   const ogUrl = document2.querySelector('meta[property="og:url"][content]');
@@ -82407,7 +82402,7 @@ ${factLines.join("\n\n")}
 ## Page text
 
 ${body}` : body;
-  process.stdout.write(JSON.stringify({
+  return {
     url,
     canonical_url,
     title: res.title || "",
@@ -82423,10 +82418,29 @@ ${body}` : body;
     defuddle_version: PINS.defuddle,
     linkedom_version: PINS.linkedom,
     markdown
-  }));
-})().catch((e) => {
-  process.stderr.write("extract: " + (e && e.stack ? e.stack : String(e)) + "\n");
-  process.exit(70);
+  };
+}
+if (!globalThis.__FIVEDIVE_EXTRACT_LIB) {
+  (async () => {
+    const url = arg("url");
+    if (!url) {
+      process.stderr.write("extract: --url=<url> is required\n");
+      process.exit(64);
+    }
+    const html = readStdin();
+    if (!html.trim()) {
+      process.stderr.write("extract: empty HTML on stdin\n");
+      process.exit(65);
+    }
+    process.stdout.write(JSON.stringify(await extract(html, url)));
+  })().catch((e) => {
+    process.stderr.write("extract: " + (e && e.stack ? e.stack : String(e)) + "\n");
+    process.exit(70);
+  });
+}
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  extract
 });
 /*! Bundled license information:
 
