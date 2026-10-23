@@ -4034,12 +4034,14 @@ _reflex_cli() {  # [<reflex verb>]
 # THE ANSWER IS KEPT FOR A MINUTE (DIVE-6778). Asked on every act, a status call
 # is a whole `5dive` CLI start, ~0.5 s of a step that rivals finish in ~1 s, to
 # re-learn an answer that changes when someone sets a key. Kept per seat, beside
-# the seat's own profiles.
+# the seat's own profiles. Only the two step-loop asks (landing, pick-ref) read
+# it; `_reflex_configured fresh` (propose: once per site, and it ships page text
+# off the box) always asks, and its answer replaces the kept one.
 REFLEX_CACHE_S="${FIVEDIVE_BROWSER_REFLEX_CACHE_S:-60}"
-_reflex_configured() {
+_reflex_configured() {  # [fresh]
   local cf="" o v
   [[ "$REFLEX_CACHE_S" =~ ^[0-9]{1,5}$ ]] && (( REFLEX_CACHE_S > 0 )) && cf="$(_seat_dir 2>/dev/null)/.reflex-configured"
-  if [[ -n "$cf" && -f "$cf" ]] && (( $(date +%s) - $(stat -c %Y "$cf" 2>/dev/null || echo 0) < REFLEX_CACHE_S )); then
+  if [[ "${1:-}" != fresh && -n "$cf" && -f "$cf" ]] && (( $(date +%s) - $(stat -c %Y "$cf" 2>/dev/null || echo 0) < REFLEX_CACHE_S )); then
     v=$(<"$cf"); [[ "$v" == true || "$v" == false ]] && { [[ "$v" == true ]]; return; }
   fi
   o=$(timeout 20 "${_RFX[@]}" status --json 2>/dev/null) || return 1
@@ -4108,7 +4110,7 @@ cmd_propose() {
   [[ -e "$pf" ]] && die "$E_USAGE" "a login check for $base is already waiting for the owner: sudo 5dive browser adapters pending"
   exec {_PLK}>"$pd/.$base.lock"
   flock -n "$_PLK" || die "$E_UNAVAILABLE" "a login check for $base is already being drafted"
-  _reflex_configured || _propose_refuse "$E_UNAVAILABLE" "$pd" "$base" "$rd" \
+  _reflex_configured fresh || _propose_refuse "$E_UNAVAILABLE" "$pd" "$base" "$rd" \
     "reflex is not configured on this box, so nothing can propose a login check. The owner turns it on in the dashboard: Company → Settings → Reflex."
   if (( auto )); then
     # The probe that started us may still hold the profile (one chrome per
