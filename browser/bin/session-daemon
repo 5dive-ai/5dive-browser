@@ -56,6 +56,34 @@ const downloads = require(path.join(__dirname, '..', 'lib', 'downloads.cjs'));
 const gsignin = require(path.join(__dirname, '..', 'lib', 'google-signin.cjs'));
 const popup = require(path.join(__dirname, '..', 'lib', 'popup.cjs'));
 
+// THE PAGE TEXT IS EXTRACTED HERE, WARM (DIVE-6778). The CLI derived page.md with a
+// fresh `node lib/extract.bundle.cjs` per page: a 3 MB load and a cold JIT on every
+// snapshot, act and read, 1.4 s where this long-lived process takes 0.75 s
+// (Wikipedia; twice that on the bench's busy 2 cores). The CLI sends the sha256 of
+// the bundle it would run, and this process answers only when its own bundle is
+// those exact bytes: a session started by another release, or a CLI pointed at
+// another extractor, gets nothing back and runs its own, as before.
+let extractFn = null, extractSha = '';
+function extractor() {
+  if (extractFn === null) {
+    extractFn = false;
+    try {
+      const file = path.join(__dirname, '..', 'lib', 'extract.bundle.cjs');
+      extractSha = require('crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+      globalThis.__FIVEDIVE_EXTRACT_LIB = 1;   // require the bundle as a library: no CLI run
+      const m = require(file);
+      if (m && typeof m.extract === 'function') extractFn = m.extract;
+    } catch (e) { extractFn = false; }
+  }
+  return extractFn;
+}
+async function extractFor(req, html, url) {
+  if (!req || typeof req.extract !== 'string' || typeof html !== 'string' || !html.trim() || !url) return undefined;
+  const fn = extractor();
+  if (!fn || req.extract !== extractSha) return undefined;
+  try { return await fn(html, url); } catch (e) { return undefined; }
+}
+
 // DIVE-4587: Chrome keeps its crashpad DB under $XDG_CONFIG_HOME whatever
 // --user-data-dir says, and 5dive boxes share one XDG_CONFIG_HOME across every
 // seat, so the first seat to run Chrome owns it 0700 and every other seat's
@@ -130,6 +158,15 @@ const STEPS = {
   press:    ['selector', 'key'],
 };
 const STEP_TIMEOUT = Number(process.env.FIVEDIVE_BROWSER_STEP_TIMEOUT || 30000);
+// AN AGENT'S STEP GIVES UP SOONER THAN A RECIPE'S (DIVE-6778). `act` sends
+// step_ms (10 s by default): its steps are the agent's guesses, and a wait_for
+// for text that never shows, or a click on a covered element, waited the whole
+// 30 s and failed anyway (bench: 40 s acts against 3-4 s for a rival's click).
+// A goto keeps the page-load bound; `run`'s reviewed recipes send none.
+const stepLimit = (req) => {
+  const n = Number(req && req.step_ms);
+  return Number.isInteger(n) && n > 0 && n < STEP_TIMEOUT ? n : STEP_TIMEOUT;
+};
 // How long a request waits for the one in flight before it is refused (DIVE-4927).
 const BUSY_WAIT_MS = Number(process.env.FIVEDIVE_BROWSER_BUSY_WAIT_MS || 60000);
 
@@ -173,6 +210,17 @@ const settleOf = (req, fallback) => {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 const TREE_SETTLE_MS = Number(process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS || 1200);
+// ONE PAGE OF A `read` GETS 40 s, WHATEVER IT DOES (DIVE-6778). page.title() and
+// page.content() run inside the page and take no timeout, so a tab whose script
+// never yields held a bench read of two stores.bestbuy.com pages for over seven
+// minutes; every call behind it was refused as busy and the job timed out.
+const FAILED_SETTLE_MS = aria.FAILED_SETTLE_MS;
+const READ_PAGE_MS = Number(process.env.FIVEDIVE_BROWSER_READ_PAGE_MS || 40000);
+const within = (ms, p, what) => {
+  let timer;
+  return Promise.race([p, new Promise((_, no) => { timer = setTimeout(() => no(new Error(what)), ms); })])
+    .finally(() => clearTimeout(timer));
+};
 
 // HOW LONG A PROBE MAY WAIT FOR THE PAGE TO SAY WHICH STATE IT IS IN
 // (DIVE-4794). Spent only while NOTHING is known — the loop returns the instant
@@ -720,22 +768,36 @@ async function readRequest(ctx, req, send, end) {
   }
   try { assertLease(req, 'read'); } catch (e) { send({ t: 'err', msg: e.message }); return end(E_FAILED); }
   const settle = Number(req.wait) || TREE_SETTLE_MS;
+  // THE PAGE THE BROWSER IS ALREADY ON IS READ AS IT IS (DIVE-6778), as snapshot reads
+  // it: `snapshot <url>` then `links <url>` loaded the same page a second time.
+  let shown = null;
+  try { shown = await pageFor(ctx, urls[0]); } catch (e) { shown = null; }
   const pages = await Promise.all(urls.map(async (url) => {
     let page;
     try {
-      page = await ctx.newPage();
-      page.setDefaultTimeout(Number(process.env.FIVEDIVE_BROWSER_STEP_TIMEOUT || STEP_TIMEOUT));
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
-      const inter = await aria.waitInterstitial(page);
-      await page.waitForTimeout(settle);
-      const html = await page.content();
-      return { url, ok: true, html, ...(inter ? { interstitial: inter } : {}) };
+      return await within(READ_PAGE_MS, (async () => {
+        if (shown && (inPopup(shown, url) || isOn(shown, url))) {
+          return { url, ok: true, html: await shown.content(), shown: true };
+        }
+        page = await ctx.newPage();
+        page.setDefaultTimeout(Number(process.env.FIVEDIVE_BROWSER_STEP_TIMEOUT || STEP_TIMEOUT));
+        // The default settle ends when this tab is quiet (DIVE-6778); a --wait is waited in full.
+        const watch = !Number(req.wait) && typeof page.context === 'function' ? aria.requestWatch(page) : null;
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        const inter = await aria.waitInterstitial(page, { timeoutMs: Math.min(READ_PAGE_MS / 2, 20000) });
+        await aria.settleQuiet(page, settle, watch);
+        const html = await page.content();
+        return { url, ok: true, html, ...(inter ? { interstitial: inter } : {}) };
+      })(), `the page did not finish loading within ${Math.round(READ_PAGE_MS / 1000)} s; nothing of it was read`);
     } catch (e) {
       return { url, ok: false, error: e.message };
     } finally {
-      try { if (page) await page.close(); } catch (e) { /* the tab is going anyway */ }
+      // Not awaited: closing a tab whose script never yields can hang too.
+      try { if (page) page.close().catch(() => { /* the tab is going anyway */ }); } catch (e) { /* same */ }
     }
   }));
+  // One page at a time: the extraction is CPU, and the tabs are already closed.
+  for (const p of pages) if (p.ok) p.extracted = await extractFor(req, p.html, p.url);
   send({ t: 'out', data: JSON.stringify({ pages }) + '\n' });
   end(0);
 }
@@ -747,10 +809,13 @@ async function treeRequest(ctx, req, send, end) {
   try {
     const page = await pageFor(ctx, req.url);
     assertLease(req, 'tree');
-    if (!inPopup(page, req.url)) await page.goto(req.url, { waitUntil: 'domcontentloaded' });
+    // Not reloaded when the browser is already on it (DIVE-6778), as snapshot.
+    const stay = inPopup(page, req.url) || isOn(page, req.url);
+    if (!stay) await goTo(page, req.url);
     // NEVER network idle: a live web app long-polls and never idles — that is
     // what makes a `read` hang for 150s on a real Gmail.
-    await page.waitForTimeout(settleOf(req, TREE_SETTLE_MS));
+    const settle = settleOf(req, stay ? 0 : TREE_SETTLE_MS);
+    if (settle > 0) await page.waitForTimeout(settle);
     const { nodes } = await aria.walk(page, { interactiveOnly: !!req.interactive });
     send({ t: 'out', data: JSON.stringify({ url: req.url, nodes }) + '\n' });
     end(0);
@@ -808,15 +873,28 @@ async function snapshotRequest(ctx, req, send, end) {
     assertLease(req, 'snapshot');
     // The document's HTTP status, as the cold driver records it (DIVE-6725).
     let resp = null;
-    if (inPopup(page, req.url)) send({ t: 'log', line: `  the popup an earlier act opened is still on ${req.url}; read as it is, not reloaded` });
-    else resp = await page.goto(req.url, { waitUntil: 'domcontentloaded' });
-    // A Cloudflare "Just a moment..." clears in this same load, or not at all
-    // (DIVE-6317). A --wait-for behind one that never cleared would only wait again.
-    const inter = await aria.waitInterstitial(page);
-    // --wait-for (DIVE-4983), exactly as the cold driver's snapshotMode does it.
-    const waited = req.wait_for
-      ? await aria.waitForPast(page, String(req.wait_for), inter, { timeoutMs: STEP_TIMEOUT }) : null;
-    await page.waitForTimeout(settleOf(req, TREE_SETTLE_MS));
+    // THE PAGE THE BROWSER IS ALREADY ON IS READ AS IT IS (DIVE-6778), as `act`'s
+    // own URL already is (DIVE-5817). The reload cost a full page load plus the
+    // settle on every snapshot after an act (bench: 8.8 s median against 0.4 s for
+    // agent-browser's snapshot), and it threw away what the act had just done to
+    // the page: a typed value, an open menu. No load, so no settle either: the
+    // act that left the page here already waited its own.
+    const stay = inPopup(page, req.url) || isOn(page, req.url);
+    if (stay) send({ t: 'log', line: `  the browser is already on ${req.url}; read as it is, not reloaded` });
+    // The load's settle ends when the page is quiet, as act's does (DIVE-6778).
+    const watch = !stay && typeof page.context === 'function' ? aria.requestWatch(page.context()) : null;
+    let inter, waited;
+    try {
+      if (!stay) resp = await goTo(page, req.url);
+      // A Cloudflare "Just a moment..." clears in this same load, or not at all
+      // (DIVE-6317). A --wait-for behind one that never cleared would only wait again.
+      inter = await aria.waitInterstitial(page);
+      // --wait-for (DIVE-4983), exactly as the cold driver's snapshotMode does it.
+      waited = req.wait_for
+        ? await aria.waitForPast(page, String(req.wait_for), inter, { timeoutMs: STEP_TIMEOUT }) : null;
+      const settle = settleOf(req, stay ? 0 : TREE_SETTLE_MS);
+      if (settle > 0) await aria.settleQuiet(page, settle, watch);
+    } finally { if (watch) watch.stop(); }
     const snap = await aria.snapshot(page, { interactiveOnly: !!req.interactive });
     let png = null;
     if (!inline) {
@@ -839,6 +917,7 @@ async function snapshotRequest(ctx, req, send, end) {
       // A served browser is a headed one (the launch above), recorded as the cold one is.
       browser_mode: 'headed',
       ...(resp ? { http_status: resp.status() } : {}),
+      extracted: await extractFor(req, snap.html, req.url),
     }) + '\n' });
     end(0);
   } catch (e) {
@@ -851,6 +930,22 @@ async function snapshotRequest(ctx, req, send, end) {
 // The fragment counts: a hash-routed app's `#/inbox` and `#/drafts` are two pages.
 function sameUrl(a, b) {
   try { return new URL(a).href === new URL(b).href; } catch (e) { return false; }
+}
+// WHERE A PAGE WAS SENT, AND WHERE IT LANDED (DIVE-6778). `snapshot https://www.amtrak.com/`
+// lands on /home, and the agent's next `links https://www.amtrak.com/` loaded the
+// site again in a new tab (9-11 s on the bench) because neither URL equals the
+// other. A page is on <url> when it shows it, or when <url> is what its last goto
+// asked for and it has not moved since.
+const sentTo = new WeakMap();
+async function goTo(page, url) {
+  const resp = await page.goto(url, { waitUntil: 'domcontentloaded' });
+  try { sentTo.set(page, { asked: url, landed: page.url() }); } catch (e) { /* only a shortcut is lost */ }
+  return resp;
+}
+function isOn(page, url) {
+  if (sameUrl(page.url(), url)) return true;
+  const s = sentTo.get(page);
+  return !!s && s.landed === page.url() && sameUrl(s.asked, url);
 }
 
 async function planRequest(ctx, req, send, end) {
@@ -901,6 +996,7 @@ async function planRequest(ctx, req, send, end) {
   // expensive direction is claiming nothing ran when something did — that is the
   // blind retry that double-posts.
   let stepsRun = 0, needsOwner = null, retry = null, at = -1, lastOp = null;
+  const stepMs = stepLimit(req);
   let page;
   // The act's own URL picks the window (DIVE-6392): the popup an earlier act left
   // open when it is on that popup's site or the act names no URL, otherwise the main tab.
@@ -914,6 +1010,11 @@ async function planRequest(ctx, req, send, end) {
   // A FILE A CLICK DOWNLOADS (DIVE-5751), watched from before step one and handed
   // back after the re-read — lib/downloads.cjs, shared with the one-shot loop.
   const dl = (req.report && req.report.downloads) ? downloads.watch(ctx, page) : null;
+  // The requests the steps start, on every tab of the context (a popup's too), so
+  // the settles below end when the page is quiet (DIVE-6778, lib/aria.cjs settleQuiet).
+  const watch = typeof page.context === 'function' ? aria.requestWatch(page.context()) : null;
+  const done = () => { front.use({}); if (watch) watch.stop(); };
+  const quiet = watch ? (ms) => aria.settleQuiet(front.page, ms, watch) : null;
   if (page === front.base) front.home();
   front.use({
     log: (l) => send({ t: 'log', line: `  ${l}` }),
@@ -927,7 +1028,7 @@ async function planRequest(ctx, req, send, end) {
       const s = resolved[i];
       const where = `step ${i + 1} (${s.op})`;
       at = i;
-      page = await front.sync(lastOp);
+      page = await front.sync(lastOp, quiet);
       // BEFORE THE RESOLVE AND BEFORE THE COUNTER. Both touch the page, and the
       // point is to touch nothing once the browser is someone else's.
       assertLease(req, where);
@@ -944,7 +1045,7 @@ async function planRequest(ctx, req, send, end) {
         send({ t: 'err', msg: gsignin.STOP_PREFIX.trim() + ' ' + JSON.stringify(gs) });
         throw new Error(`${where}: not run. ${gs.why}`);
       }
-      const { sel, retry: r } = await aria.resolveOrRepick(page, s, i + 1, { timeoutMs: STEP_TIMEOUT });
+      const { sel, retry: r } = await aria.resolveOrRepick(page, s, i + 1, { timeoutMs: stepMs });
       if (r) assertLease(req, where);
       retry = r;
       // THE OWNER'S FOUR (DIVE-4943) — the same check, in the same place, as the
@@ -961,7 +1062,7 @@ async function planRequest(ctx, req, send, end) {
       // step that may have acted, and the owner's check is read again on it —
       // lib/aria.cjs onRef, shared by both loops.
       const on = (act) => aria.onRef(page, s, sel, act, {
-        timeoutMs: STEP_TIMEOUT, log: (l) => send({ t: 'log', line: `  ${l}` }),
+        timeoutMs: stepMs, log: (l) => send({ t: 'log', line: `  ${l}` }),
         check: (req.guard && !req.approved) ? async (x) => {
           const k = await aria.stepRisk(page, s, x);
           return !k || (Array.isArray(req.allow_kinds) && req.allow_kinds.includes(k.cls));
@@ -980,17 +1081,17 @@ async function planRequest(ctx, req, send, end) {
             send({ t: 'log', line: `  ${where}: already on ${s.url}; not reloaded, so the page keeps what it holds` });
             break;
           }
-          await page.goto(s.url, { waitUntil: 'domcontentloaded' });
+          await goTo(page, s.url);
           const inter = await aria.waitInterstitial(page);   // DIVE-6317
           if (inter) send({ t: 'log', line: `  ${where}: "${inter.title}" ${inter.cleared ? `cleared by itself after ${inter.waited_ms} ms` : `was still there after ${inter.waited_ms} ms`}` });
           const ms = settleOf(req, RUN_SETTLE_MS);
-          if (ms > 0) await page.waitForTimeout(ms);
+          if (ms > 0) await aria.settleQuiet(page, ms, watch);
           break;
         }
         case 'fill':     await on((x, timeout) => page.fill(x, s.value, { timeout })); break;
-        case 'type':     await aria.typeKeys(page, sel, s.value, s.delay_ms, { timeoutMs: STEP_TIMEOUT }); break;
-        case 'click':    await on((x, timeout) => page.click(x, { timeout })); break;
-        case 'wait_for': await page.waitForSelector(sel); break;
+        case 'type':     await aria.typeKeys(page, sel, s.value, s.delay_ms, { timeoutMs: stepMs }); break;
+        case 'click':    await on((x, timeout) => aria.clickStep(page, s, x, timeout, { log: (l) => send({ t: 'log', line: `  ${l}` }) })); break;
+        case 'wait_for': await page.waitForSelector(sel, { timeout: stepMs }); break;
         case 'select':   await on((x, timeout) => page.selectOption(x, s.value, { timeout })); break;
         case 'upload':   await on((x, timeout) => page.setInputFiles(x, s.path, { timeout })); break;
         case 'press':    await on((x, timeout) => page.press(x, s.key, { timeout })); break;
@@ -1017,20 +1118,21 @@ async function planRequest(ctx, req, send, end) {
       if (dl) dl.stop();
       send({ t: 'err', msg: 'the session was open but not one step ran, so nothing was published and ' +
         'there is nothing to re-read.' });
-      front.use({});
+      done();
       return end(E_NOTHING_RAN);
     }
     // The step that failed may have opened the popup: the re-read shows it either way.
     try { page = await front.sync(resolved[at] ? resolved[at].op : lastOp); } catch (e2) { /* re-read the page we have */ }
-    await sendReport(page, req, send);
-    front.use({});
+    await sendReport(page, req, send, { failed: true, watch });
+    done();
     await sendDownloads(dl, send);
     return end(E_FAILED);
   }
   if (needsOwner) send({ t: 'err', msg: aria.NEEDS_OWNER_PREFIX.trim() + ' ' + JSON.stringify(needsOwner) });
-  page = await front.sync(lastOp);
-  await sendReport(page, req, send);
-  front.use({});
+  page = await front.sync(lastOp, quiet);
+  // A click whose page went quiet inside the popup wait has settled already.
+  await sendReport(page, req, send, { watch, settled: front.settled });
+  done();
   await sendDownloads(dl, send);
   // THE SESSION STAYS WARM AND THE PAGE STAYS WHERE IT IS. Closing the context
   // here would give back exactly the launch this daemon exists to stop paying.
@@ -1040,16 +1142,18 @@ async function planRequest(ctx, req, send, end) {
 // `act`'s re-read (DIVE-4943), sent back INLINE: the caller may be a brokered
 // seat that cannot hand this process a path (the DIVE-4794 trade `snapshot`
 // already makes). One `out` line of JSON, and only when the request asked.
-async function sendReport(page, req, send) {
+async function sendReport(page, req, send, { failed = false, watch = null, settled = false } = {}) {
   if (!req.report) return;
   const r = req.report;
   try {
-    // DIVE-4983: the same wait, --expect window and refs the cold driver's report takes.
+    // DIVE-4983: the same wait, --expect window and refs the cold driver's report takes,
+    // and nothing waited for after a failed step (DIVE-6778, as the cold driver): a
+    // step that timed out changed nothing, so its re-read settles 0.3 s, not 1.2 s.
     const after = await aria.pageAfter(page, {
-      settleMs: settleOf(req, RUN_SETTLE_MS), waitFor: r.wait_for || null, waitTimeoutMs: STEP_TIMEOUT,
-      expect: r.expect || null, expectWaitMs: Number(r.expect_wait_ms) || 0,
+      settleMs: failed ? Math.min(FAILED_SETTLE_MS, settleOf(req, RUN_SETTLE_MS)) : settled && req.settle === undefined ? 0 : settleOf(req, RUN_SETTLE_MS), waitFor: failed ? null : (r.wait_for || null), waitTimeoutMs: STEP_TIMEOUT,
+      expect: r.expect || null, expectWaitMs: failed ? 0 : (Number(r.expect_wait_ms) || 0),
       walk: r.tree ? { interactiveOnly: !!r.interactive } : null,
-      scope: r.scope || null, expectDoc: !!r.expect_doc,
+      scope: r.scope || null, expectDoc: !!r.expect_doc, watch,
     });
     let png = null;
     if (r.shot) {
@@ -1061,7 +1165,8 @@ async function sendReport(page, req, send) {
       wait_for: after.wait_for, expect_polled_ms: after.expect_polled_ms, scope: after.scope,
       // DIVE-6392: the mode the steps ran in (a served browser is headed), and the
       // popup in view when there is one.
-      browser_mode: 'headed', popup: (front && front.popup) || null }) + '\n' });
+      browser_mode: 'headed', popup: (front && front.popup) || null,
+      extracted: await extractFor(req, after.html, after.url) }) + '\n' });
   } catch (e) {
     send({ t: 'err', msg: `the steps ran but the page could not be re-read afterwards: ${e.message}` });
   }

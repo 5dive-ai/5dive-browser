@@ -153,6 +153,15 @@ t  'V4 CONTROL: a match in the title verifies (0)' 0 "$RC"
 sc "$BROWSER" v4c --expect='search-console/inspect' --expect-wait=0
 t  'V4 CONTROL: a match in the url verifies (0)' 0 "$RC"
 
+# ============================================================= V7 a leading (?i)
+# DIVE-6778: models write --expect='(?i)store'. grep -E warned "? at start of
+# expression" and missed; JS fell back to a literal match and polled the window.
+run env PWHTML='<html><body><p>Indexing requested</p></body></html>' PWTEXT=$'URL Inspection\nIndexing requested' \
+    "$BROWSER" act "$URL" --steps="$STEPS" --expect='(?i)indexing REQUESTED' --expect-wait=5000 --out="$TMP/v7"
+t  'V7 a leading (?i) on --expect verifies the page that matches (0)' 0 "$RC"
+tn 'V7 ...grep never sees the flag' 'at start of expression' "$OUT$ERR"
+t  'V7 ...and the poll stopped at once, not after the 5 s window' 0 "$(jq -r .expect_polled_ms "$TMP/v7/after.json")"
+
 # ============================================================= V5 pageAfter, direct
 cat > "$TMP/v5.js" <<'JS'
 const { pageAfter } = require(process.env.ARIA);

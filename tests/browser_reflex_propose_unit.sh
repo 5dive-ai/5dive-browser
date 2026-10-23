@@ -153,6 +153,17 @@ t  'A7 ...and nothing is pending' no "$(yn test -e "$PEND/$S.json")"
 t  'A7 ...and login-marker was never asked' '' "$(grep login-marker "$FAKE_RFX_LOG")"
 rm -f "$TMP/rfx.off"
 
+# A7b the step loop's kept answer (DIVE-6778, one minute) never stands in for
+# propose: a fresh "configured" kept moments before the owner turned reflex off
+# still gets the refusal, and the fresh answer replaces the kept one.
+reset_site "$S"; mkprofile "$S" "$SIGNED_IN" >/dev/null
+echo true > "$SEATDIR/.reflex-configured"; : > "$TMP/rfx.off"; : > "$FAKE_RFX_LOG"
+FIVEDIVE_BROWSER_REFLEX_CACHE_S=60 run "$BROWSER" propose "$S"
+t  'A7b a kept "configured" does not answer for propose (69)' 69 "$RC"
+t  'A7b ...and login-marker was never asked' '' "$(grep login-marker "$FAKE_RFX_LOG")"
+t  'A7b ...and the kept answer is now the fresh one' false "$(cat "$SEATDIR/.reflex-configured" 2>/dev/null)"
+rm -f "$TMP/rfx.off" "$SEATDIR/.reflex-configured"
+
 # A8 a site WITH an adapter is not proposed for (drift is its check)
 reset_site "$S"; mkprofile "$S" "$SIGNED_IN" >/dev/null
 mkdir -p "$ADS"; chmod 700 "$ADS"; printf '{"site":"%s","probe":{"url":"https://%s/","logged_out_when_dom_matches":"action=\\"/session"}}' "$S" "$S" > "$ADS/$S.json"
