@@ -6316,8 +6316,9 @@ _read_print() {  # _read_print <page.md> <path to name> <full> <budget>
 # same time, and then derives the pages side by side too (the extractor is
 # seconds of CPU on a big article). Every url opens in the SAME profile as the
 # first, so a url with a login of its own is refused rather than read logged out.
-# A served browser renders them one after another: it is one tab, and the win
-# there is the one call instead of three.
+# A served browser (a live session daemon) gets them in ONE `read` request too,
+# a tab each, all loading at once (DIVE-6771); a daemon that predates that op,
+# or an input-mode site, falls back to one render per page.
 READ_MANY_MAX=5
 _cmd_read_many() {  # _cmd_read_many <site> <full> <wait-ms> <url>...
   local site="$1" full="$2" wait="$3"; shift 3
@@ -6346,11 +6347,33 @@ _cmd_read_many() {  # _cmd_read_many <site> <full> <wait-ms> <url>...
 
   if (( _SITE_BROKERED )) || _daemon_live "$dir"; then
     capture=session-daemon
-    for ((k = 0; k < n; k++)); do
-      crc=0; rj=$(_daemon_render "$dir" "${urls[k]}" 1280 800 false "$wait" "") || crc=$?
-      if (( crc == 0 )) && [[ -n "$rj" ]]; then jq -r '.html' <<<"$rj" > "$stage/$k/page.html"; fi
-      [[ -s "$stage/$k/page.html" ]] || printf 'the box session did not capture it (it exited %s)\n' "$crc" > "$stage/$k/error"
-    done
+    # ONE REQUEST, EVERY PAGE AT ONCE, AND THE SETTLE — NOT THE 8 s (DIVE-6771).
+    # One `render` per page was 35.7 s for R1's three pages on the bench rig
+    # (9.4 s for one): the daemon takes one request at a time, and each render
+    # waited the --wait default, which is a VIRTUAL time budget to --dump-dom
+    # but a real 8 s to a live tab. The settle is what the cold executor's
+    # readMode waits; an explicit --wait still wins.
+    local settle="${FIVEDIVE_BROWSER_TREE_SETTLE_MS:-$SNAP_SETTLE_DEFAULT}"
+    [[ "$wait" == "$READ_WAIT_DEFAULT" ]] || settle="$wait"
+    rj=$(_daemon_call "$dir" "$(jq -nc --argjson t "$settle" --argjson l "$(_daemon_lease_json)" \
+         '{op:"read", urls:$ARGS.positional, wait:$t} + $l' --args "${urls[@]}")" 2>"$stage/read.err") || crc=$?
+    if (( crc == 0 )) && jq -e '.pages | length > 0' <<<"$rj" >/dev/null 2>&1; then
+      for ((k = 0; k < n; k++)); do
+        if [[ "$(jq -r --argjson k "$k" '.pages[$k].ok // false' <<<"$rj")" == true ]]; then
+          jq -r --argjson k "$k" '.pages[$k].html' <<<"$rj" > "$stage/$k/page.html"
+        fi
+        [[ -s "$stage/$k/page.html" ]] || jq -r --argjson k "$k" '.pages[$k].error // "the box session gave no answer for it"' <<<"$rj" > "$stage/$k/error"
+      done
+    else
+      # A daemon started by an older release (no `read` op) or an input-mode
+      # site: one render per page, as before. Its refusal is not shown; each
+      # render below says its own.
+      for ((k = 0; k < n; k++)); do
+        crc=0; rj=$(_daemon_render "$dir" "${urls[k]}" 1280 800 false "$settle" "") || crc=$?
+        if (( crc == 0 )) && [[ -n "$rj" ]]; then jq -r '.html' <<<"$rj" > "$stage/$k/page.html"; fi
+        [[ -s "$stage/$k/page.html" ]] || printf 'the box session did not capture it (it exited %s)\n' "$crc" > "$stage/$k/error"
+      done
+    fi
   else
     capture=playwright
     local driver="${FIVEDIVE_BROWSER_DRIVER:-$_SELF_DIR/driver-playwright}"
