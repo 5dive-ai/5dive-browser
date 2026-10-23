@@ -46,6 +46,8 @@
 #        K4 (DIVE-5740) with the browser's file chooser up and the focus fallen
 #           to the root window (chill-gorge's 0x21f), keys are sent to the CHOOSER,
 #           not the page behind it; with it closed, to the page; a popup is not one
+#        K6 (DIVE-6775) a chooser closed with no key: closeWindow sends it
+#           WM_PROTOCOLS/WM_DELETE_WINDOW, and once it unmaps no dialog is left
 #   L  LIVE, when this machine has Xvfb and Chrome (GitHub's ubuntu runner does):
 #      the real daemon, real plain Chrome, real XTEST input.
 #        L1 the page sees navigator.webdriver === false, and the daemon reports
@@ -699,6 +701,8 @@ else
   arm 'K4 with the chooser up and the focus on the root window, keys go to the CHOOSER, not the page' 'focus=dialog' "$(kd chooser)"
   arm 'K4 ...with it closed, keys go back to the page' 'focus=main' "$(kd closed)"
   arm 'K4 ...and a popup (override-redirect) is not taken for a dialog' 'focus=main' "$(kd popup)"
+  arm 'K6 (DIVE-6775) a chooser is closed with no key: WM_DELETE_WINDOW reaches it, and once it answers no dialog is left' \
+    'delete=received closed=yes' "$(kd delete)"
   # K5 (DIVE-6704) — the drop, against a fake browser speaking XDND as Chrome does.
   KDF="$TMP/k5 drop é.txt"; printf 'k5\n' > "$KDF"
   kdrop() { DISPLAY=":$kdisp" FIVEDIVE_BROWSER_INPUT_FAST=1 timeout 30 node "$ROOT/tests/x11_drop.cjs" "$1" "$KDF" 2>&1; }
@@ -1049,7 +1053,28 @@ HTML
     arm 'L14 an upload whose chooser will not take the path drops the file on the same point instead, and the plan goes on' \
       '0 dp:l14-up.txt:typed:ok' "$GOT14$( [[ "$GOT14" == '0 '* ]] || why "$TMP/l14b.log")"
     arm 'L14 ...and it says the chooser did not take it and the file was dropped' yes \
-      "$(yn grep -q 'did not take .* so it was closed and the file was dropped' "$TMP/l14b.log")"
+      "$(yn grep -q 'did not take .* so it was closed (Escape) and the file was dropped' "$TMP/l14b.log")"
+    l14_stop
+    # DIVE-6775, chill-gorge's chooser as it really was: Open AND Escape both do
+    # nothing (dead keys), so only a close with no key (WM_DELETE_WINDOW) shuts
+    # it. 1.51.0 had no close-key knob and no window close, so its route arm is
+    # red there; L14e below is its "would not close … nothing was attached".
+    UPF3="$TMP/l14-up3.txt"; printf 'up3\n' > "$UPF3"
+    l14 d FIVEDIVE_BROWSER_CHOOSER_OPEN_KEY=F12 FIVEDIVE_BROWSER_CHOOSER_CLOSE_KEY=F12
+    l14_run d "[{\"op\":\"upload\",\"x\":640,\"y\":200,\"path\":\"$UPF3\"},{\"op\":\"click\",\"x\":640,\"y\":440},{\"op\":\"type\",\"value\":\"ok\"}]" \
+      'dp:l14-up3.txt:typed:ok'
+    arm 'L14 an upload whose chooser takes no key at all (Open and Escape dead) closes it with a window close and drops the file' \
+      '0 dp:l14-up3.txt:typed:ok' "$GOT14$( [[ "$GOT14" == '0 '* ]] || why "$TMP/l14d.log")"
+    arm 'L14 ...and it says the route: closed by a window close, then dropped' yes \
+      "$(yn grep -q 'did not take .* so it was closed (a window close) and the file was dropped' "$TMP/l14d.log")"
+    l14_stop
+    # ...and a chooser nothing closes (the window close skipped too): the step
+    # fails, attaches nothing, and names the way out, a click on its Cancel.
+    l14 e FIVEDIVE_BROWSER_CHOOSER_OPEN_KEY=F12 FIVEDIVE_BROWSER_CHOOSER_CLOSE_KEY=F12 FIVEDIVE_BROWSER_CHOOSER_WINDOW_CLOSE=0
+    "$REAL_DAEMON" call "$L14S" <<<"{\"op\":\"input\",\"steps\":[{\"op\":\"upload\",\"x\":640,\"y\":200,\"path\":\"$UPF3\"}],\"settle\":300}" \
+      > "$TMP/l14e.out" 2> "$TMP/l14e.log"; rc=$?
+    arm 'L14 ...a chooser that will not close fails by name and says where to click its Cancel' "1 yes" \
+      "$rc $(yn grep -Eq 'nothing was attached\. Click its Cancel at about [0-9]+,[0-9]+ with a click step' "$TMP/l14e.log")$( (( rc )) || why "$TMP/l14e.log")"
     l14_stop
   fi
 fi

@@ -1294,9 +1294,9 @@ async function clickInBrowser(be, s) {
 // DIVE-5740: an upload as a person does it. Click the page's upload control,
 // let the browser's file chooser open, type the absolute path into it (ctrl+l
 // opens its location field), Open (alt+o), and confirm the chooser CLOSED. A chooser
-// still up means the path was not taken: Escape, then drop the file on the same
-// point (DIVE-6704), and fail by name if that does not take either, so nothing
-// goes on to type into a dialog or a page by mistake.
+// still up means the path was not taken: Escape (or a window close, DIVE-6775),
+// then drop the file on the same point (DIVE-6704), and fail by name if that
+// does not take either, so nothing goes on to type into a dialog or a page by mistake.
 async function uploadByChooser(be, s) {
   const pid = be.child.pid;
   if (await be.x.browserDialog(pid)) throw new Error('a file chooser is already open; finish or close it (press Escape) first');
@@ -1335,18 +1335,46 @@ async function uploadByChooser(be, s) {
   // Escape up to three times. One Escape left a real chooser open (Chrome 153,
   // the dev host's grade of L14): with the path's completion list up, the
   // first Escape can close only the list.
+  // FIVEDIVE_BROWSER_CHOOSER_CLOSE_KEY: as the Open key above, for the harness.
+  const closeKey = process.env.FIVEDIVE_BROWSER_CHOOSER_CLOSE_KEY || 'Escape';
   for (let k = 0; k < 3 && (await be.x.browserDialog(pid)); k++) {
-    try { await be.x.focusOn(dlg.id, 1000, 'the file chooser'); await be.x.press('Escape'); } catch (e) { /* reported below */ }
+    try { await be.x.focusOn(dlg.id, 1000, 'the file chooser'); await be.x.press(closeKey); } catch (e) { /* reported below */ }
     for (let i = 0; i < 10 && (await be.x.browserDialog(pid)); i++) await sleepMs(100);
   }
+  // DIVE-6775: AND A CHOOSER THAT IGNORES ITS KEYS IS NOT THE END EITHER.
+  // chill-gorge's took neither alt+o nor Escape, while a mouse click on its
+  // Cancel closed it. So close it without a key: WM_DELETE_WINDOW is what a
+  // window manager's close button sends, and GTK answers it as Cancel.
+  // FIVEDIVE_BROWSER_CHOOSER_WINDOW_CLOSE=0 skips it: the harness's way to make
+  // the chooser no close will shut, and grade the way out the error names.
+  let how = 'Escape';
+  if (process.env.FIVEDIVE_BROWSER_CHOOSER_WINDOW_CLOSE !== '0' && (await be.x.browserDialog(pid))) {
+    how = 'a window close';
+    try { await be.x.closeWindow(dlg.id); } catch (e) { /* reported below */ }
+    for (let i = 0; i < 20 && (await be.x.browserDialog(pid)); i++) await sleepMs(100);
+  }
   const what = `the file chooser did not take ${s.path} (still open after Open)`;
-  if (await be.x.browserDialog(pid)) throw new Error(`${what}, and it would not close on Escape; nothing was attached`);
+  if (await be.x.browserDialog(pid)) {
+    const c = await chooserCancelPoint(be, dlg.id);
+    throw new Error(`${what}, and it would not close on Escape or a window close; nothing was attached. ` +
+      `Click its Cancel${c ? ` at about ${c.x},${c.y}` : ' (bottom right, left of Open)'} with a click step, then drop the file instead`);
+  }
   try { await be.x.ensureBrowserFocus(pid, 1000); } catch (e) { /* the drop checks the pointer itself */ }
   try {
-    return `${what}, so it was closed and the file ${await dropOnPage(be, s)}`;
+    return `${what}, so it was closed (${how}) and the file ${await dropOnPage(be, s)}`;
   } catch (e) {
-    throw new Error(`${what}; it was closed, and dropping the file on ${s.x},${s.y} instead failed too: ${e.message}`);
+    throw new Error(`${what}; it was closed (${how}), and dropping the file on ${s.x},${s.y} instead failed too: ${e.message}`);
   }
+}
+
+// Where a GTK chooser's Cancel sits, for a person to click: bottom right, left
+// of Open, about 217 by 30 px in from that corner (chill-gorge's 1124x822 had
+// it at 985,792), and never past the screen's edge. A guess to name, not to click.
+async function chooserCancelPoint(be, win) {
+  try {
+    const g = await be.x.geometry(win), sc = { w: be.x.width, h: be.x.height };
+    return { x: Math.max(0, Math.min(sc.w - 1, g.x + g.w - 217)), y: Math.max(0, Math.min(sc.h - 1, g.y + g.h - 30)) };
+  } catch (e) { return null; }
 }
 
 // DIVE-6704: a file DROPPED on the page, the way a person drags one in from a

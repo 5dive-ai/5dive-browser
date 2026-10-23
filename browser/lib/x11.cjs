@@ -519,6 +519,13 @@ class X11 {
     await this.sync();
   }
 
+  // DIVE-6775: close a top-level window as a window manager's close button does:
+  // WM_PROTOCOLS/WM_DELETE_WINDOW. No key is involved, so it works on a dialog
+  // that never got the keyboard; GTK answers it as the dialog's Cancel.
+  async closeWindow(win) {
+    await this.clientMessage(win, 'WM_PROTOCOLS', [await this.atom('WM_DELETE_WINDOW'), 0]);
+  }
+
   // The events that match `pred`, from now on: next(ms) resolves the oldest,
   // or null when none comes within ms. stop() when done.
   events(pred) {
