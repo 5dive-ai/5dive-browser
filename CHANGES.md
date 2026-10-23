@@ -8,6 +8,22 @@ that file stays where it is.
 
 ## Unreleased
 
+### Changed — an act answers with what it changed, not the whole page, and a step stops sending the model to the picture (DIVE-6795), 1.54.0
+
+After 1.53.0 a bench step still cost 7.7-8.9 s against about 4 s for agent-browser and playwright-mcp. About half was the act itself, half the model's own time between calls, which grows with what each call hands it (17 KB a call against about 2 KB). What changed:
+
+- **An act on a served browser prints what the steps changed** since the agent last saw the tab (a snapshot or an act): the interactive refs that appeared (`+ ref=…`) and went, and the new lines of text, capped at 60 refs and 1.5 KB. The served browser remembers each tab (`lib/look.cjs`). `page.md` is no longer extracted after every act (Defuddle cost each act 0.9-4 s): it is the page's plain text, the text `--expect` reads. `act --full` extracts and prints it as before, and a cold run still does. `after.json` carries the change as `look`, `--json` as `changed`.
+- **The act report arrives split**: the document, the picture and the refs on lines of their own, so `bin/browser` stops parsing megabytes of HTML as JSON six times over (1.6 s on a long article).
+- **`--expect` also reads what the form fields hold.** A typed ZIP code is on screen, but a page's text never carries an input's value, so `fill 75201 --expect=75201` waited out the 5 s and printed NOT VERIFIED, and the model then opened the picture. Text fields, text areas and a select's chosen option count; a password or hidden input never does.
+- **A failed or unverified step says to check what changed, above**, not "look at page.png before retrying": the model did, after most failures, and an image costs every later call.
+- **A failed step's error drops Playwright's 30-line call log** and keeps its first line and the one reason worth reading (what covers the element, not visible, not enabled).
+- **`snapshot --interactive` prints up to 300 refs** (was 60). Past 60 the model read `tree.json` instead, 20-42 KB of JSON a page.
+- **A list of options shows its first 8** in what an act changed: a country list's 230 options pushed every other new ref out.
+- **`snapshot _public` with no URL reads the page the browser is on**, as `act` already did. It was a usage error, then a second call.
+- **A first snapshot no longer dies on the site's own redirect.** The served browser starts on the first URL; when the site redirected it (`/` to `/home`) during the snapshot's load, the load threw "interrupted by another navigation" and the call exited 69 (2 of 5 jobs). The load that won is waited for.
+
+Measured on the same six jobs and rig as 1.53.0 (Haiku 5.5, one run each): all six finish on every build. The six jobs took 709 s and 999 s in all on two runs of this build (one job took a 436 s detour through an archive page the other run never opened), against 1169 s on 1.53.0 and 792 s for agent-browser; the median job 113 s and 144 s, against 187 s and 103 s. Per call it is 7.3-7.4 s, against 8.9 s: a call now does more, and the cheap ones are gone (reading `tree.json`, a usage error, a missing `page.md`), so the per-call figure stopped tracking how long a job takes. The 5 s per call the row asked for is not met. Unit files: `browser_act_look_unit.sh` 55/55, `browser_plugin_unit.sh` 2017/0. The 12-task set is owed on this build (the rig's plan is out until 27 October).
+
 ### Changed — each browser step costs less: no reload, no fixed waits, a warm extractor, a quick fail (DIVE-6778), 1.53.0
 
 On the Online-Mind2Web matrix (cic-arm-b, Haiku 5.5 on every arm) a 5dive step took 13.3 s, against 4.6 s for agent-browser and 4.3 s for playwright-mcp. The step counts were close. Six of those jobs (four that timed out at 10 minutes, two that passed) were timed call by call, then phase by phase inside the session (a timing build of the served browser, not shipped).

@@ -139,6 +139,10 @@ jobs:
       # stub, and live arms in real Chrome with a 1.45.0-shaped mutant as the control.
       - name: act popup harness
         run: bash tests/browser_act_popup_unit.sh
+      # DIVE-6795: a served act answers with what changed (lib/look.cjs), its report
+      # arrives split, and page.md is derived only for --full. Daemon on the stub.
+      - name: act look harness
+        run: bash tests/browser_act_look_unit.sh
       # DIVE-6732: read takes several urls in one call, loaded side by side in one
       # browser, and prints a page's head. Fake executor arms, then live arms in real
       # Chrome against a local server that counts the pages it holds at once.

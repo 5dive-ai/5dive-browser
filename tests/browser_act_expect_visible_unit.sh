@@ -92,7 +92,7 @@ sc() {  # sc <bin/browser> <out> [act flags...] — act on the canary's page
 
 # The pre-fix grade and poll, restored. Each mutant is anchored: it landed in the
 # copy, and the shipped file is untouched.
-MUTGRADE="$(mutant grade bin/browser 's/<<<"\$\(jq -r \x27\[\.text, \.title, \.url\]/<<<"\$(cat "\$out\/page.html"; jq -r \x27[.text, .title, .url]/')"
+MUTGRADE="$(mutant grade bin/browser 's/<<<"\$\(jq -r \x27\[\.text, \.title, \.url, \.values\]/<<<"\$(cat "\$out\/page.html"; jq -r \x27[.text, .title, .url, .values]/')"
 t  'M0 (anchor) the pre-fix grade (page.html greped too) landed in the copy' yes \
    "$(grep -q '<<<"$(cat "$out/page.html"; jq -r' "$MUTGRADE" && echo yes || echo no)"
 MUTPOLL="$(mutant poll lib/aria.cjs 's/\|\| \(expectDoc && re\.test\(o\.html\)\)/|| re.test(o.html)/')"

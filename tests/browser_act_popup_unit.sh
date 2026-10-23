@@ -301,8 +301,9 @@ JS
   [[ "$RC" == 0 ]] || gha 'L1 act output' "$OUT $ERR"
   arm 'L1b the re-read is the popup (the chooser)' "Choose an account|yes" \
     "$(jq -r '.title' "$TMP/l1/after.json" 2>/dev/null)|$(has '/chooser?client=fixture' "$(jq -r .url "$TMP/l1/after.json" 2>/dev/null)")"
-  arm 'L1c the output says so, and page.meta.json names the popup and a browser mode' 'yes yes' \
-    "$(has 'a popup opened: localhost' "$OUT") $(jq -r 'if .popup.url and (.browser_mode == "headed" or .browser_mode == "headless") then "yes" else "no" end' "$TMP/l1/page.meta.json" 2>/dev/null)"
+  # after.json, not page.meta.json: a served act derives page.md and its meta only for --full (DIVE-6795).
+  arm 'L1c the output says so, and after.json names the popup and a browser mode' 'yes yes' \
+    "$(has 'a popup opened: localhost' "$OUT") $(jq -r 'if .popup.url and (.browser_mode == "headed" or .browser_mode == "headless") then "yes" else "no" end' "$TMP/l1/after.json" 2>/dev/null)"
   run live "$BROWSER" act "http://localhost:$PORT/" --expect='picked alex' \
     --steps='[{"op":"click","selector":"#google"},{"op":"click","selector":"#pick"}]' --out="$TMP/l2"
   arm 'L2 a second step clicks inside the popup, and its effect is what the act verifies' '0 yes' \

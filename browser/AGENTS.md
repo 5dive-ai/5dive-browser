@@ -149,10 +149,12 @@ own step:
 Without a URL, `act` continues on the page a served browser is holding. `--expect=<regex>` is
 graded against the page as the steps left it, re-read for up to 5 s (`--expect-wait=<ms>`) so a
 toast that lands after the click counts. It matches the text on screen (toasts and live regions
-included), the title and the url, never hidden markup: a success message the page keeps hidden
+included), what the form fields hold (a typed value counts), the title and the url, never hidden markup: a success message the page keeps hidden
 while it shows an error reads NOT VERIFIED. Without it the command only says the steps ran — look at the `page.png` it writes
-before you tell anyone it worked. `act` also writes `tree.json` and `page.md` of the page it
-left, so you do not need a second `snapshot` to read the refs there.
+before you tell anyone it worked. `act` also writes `tree.json` of the page it left, and on a
+served browser prints what the steps changed since you last saw the tab: the refs that appeared
+and went, and the new text. Act on those; a second `snapshot` is only for a ref that is not
+there. Its `page.md` is the page's plain text; `act --full` extracts it and prints the page instead.
 
 **A step that fails fails the run, whatever --expect matched** — the page before your steps may
 already carry the text. The failure names the step: `act: step 2 (click ref=button/Decline)

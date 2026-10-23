@@ -55,6 +55,10 @@ const totp = require(path.join(__dirname, '..', 'lib', 'totp.cjs'));
 const downloads = require(path.join(__dirname, '..', 'lib', 'downloads.cjs'));
 const gsignin = require(path.join(__dirname, '..', 'lib', 'google-signin.cjs'));
 const popup = require(path.join(__dirname, '..', 'lib', 'popup.cjs'));
+// What each tab looked like when the agent last saw it, so an act can answer with
+// what changed instead of the whole page (DIVE-6795, lib/look.cjs).
+const look = require(path.join(__dirname, '..', 'lib', 'look.cjs'));
+const looks = look.memory();
 
 // THE PAGE TEXT IS EXTRACTED HERE, WARM (DIVE-6778). The CLI derived page.md with a
 // fresh `node lib/extract.bundle.cjs` per page: a 3 MB load and a cold JIT on every
@@ -896,6 +900,12 @@ async function snapshotRequest(ctx, req, send, end) {
       if (settle > 0) await aria.settleQuiet(page, settle, watch);
     } finally { if (watch) watch.stop(); }
     const snap = await aria.snapshot(page, { interactiveOnly: !!req.interactive });
+    // The agent has now seen this tab: the next act on it says what changed since.
+    if (req.look) {
+      let text = '';
+      try { text = String(await page.evaluate(aria._textIn, { textOf: true }) || ''); } catch (e) { /* refs alone */ }
+      looks.remember(page, look.lookOf(snap.url || req.url, snap.nodes, text));
+    }
     let png = null;
     if (!inline) {
       fs.writeFileSync(req.html, snap.html || '', { mode: 0o600 });
@@ -937,8 +947,18 @@ function sameUrl(a, b) {
 // other. A page is on <url> when it shows it, or when <url> is what its last goto
 // asked for and it has not moved since.
 const sentTo = new WeakMap();
+// A LOAD THE PAGE'S OWN REDIRECT INTERRUPTED IS THAT PAGE, LOADED (DIVE-6795).
+// The served browser is started ON the first url; when the site redirects it
+// (amtrak.com -> /home) while the snapshot's goto runs, Playwright throws
+// "interrupted by another navigation", and 2 of the bench's first 5 snapshots
+// died on it (exit 69, then a second call). The navigation that won is waited for.
 async function goTo(page, url) {
-  const resp = await page.goto(url, { waitUntil: 'domcontentloaded' });
+  let resp = null;
+  try { resp = await page.goto(url, { waitUntil: 'domcontentloaded' }); }
+  catch (e) {
+    if (!/interrupted by another navigation/.test(String(e && e.message))) throw e;
+    await page.waitForLoadState('domcontentloaded');
+  }
   try { sentTo.set(page, { asked: url, landed: page.url() }); } catch (e) { /* only a shortcut is lost */ }
   return resp;
 }
@@ -1111,7 +1131,8 @@ async function planRequest(ctx, req, send, end) {
     at = -1;
   } catch (e) {
     if (retry) send({ t: 'log', line: `  ${retry}failed` });
-    send({ t: 'err', msg: e.message });
+    // Without Playwright's 30-line "Call log:" (DIVE-6795, aria.stepErrorText).
+    send({ t: 'err', msg: aria.stepErrorText(e.message) });
     // Which step (DIVE-4990), exactly as the one-shot driver says it.
     if (at >= 0) send({ t: 'err', msg: aria.STEP_FAILED_PREFIX.trim() + ' ' + JSON.stringify(aria.failedStep(at + 1, resolved[at], e)) });
     if (!stepsRun) {
@@ -1160,13 +1181,31 @@ async function sendReport(page, req, send, { failed = false, watch = null, settl
       const buf = await page.screenshot({});
       png = Buffer.isBuffer(buf) ? buf.toString('base64') : Buffer.from(String(buf)).toString('base64');
     }
-    send({ t: 'out', data: JSON.stringify({ act_report: true, url: after.url, title: after.title,
-      html_inline: after.html, png_b64: png, text: after.text, nodes: after.nodes,
+    // WHAT CHANGED SINCE THE AGENT LAST SAW THIS TAB (DIVE-6795), when asked. A
+    // scoped re-read is one element's text, not the page's, so it is no look.
+    const seen = req.look && !after.scope && Array.isArray(after.nodes)
+      ? looks.since(page, look.lookOf(after.url, after.nodes, after.text)) : undefined;
+    const report = { act_report: true, url: after.url, title: after.title,
+      text: after.text, values: after.values,
       wait_for: after.wait_for, expect_polled_ms: after.expect_polled_ms, scope: after.scope,
       // DIVE-6392: the mode the steps ran in (a served browser is headed), and the
       // popup in view when there is one.
       browser_mode: 'headed', popup: (front && front.popup) || null,
-      extracted: await extractFor(req, after.html, after.url) }) + '\n' });
+      look: seen,
+      extracted: await extractFor(req, after.html, after.url) };
+    // SPLIT, when the caller asked (DIVE-6795): the document, the picture and the
+    // refs each on a line of their own, so bin/browser reads the small report
+    // without parsing megabytes of HTML six times over (1.6 s on a Wikipedia
+    // article). Base64 for the two files: a sed and a decode, no JSON parse. A
+    // caller that did not ask gets the one line it always got.
+    if (!req.split) {
+      send({ t: 'out', data: JSON.stringify({ ...report, html_inline: after.html, png_b64: png, nodes: after.nodes }) + '\n' });
+    } else {
+      send({ t: 'out', data: JSON.stringify(report) + '\n' });
+      send({ t: 'out', data: '{"act_html_b64":"' + Buffer.from(after.html || '').toString('base64') + '"}\n' });
+      if (png) send({ t: 'out', data: '{"act_png_b64":"' + png + '"}\n' });
+      if (Array.isArray(after.nodes)) send({ t: 'out', data: JSON.stringify({ act_tree: true, url: after.url, title: after.title, nodes: after.nodes }) + '\n' });
+    }
   } catch (e) {
     send({ t: 'err', msg: `the steps ran but the page could not be re-read afterwards: ${e.message}` });
   }

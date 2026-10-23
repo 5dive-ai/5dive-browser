@@ -928,6 +928,25 @@ function _textIn() {
   return parts.join('\n').replace(/[ \t]+/g, ' ');
 }
 
+// WHAT THE FORM FIELDS HOLD (DIVE-6795): a typed ZIP code is on screen, but
+// innerText never carries an input's value, so `fill 75201 --expect=75201`
+// polled the full --expect-wait and printed NOT VERIFIED over a field showing
+// it. Text fields, text areas and the chosen option of a select; never a
+// password or a hidden input.
+function _valuesIn() {
+  var out = [];
+  var els = document.querySelectorAll('input,textarea,select');
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i], t = String(el.type || '').toLowerCase();
+    if (t === 'password' || t === 'hidden' || t === 'file') continue;
+    if (el.tagName === 'SELECT') {
+      var o = el.selectedOptions && el.selectedOptions[0];
+      if (o) out.push(o.textContent || '');
+    } else if (t !== 'checkbox' && t !== 'radio' && el.value) out.push(String(el.value));
+  }
+  return out.join('\n');
+}
+
 // The ONE element a verify is graded on (DIVE-4984): a Sent list is read at its
 // newest row, so an older message with the same subject further down cannot
 // stand in for the one just sent. The first match in document order, or null —
@@ -1115,10 +1134,12 @@ async function pageAfter(page, { settleMs = 0, waitFor = null, waitTimeoutMs = 3
     }
     try { o.html = String(await page.content()); } catch (e) { /* recorded empty */ }
     try { o.text = String(await page.evaluate(_textIn, { textOf: true }) || ''); } catch (e) { /* recorded empty */ }
+    try { o.values = String(await page.evaluate(_valuesIn, { valuesOf: true }) || ''); } catch (e) { /* recorded empty */ }
     return o;
   };
   const re = expectRe(expect);
-  const seen = (o) => re.test(o.text) || re.test(o.title) || re.test(o.url) || (expectDoc && re.test(o.html));
+  const seen = (o) => re.test(o.text) || re.test(o.title) || re.test(o.url) || re.test(o.values || '')
+    || (expectDoc && re.test(o.html));
   let out = await readNow(), polled = 0;
   while (re && !seen(out) && polled < expectWaitMs) {
     const step = Math.min(pollMs, expectWaitMs - polled);
@@ -1133,6 +1154,18 @@ async function pageAfter(page, { settleMs = 0, waitFor = null, waitTimeoutMs = 3
   if (waited) out.wait_for = waited;
   if (re) out.expect_polled_ms = polled;
   return out;
+}
+
+// A FAILED STEP'S ERROR, SHORT (DIVE-6795). Playwright appends a "Call log:" of
+// 30 lines of retries, which the agent read after every failed click on the
+// bench. Its first line says what failed; the one log line worth keeping is the
+// reason (what intercepts the pointer, not visible, not enabled), at the end.
+const WHY_RE = /intercepts pointer events|not visible|not enabled|not editable|not stable|outside of the viewport|detached|did not match any/;
+function stepErrorText(message) {
+  const [head, log] = String(message || '').split('\nCall log:');
+  if (log === undefined) return head;
+  const why = log.split('\n').map((l) => l.replace(/^[\s-]*/, '').trim()).filter((l) => WHY_RE.test(l)).pop();
+  return why ? `${head.trim()} (${why})` : head.trim();
 }
 
 // The line bin/browser keys on. One line, a fixed prefix, JSON after it, so the
@@ -1264,9 +1297,9 @@ module.exports = { INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSel
   requestWatch, settleQuiet,
   isRef, render, REF_PREFIX,
   typeDelay, typeRefusal, typeKeys, TYPE_DELAY_DEFAULT, TYPE_DELAY_MAX,
-  classifyLabel, stepRisk, pageAfter, NEEDS_OWNER_PREFIX, E_NEEDS_OWNER, OWNER_ALLOWED_PREFIX,
+  classifyLabel, stepRisk, pageAfter, stepErrorText, NEEDS_OWNER_PREFIX, E_NEEDS_OWNER, OWNER_ALLOWED_PREFIX,
   STEP_FAILED_PREFIX, failedStep,
   redirectWhy, checkLanding, E_REDIRECTED,
   _payloadIn, cleanText, cleanPayload,
   INTERSTITIAL_TITLE, waitInterstitial, waitForPast, unmarkedArgs, fieldRoleMatch,
-  waitForVisible, _visibleIn, _textIn, _scopeIn };
+  waitForVisible, _visibleIn, _textIn, _valuesIn, _scopeIn };
