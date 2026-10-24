@@ -215,6 +215,9 @@ usage() {
                                       # the owner's ask; re-run with --approved=<id>.
                                       # --record=<name> saves the steps (never the
                                       # values typed) as a ROUTINE for replay.
+                                      # A fill/type step with "saved":"<name>" types
+                                      # a login the owner saved, never shown to you
+                                      # (names: sudo 5dive secret saved ls).
   5dive browser snapshot <url> --delta  # after the first full snapshot: only what
                                       # changed (refs, text), and no page.png when
                                       # under 1% of its pixels moved.
@@ -7110,10 +7113,105 @@ _act_keep_page() {  # <site> <url>; runs with the lease held, before _page_open
     "$PROG" "$kind" "${why:-it gave no reason}" >&2
 }
 
+# ================================================= saved logins (DIVE-6844)
+#
+# AN AGENT TYPES A LOGIN THE OWNER SAVED, AND NEVER SEES IT. The owner saves it
+# once through the box's one-time link (`5dive secret link --save=<name>`, value
+# phone -> box only) into /etc/5dive/connectors/saved.env, 600 root, which no
+# seat can read. A step names it instead of carrying it:
+#   {"op":"fill","selector":"ref=textbox/Password","saved":"linkedin-password"}
+# The seat's act re-runs itself once through root (sudo, as `totp import`
+# does); root reads only the names asked for, drops back to the seat with
+# runuser, and hands the values over on a pipe (fd), never argv or env. The
+# executor gets them from a 0600 file in the seat's stage. Everything the act
+# leaves (page.html, the text, tree.json, the executor's stderr, the policy and
+# approval payloads read from it) is scrubbed of them, and no picture is kept.
+#
+# What this is NOT: a wall against the seat itself. The browser that types the
+# value runs as the seat, so a seat set on reading it back out of the page can.
+# It keeps the value out of the chat, the transcript, argv and every log, which
+# is what the owner asked for, and out of anything a page can talk an agent into
+# printing: no verb prints a saved value.
+SAVED_SUDO=(sudo -n /usr/local/bin/5dive browser)
+[[ -n "${FIVEDIVE_BROWSER_SAVED_SUDO:-}" ]] && SAVED_SUDO=("$FIVEDIVE_BROWSER_SAVED_SUDO")
+SAVED_NAME_RE='^[a-z][a-z0-9-]{0,39}$'
+
+_act_saved_check() {  # <steps>
+  local bad
+  bad=$(jq -r --arg re "$SAVED_NAME_RE" '[.[] | select(has("saved"))
+      | select((.op != "fill" and .op != "type") or (.saved | type != "string") or (.saved | test($re) | not) or has("value"))]
+      | first // empty | tojson' <<<"$steps")
+  [[ -z "$bad" ]] || die "$E_USAGE" "a saved login goes in a fill or type step, by name and with no value of its own: {\"op\":\"fill\",\"selector\":\"…\",\"saved\":\"linkedin-password\"}. Got: $(jq -c 'del(.value)' <<<"$bad")"
+}
+
+# ROOT: the asked-for names -> {"name":"value",...} on stdout, the values never on
+# a command line (NUL-separated through one jq's stdin).
+_act_saved_values() {  # <steps>
+  local n key line missing="" store="${CONNECTORS_DIR:-/etc/5dive/connectors}/saved.env"
+  local -a names; mapfile -t names < <(jq -r '[.[] | .saved // empty] | unique[]' <<<"$1")
+  for n in "${names[@]}"; do
+    key="${n^^}"; key="${key//-/_}"
+    grep -qE "^${key}=" "$store" 2>/dev/null || missing+="${missing:+, }$n"
+  done
+  [[ -z "$missing" ]] || die "$E_UNAVAILABLE" "nothing is saved as $missing. The owner saves a login in the 5dive app (Settings, Tools, Saved logins), through a one-time link: never ask for it in chat."
+  for n in "${names[@]}"; do
+    key="${n^^}"; key="${key//-/_}"
+    line="$(grep -m1 -E "^${key}=" "$store")"
+    printf '%s\0%s\0' "$n" "${line#*=}"
+  done | jq -Rsc 'split("\u0000") | .[:-1] as $a | [range(0; $a|length; 2) as $i | {($a[$i]): $a[$i+1]}] | add // {}'
+}
+
+# The seat's half: run this act again through root. Root's half: read, then
+# back to the seat with the values on fd 3. Neither returns.
+_act_saved_escalate() {  # <act argv...>
+  if [[ $EUID -eq 0 ]]; then
+    local seat="${SUDO_USER:-}" json
+    [[ -n "$seat" && "$seat" != root ]] || die "$E_USAGE" "a saved login is typed in for an agent: run the act as that agent, not as root"
+    json="$(_act_saved_values "$steps")" || exit $?
+    FIVEDIVE_BROWSER_SAVED_FD=3 env -u FIVEDIVE_BROWSER_SEAT runuser -u "$seat" -- "$0" act "$@" 3< <(printf '%s' "$json")
+    exit $?
+  fi
+  if [[ "${SAVED_SUDO[0]}" == sudo ]]; then
+    sudo -n -l "${SAVED_SUDO[@]:2}" act >/dev/null 2>&1 \
+      || die "$E_PERM" "this agent cannot type a saved login: reading one takes root, and this seat has no sudo for it. Ask the owner to make it an admin agent, or to sign the site in for it: 5dive browser auth <site>"
+  fi
+  exec "${SAVED_SUDO[@]}" act "$@"
+}
+
+# The seat's half after root: the values from the fd root opened, once.
+_act_saved_read() {  # <steps>
+  local fd="$FIVEDIVE_BROWSER_SAVED_FD" j
+  [[ "$fd" =~ ^[0-9]$ ]] || die "$E_USAGE" "FIVEDIVE_BROWSER_SAVED_FD names no file descriptor"
+  j="$(cat <&"$fd" 2>/dev/null)"; eval "exec ${fd}<&-"
+  jq -e --argjson want "$(jq -c '[.[] | .saved // empty] | unique' <<<"$1")" \
+    'type == "object" and (. as $o | $want | all(. as $n | $o[$n] | type == "string" and length > 0))' <<<"$j" >/dev/null 2>&1 \
+    || die "$E_UNAVAILABLE" "the saved values did not arrive from root; nothing was typed"
+  printf '%s' "$j"
+}
+
+# Replace every saved value in the stage's text files with a mask: raw, as a JSON
+# string carries it, and as HTML escapes it. The values arrive on stdin.
+_act_saved_scrub() {  # <stage>  (values JSON on stdin)
+  node -e '
+const fs = require("fs"), path = require("path");
+const vals = Object.values(JSON.parse(fs.readFileSync(0, "utf8"))).filter((v) => v.length > 0);
+const forms = new Set();
+const html = (v) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/\x27/g, "&#39;");
+for (const v of vals) { forms.add(v); forms.add(JSON.stringify(v).slice(1, -1)); forms.add(html(v)); forms.add(encodeURIComponent(v)); }
+const list = [...forms].sort((a, b) => b.length - a.length);
+for (const f of ["page.html", "after.json", "tree.json", "exec.err", "page.md", "daemon.out"]) {
+  const p = path.join(process.argv[1], f);
+  let t; try { t = fs.readFileSync(p, "utf8"); } catch { continue; }
+  let o = t; for (const v of list) o = o.split(v).join("[saved]");
+  if (o !== t) fs.writeFileSync(p, o);
+}' "$1"
+}
+
 cmd_act() {
   local site="" url="" steps="" expect="" approved="" out="" json=0 wait="no" settle="" shot=1
   local wait_for="" interactive=0 expect_wait="${FIVEDIVE_BROWSER_EXPECT_WAIT_MS:-$ACT_EXPECT_WAIT_DEFAULT}" record=""
   _ACT_FULL=0; _ACT_LOOK=0
+  local -a act_argv=("$@")
   while (($#)); do
     case "$1" in
       --full)       _ACT_FULL=1 ;;
@@ -7140,6 +7238,9 @@ cmd_act() {
         printf '  A served browser answers with what the steps changed (new refs, new text) since you last\n'
         printf '  saw the page; --full derives page.md and prints the whole page instead.\n'
         printf '  --record=<routine> saves these steps (never the values typed) for `5dive browser replay`.\n'
+        printf '  A fill or type step can name a login the owner saved instead of carrying it:\n'
+        printf '  {"op":"fill","selector":"ref=textbox/Password","saved":"<name>"}. It is typed in and never shown\n'
+        printf '  (the names: sudo 5dive secret saved ls). The owner saves one in the app, never in chat.\n'
         printf '  <url> may be omitted to continue on the page a served browser is already on. A served browser\n'
         printf '  already ON <url> is not reloaded (a goto step of your own does reload). An act on the public\n'
         printf '  profile starts a served browser for it, so its page survives to the next act.\n'
@@ -7166,6 +7267,27 @@ cmd_act() {
   (( n <= ACT_MAX_STEPS )) || die "$E_USAGE" "$n steps is more than one act ($ACT_MAX_STEPS). Split it: a long script run blind is the shape that ends up somewhere nobody looked."
   local bad; bad=$(jq -r --arg v " $ACT_VOCAB " '[.[] | (.op // "") as $o | select(($v|contains(" "+$o+" "))|not) | $o] | first // empty' <<<"$steps")
   [[ -z "$bad" ]] || die "$E_USAGE" "'$bad' is not an act step. The vocabulary is: $ACT_VOCAB"
+  # DIVE-6844: a SAVED login or detail, typed in by name. Checked before anything
+  # opens: this seat cannot read the saved store, so the act goes once through
+  # root (_act_saved_escalate), which hands the values back on a private fd.
+  local saved_json=""
+  if jq -e 'any(.[]; has("saved"))' <<<"$steps" >/dev/null 2>&1; then
+    _act_saved_check "$steps"
+    [[ -z "$record" ]] || die "$E_USAGE" "an act that types a saved login is not recorded as a routine; run it without --record"
+    if [[ -n "${FIVEDIVE_BROWSER_SAVED_FD:-}" ]]; then
+      saved_json="$(_act_saved_read "$steps")" || exit $?
+      unset FIVEDIVE_BROWSER_SAVED_FD
+    else
+      _act_saved_escalate "${act_argv[@]}"
+    fi
+    shot=0
+  fi
+  unset FIVEDIVE_BROWSER_SAVED_FD
+  # Root kept this act only to read the store (the drop above): one with nothing
+  # saved in it is the caller's, like every other act.
+  if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
+    exec runuser -u "$SUDO_USER" -- "$0" act "${act_argv[@]}"
+  fi
   local orig_steps="$steps"
   if [[ -n "$url" ]]; then
     steps=$(jq -c --arg u "$url" '[{op:"goto", url:$u}] + .' <<<"$steps")
@@ -7218,6 +7340,14 @@ cmd_act() {
   # stage, beside the re-read. _act_downloads_publish moves it into the artifacts.
   (umask 077; mkdir -- "$stage/downloads") || die "$E_UNAVAILABLE" "cannot stage the act's downloads"
   local errf="$stage/exec.err" drc=0 plan report allow_kinds
+  # THE STEPS THE EXECUTOR RUNS, IN A FILE (DIVE-6844): a jq argument is on every
+  # process's command line, and a saved value must never be. 0600, in the
+  # seat's own 0700 stage, gone with it.
+  local steps_file="$stage/steps.json"
+  ( umask 077; if [[ -n "$saved_json" ]]; then
+      jq -c --slurpfile v <(printf '%s' "$saved_json") \
+        'map(if has("saved") then (.value = $v[0][.saved]) | del(.saved) else . end)' <<<"$steps"
+    else printf '%s' "$steps"; fi > "$steps_file" ) || die "$E_UNAVAILABLE" "cannot stage the act's steps"
   # The kinds the owner lets through without asking, read once, before a step.
   allow_kinds="$(_policy_allowed)"
   # WHAT THE RE-READ AFTER THE LAST STEP WAITS FOR (DIVE-4983), the same for both
@@ -7227,18 +7357,18 @@ cmd_act() {
      + (if $e == "" then {} else {expect:$e} end)')
   _landing_reflex
   if _daemon_live "$_PG_DIR"; then
-    _act_session "$site" "$steps" "$is_approved" "$shot" "$settle" "$report" "$allow_kinds" "$stage" "$errf" || drc=$?
+    _act_session "$site" "$steps_file" "$is_approved" "$shot" "$settle" "$report" "$allow_kinds" "$stage" "$errf" || drc=$?
   else
     local driver="${FIVEDIVE_BROWSER_DRIVER:-$_SELF_DIR/driver-playwright}"
     [[ -n "$driver" && -x "$driver" ]] || die "$E_UNAVAILABLE" "no executor backend at $driver — act runs through the same executor as run."
     local chrome; chrome=$(command -v "$_PG_CHROME" 2>/dev/null || printf '%s' "$_PG_CHROME")
     local png=""; (( shot )) && png="$stage/page.png"
     local may=0; _retry_possible && may=1
-    plan=$(jq -nc --arg p "$_PG_DIR" --argjson s "$steps" --argjson a "$is_approved" \
+    plan=$(jq -nc --arg p "$_PG_DIR" --slurpfile sf "$steps_file" --argjson a "$is_approved" \
         --arg h "$stage/page.html" --arg m "$stage/after.json" --arg sh "$png" \
         --arg t "$stage/tree.json" --argjson r "$report" --argjson ak "$allow_kinds" \
         --argjson lj "$(_landing_json "$site" "$may")" --arg dl "$stage/downloads" --argjson sm "$ACT_STEP_MS" \
-        '{profile:$p, steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak, step_ms:$sm,
+        '$sf[0] as $s | {profile:$p, steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak, step_ms:$sm,
           report:({html:$h, meta:$m, tree:$t, shot:(if $sh=="" then null else $sh end), downloads:$dl} + $r)} + $lj')
     FIVEDIVE_BROWSER_PROFILE="$_PG_DIR" FIVEDIVE_BROWSER_CHROME="$chrome" \
       FIVEDIVE_BROWSER_RUN_SETTLE_MS="${settle:-${FIVEDIVE_BROWSER_RUN_SETTLE_MS:-$SNAP_SETTLE_DEFAULT}}" \
@@ -7253,13 +7383,21 @@ cmd_act() {
       drc=1
       if _retry_serve "$site" "$_PG_DIR"; then
         rm -f -- "$stage/page.html" "$stage/after.json" "$stage/tree.json" "$stage/page.png"
-        drc=0; _act_session "$site" "$steps" "$is_approved" "$shot" "$settle" "$report" "$allow_kinds" "$stage" "$errf" || drc=$?
+        drc=0; _act_session "$site" "$steps_file" "$is_approved" "$shot" "$settle" "$report" "$allow_kinds" "$stage" "$errf" || drc=$?
         _retry_unserve
       else
         printf '%s: no served browser for the retry (%s), so this stops at the redirect; nothing but the goto ran.\n' \
           "$PROG" "${_RETRY_WHY:-it gave no reason}" >> "$errf"
       fi
     fi
+  fi
+  rm -f -- "$steps_file"
+  # DIVE-6844: nothing the steps leave may carry a saved value back to the agent:
+  # the page, its text, its tree and the executor's own words. No picture: a
+  # login typed in a plain field would be in it.
+  if [[ -n "$saved_json" ]]; then
+    _act_saved_scrub "$stage" <<<"$saved_json"
+    rm -f -- "$stage/page.png"
   fi
   cat "$errf" >&2
   _shot_restore
@@ -7463,16 +7601,21 @@ _ACT_STAY=0
 # slowest acts were exactly those (40-45 s). A goto keeps its page-load bound.
 ACT_STEP_MS="${FIVEDIVE_BROWSER_ACT_STEP_MS:-10000}"
 [[ "$ACT_STEP_MS" =~ ^[0-9]{1,7}$ ]] && (( ACT_STEP_MS > 0 )) || ACT_STEP_MS=10000
-_act_session() {  # <site> <steps> <approved> <shot> <settle> <report> <allow-kinds> <stage> <errf>
-  local site="$1" steps="$2" is_approved="$3" shot="$4" settle="$5" report="$6" allow_kinds="$7" stage="$8" errf="$9"
+_act_session() {  # <site> <steps-file> <approved> <shot> <settle> <report> <allow-kinds> <stage> <errf>
+  local site="$1" steps_file="$2" is_approved="$3" shot="$4" settle="$5" report="$6" allow_kinds="$7" stage="$8" errf="$9"
   local plan rc=0 rep payload="$stage/daemon.out" xs=""
+  # The steps arrive as the 0600 file cmd_act staged (DIVE-6844), or as JSON from
+  # a caller that has no saved value to keep off a command line.
+  if [[ ! -f "$steps_file" ]]; then
+    ( umask 077; printf '%s' "$steps_file" > "$stage/steps.session.json" ); steps_file="$stage/steps.session.json"
+  fi
   # The page text is derived only for --full (DIVE-6795); otherwise the look says what changed.
   if (( _ACT_FULL )); then xs="$(_extract_sha)"; fi
-  plan=$(jq -nc --argjson s "$steps" --argjson a "$is_approved" --argjson sh "$shot" \
+  plan=$(jq -nc --slurpfile sf "$steps_file" --argjson a "$is_approved" --argjson sh "$shot" \
       --argjson l "$(_daemon_lease_json)" --argjson st "$(_settle_json "$settle")" --argjson r "$report" \
       --argjson ak "$allow_kinds" --argjson lj "$(_landing_json "$site" 0)" --argjson stay "$_ACT_STAY" \
       --argjson sm "$ACT_STEP_MS" --arg xs "$xs" \
-      '{op:"plan", steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak, stay:($stay==1), step_ms:$sm,
+      '$sf[0] as $s | {op:"plan", steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak, stay:($stay==1), step_ms:$sm,
         look:true, split:true, report:({shot:($sh==1), tree:true, downloads:true} + $r)}
        + (if $xs == "" then {} else {extract:$xs} end) + $st + $l + $lj')
   # To a FILE, not a variable: a download comes back in this payload (DIVE-5751).
@@ -9880,13 +10023,19 @@ if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
   _v1="${1:-}"; [[ "$_v1" == adapters && "${2:-}" == drift ]] && _v1=adapters-drift
   [[ "$_v1" == totp && "${2:-}" != import ]] && _v1=totp-seat
   [[ "$_v1" == claude && "${2:-}" =~ ^(enable|disable)$ ]] && _v1=claude-box
+  # DIVE-6844: an act that types a saved login reads root's saved store first,
+  # then drops to the caller itself (cmd_act). Any other act, or one whose steps
+  # turn out to name nothing saved, drops there before a page opens.
+  if [[ "$_v1" == act ]]; then
+    for _a in "$@"; do case "$_a" in --steps=*'"saved"'*|--steps-file=*) _v1=act-saved ;; esac; done
+  fi
   case "$_v1" in
     # `adblock` joins `setup` here: it writes the MACHINE-WIDE chrome policy
     # file, which is root's. Dropping to the seat would turn it into a refusal.
     # `config` too: the drive default is one box-wide file (DIVE-5338).
     # `login-link` (DIVE-6219) installs box-wide services and writes /etc.
     # `claude enable|disable` (DIVE-6345) is the same policy file as adblock.
-    setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|claude-box|totp|login-link|-h|--help|help|"") ;;
+    setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|claude-box|totp|login-link|act-saved|-h|--help|help|"") ;;
     *)
       # DIVE-4813: usually the caller, and for a brokered `serve` the owner.
       _drop="$(_root_drop_target "${SUDO_USER}" "$@")"

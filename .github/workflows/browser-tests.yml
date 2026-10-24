@@ -134,6 +134,11 @@ jobs:
       # with the recording stub, and a live arm in real Chrome against a local page.
       - name: act download harness
         run: bash tests/browser_act_download_unit.sh
+      # DIVE-6844: a saved login is typed in by name and never shown. Cold act on the
+      # recording stub (the transcript arm), root's half through the runner's sudo,
+      # and a live sign-in page in real Chrome.
+      - name: saved login harness
+        run: bash tests/browser_saved_fill_unit.sh
       # DIVE-6392: a popup an act opens is followed (both loops), and an act's capture
       # says its browser mode. lib arms, cold act and the served daemon on the recording
       # stub, and live arms in real Chrome with a 1.45.0-shaped mutant as the control.

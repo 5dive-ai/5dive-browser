@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — an agent types a login the owner saved, and never sees it (DIVE-6844), 1.55.0
+
+The owner saves a login or a detail once, through the box's one-time link (`5dive secret link --save=<name>`, from the app). It goes from the phone to the box only, into a root-only store no agent can read. An `act` step names it instead of carrying it: `{"op":"fill","selector":"ref=textbox/Password","saved":"linkedin-password"}`. Names: `sudo 5dive secret saved ls`.
+
+- **The act goes once through root.** The seat cannot read the store, so `act` re-runs itself through sudo (the `totp import` rail). Root reads only the names asked for, drops back to the agent, and hands the values over on a private pipe, never on a command line or in the environment. The executor gets them from a 0600 file in the agent's own stage, and the plan is now built from that file for every act, never from a `jq` argument.
+- **Nothing the act leaves carries the value.** page.html, the page's text, tree.json, the executor's messages and the payloads an owner's approval shows are scrubbed (raw, JSON- and HTML-escaped), and no picture is kept for that act: a login in a plain field would be in it.
+- **Refused, before anything is typed:** a saved name on a step that is not fill or type, a saved step that also has a value, a bad name, `--record`, a name nothing is saved under (it says where the owner saves one), and a seat with no sudo for it.
+- **Not a wall against the agent itself.** The browser that types it runs as the agent, so an agent set on reading it back out of the page can. It keeps the value out of the chat, the transcript, every command line and every log, and no verb prints it.
+
+Unit files: `browser_saved_fill_unit.sh` 25/25 (the live sign-in arm runs where Chrome is), `browser_act_look_unit.sh` 56/56, `browser_act_download_unit.sh` 25/25, `browser_totp_unit.sh` 40/40.
+
 ### Changed — an act answers with what it changed, not the whole page, and a step stops sending the model to the picture (DIVE-6795), 1.54.0
 
 After 1.53.0 a bench step still cost 7.7-8.9 s against about 4 s for agent-browser and playwright-mcp. About half was the act itself, half the model's own time between calls, which grows with what each call hands it (17 KB a call against about 2 KB). What changed:
