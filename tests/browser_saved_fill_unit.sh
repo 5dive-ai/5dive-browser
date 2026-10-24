@@ -179,7 +179,7 @@ if [[ $EUID -ne 0 ]] && sudo -n true 2>/dev/null; then
   arm 'R1c the artifacts are the seat'"'"'s, and hold no value' "$SEAT 0" "$(stat -c %U "$TMP/r1/page.html" 2>/dev/null) $(leaks "$SECRET" "$OUT" "$ERR" "$TMP/r1")"
   rootact '[{"op":"fill","selector":"#pw","saved":"github-token"}]'
   arm 'R2 nothing saved under the name: refused, names the app, types nothing' 'yes yes no' \
-    "$([[ "$RC" != 0 ]] && echo yes || echo no) $(has 'Saved logins' "$ERR") $(grep -q '"call":"fill"' "$PWREC" && echo yes || echo no)"
+    "$([[ "$RC" != 0 ]] && echo yes || echo no) $(has 'Saved passwords' "$ERR") $(grep -q '"call":"fill"' "$PWREC" && echo yes || echo no)"
   sudo rm -rf "$CON"
 else
   SKIP=$((SKIP+1)); echo 'SKIP: R root half — no passwordless sudo here (CI has it)'

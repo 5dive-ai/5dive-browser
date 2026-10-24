@@ -7153,7 +7153,7 @@ _act_saved_values() {  # <steps>
     key="${n^^}"; key="${key//-/_}"
     grep -qE "^${key}=" "$store" 2>/dev/null || missing+="${missing:+, }$n"
   done
-  [[ -z "$missing" ]] || die "$E_UNAVAILABLE" "nothing is saved as $missing. The owner saves a login in the 5dive app (Settings, Tools, Saved logins), through a one-time link: never ask for it in chat."
+  [[ -z "$missing" ]] || die "$E_UNAVAILABLE" "nothing is saved as $missing. The owner saves a login in the 5dive app (Settings, Tools, Saved passwords), through a one-time link: never ask for it in chat."
   for n in "${names[@]}"; do
     key="${n^^}"; key="${key//-/_}"
     line="$(grep -m1 -E "^${key}=" "$store")"

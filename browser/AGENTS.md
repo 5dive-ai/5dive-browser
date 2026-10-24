@@ -331,7 +331,7 @@ in chat.
 instead of typing it: `{"op":"fill","selector":"ref=textbox/Password","saved":"linkedin-password"}`
 in an `act`. The value is typed into the page and never shown to you: not in the output, the page
 text or a picture. `sudo 5dive secret saved ls` lists the names. Nothing saved under that name?
-Ask the owner to save it in the 5dive app (Settings, Tools, Saved logins), which sends them a
+Ask the owner to save it in the 5dive app (Settings, Tools, Saved passwords), which sends them a
 one-time link. Never ask for a password in chat.
 
 ## What will actually go wrong
