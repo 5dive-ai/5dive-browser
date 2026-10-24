@@ -52,6 +52,12 @@ const aria = require(path.join(__dirname, '..', 'lib', 'aria.cjs'));
 // served browser and a cold run cannot leave through two different routes.
 const proxy = require(path.join(__dirname, '..', 'lib', 'proxy.cjs'));
 const totp = require(path.join(__dirname, '..', 'lib', 'totp.cjs'));
+// DIVE-6844: never type a saved login on a page outside its own site.
+function savedHostCheck(page, s) {
+  if (s.host && !totp.hostAllowed(page.url(), s.host)) {
+    throw new Error(`this saved login is for ${s.host}, and the page is not on it (${(() => { try { return new URL(page.url()).host; } catch { return 'unknown'; } })()}); nothing was typed`);
+  }
+}
 const downloads = require(path.join(__dirname, '..', 'lib', 'downloads.cjs'));
 const gsignin = require(path.join(__dirname, '..', 'lib', 'google-signin.cjs'));
 const popup = require(path.join(__dirname, '..', 'lib', 'popup.cjs'));
@@ -986,6 +992,8 @@ async function planRequest(ctx, req, send, end) {
         e.nothingRan = true; throw e;
       }
       const out = { op: s.op };
+      // DIVE-6844: the site a saved login is for (bin/browser sets it, never a page).
+      if ((s.op === 'fill' || s.op === 'type') && typeof s.host === 'string' && s.host) out.host = s.host;
       for (const field of spec) {
         if (typeof s[field] !== 'string' || !s[field]) {
           const e = new Error(`step ${i + 1} (${s.op}) is missing '${field}'`); e.nothingRan = true; throw e;
@@ -1088,6 +1096,10 @@ async function planRequest(ctx, req, send, end) {
           return !k || (Array.isArray(req.allow_kinds) && req.allow_kinds.includes(k.cls));
         } : null,
       });
+      // DIVE-6844: a saved login carries the site it is for, and is typed on
+      // no other (the page may have moved since the act began). Checked here,
+      // not on the case lines, which older harnesses match byte for byte.
+      if (s.op === 'fill' || s.op === 'type') savedHostCheck(page, s);
       switch (s.op) {
         case 'goto': {
           // THE ACT'S OWN URL DOES NOT RELOAD THE PAGE IT IS ALREADY ON (DIVE-5817).

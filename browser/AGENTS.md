@@ -327,6 +327,13 @@ seed saved, it stops like any challenge. `5dive browser totp status <site>` prin
 gate to file so the owner can paste the seed on the box's one-time link. Never ask for the seed
 in chat.
 
+**A login the owner saved.** To sign in or fill in the owner's details, name what they saved
+instead of typing it: `{"op":"fill","selector":"ref=textbox/Password","saved":"linkedin-password"}`
+in an `act`. The value is typed into the page and never shown to you: not in the output, the page
+text or a picture. `sudo 5dive secret saved ls` lists the names. Nothing saved under that name?
+Ask the owner to save it in the 5dive app (Settings, Tools, Saved passwords), which sends them a
+one-time link. Never ask for a password in chat.
+
 ## What will actually go wrong
 
 - **No server-mode stack on the box.** chromium / Xvfb / x11vnc / websockify are installed
