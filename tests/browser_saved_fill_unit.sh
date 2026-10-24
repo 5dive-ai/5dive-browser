@@ -18,9 +18,13 @@
 #         bad name, --record, and a value that did not arrive: each refused,
 #         nothing typed
 #      S6 a seat with no sudo for it is told what to ask the owner for
+#      S7 a saved value for another site is not typed on this page (the
+#         executor checks the page it is on, not the act's first URL)
 #   R  root's half, where this machine has passwordless sudo (CI has it)
 #      R1 sudo act: root reads the store, the seat types the value
 #      R2 a name with nothing saved: refused, says where the owner saves one
+#      R3 the first use binds the value to the site the act starts on; an act
+#         that starts on another site is refused, and nothing is typed
 #   L  LIVE, where this machine has Chrome and playwright-core (CI installs it)
 #      L1 a local sign-in page: act fills the username and the SAVED password,
 #         submits, and the site says signed in; the site got the exact value
@@ -63,7 +67,8 @@ leaks() {
 }
 
 SECRET='Pa55-<&"word> one'          # a test value: quote, angle brackets, ampersand, space
-SECRET_JSON='{"linkedin-password":"Pa55-<&\"word> one"}'
+SECRET_JSON='{"linkedin-password":{"value":"Pa55-<&\"word> one","host":"login.test"}}'
+OTHER_JSON='{"linkedin-password":{"value":"Pa55-<&\"word> one","host":"other.test"}}'
 
 # ================================================================ S  act, cold
 SEAT="$(id -un)"
@@ -160,6 +165,14 @@ arm 'S6a no grant: refused, tells the agent to ask the owner, types nothing' 'ye
 arm 'S6b it only asked sudo -l (a refused sudo mails root)' '-n -l /usr/local/bin/5dive browser act' "$(head -1 "$TMP/sudo-log" 2>/dev/null)"
 rm -f "$FAKEBIN/sudo"
 
+# S7: the value is for other.test; the page is on login.test.
+: > "$PWREC"
+run env FIVEDIVE_BROWSER_SAVED_FD=3 "$BROWSER" act "$URL" --steps="$STEPS" --out="$TMP/s7" 3< <(printf '%s' "$OTHER_JSON")
+arm 'S7a a value for another site: the step fails, saying which site it is for' 'yes yes' \
+  "$([[ "$RC" != 0 ]] && echo yes || echo no) $(has 'this saved login is for other.test' "$ERR")"
+arm 'S7b ...and it was never typed' no "$(grep -q '"sel":"#pw"' "$PWREC" && echo yes || echo no)"
+arm 'S7c ...and the refusal names no value' 0 "$(leaks "$SECRET" "$OUT" "$ERR" "$TMP/s7")"
+
 # ================================================================ R  root's half
 if [[ $EUID -ne 0 ]] && sudo -n true 2>/dev/null; then
   CON="$TMP/connectors"; sudo mkdir -p "$CON"
@@ -180,6 +193,13 @@ if [[ $EUID -ne 0 ]] && sudo -n true 2>/dev/null; then
   rootact '[{"op":"fill","selector":"#pw","saved":"github-token"}]'
   arm 'R2 nothing saved under the name: refused, names the app, types nothing' 'yes yes no' \
     "$([[ "$RC" != 0 ]] && echo yes || echo no) $(has 'Saved passwords' "$ERR") $(grep -q '"call":"fill"' "$PWREC" && echo yes || echo no)"
+  arm 'R3a the first use bound the value to the site it started on' 'LINKEDIN_PASSWORD=login.test' "$(sudo cat "$CON/saved.hosts" 2>/dev/null)"
+  : > "$PWREC"
+  run sudo env SUDO_USER="$SEAT" FIVEDIVE_BROWSER_CONNECTORS_DIR="$CON" PATH="$PATH" NODE_PATH="$NODE_PATH" PWREC="$PWREC" \
+    $(env | grep -oE '^FIVEDIVE_BROWSER_[A-Z_]+=' | sed 's/=$//' | while read -r k; do printf '%s=%s ' "$k" "${!k}"; done) \
+    "$BROWSER" act "https://evil.test/form" --steps='[{"op":"fill","selector":"#pw","saved":"linkedin-password"}]' --out="$TMP/r3"
+  arm 'R3b an act starting on another site is refused, names the right one, types nothing' 'yes yes no' \
+    "$([[ "$RC" != 0 ]] && echo yes || echo no) $(has 'login for login.test' "$ERR") $(grep -q '"call":"fill"' "$PWREC" && echo yes || echo no)"
   sudo rm -rf "$CON"
 else
   SKIP=$((SKIP+1)); echo 'SKIP: R root half — no passwordless sudo here (CI has it)'
@@ -215,7 +235,7 @@ JS
   LSTEPS='[{"op":"fill","selector":"#user","value":"sam"},{"op":"fill","selector":"#pw","saved":"linkedin-password"},{"op":"click","selector":"#go"}]'
   run env -u NODE_PATH -u PWWALK -u PWHTML -u PWTEXT -u FIVEDIVE_BROWSER_DRIVER PATH="$REALPATH" FIVEDIVE_BROWSER_RUN_SETTLE_MS=500 \
     FIVEDIVE_BROWSER_SAVED_FD=3 "$BROWSER" act "http://localhost:$PORT/" --steps="$LSTEPS" --expect='Signed in as sam' --out="$TMP/live" \
-    3< <(printf '%s' "$SECRET_JSON")
+    3< <(printf '%s' "${SECRET_JSON//login.test/localhost}")
   arm 'L1a a real sign-in page in real Chrome: signed in with the saved password (rc 0, verified)' 0 "$RC"
   [[ "$RC" == 0 ]] || gha 'L1 act output' "$OUT $ERR"
   arm 'L1b the site got exactly the saved value' "$SECRET" "$(cat "$TMP/got" 2>/dev/null)"

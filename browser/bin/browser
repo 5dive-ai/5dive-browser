@@ -7144,10 +7144,18 @@ _act_saved_check() {  # <steps>
   [[ -z "$bad" ]] || die "$E_USAGE" "a saved login goes in a fill or type step, by name and with no value of its own: {\"op\":\"fill\",\"selector\":\"…\",\"saved\":\"linkedin-password\"}. Got: $(jq -c 'del(.value)' <<<"$bad")"
 }
 
-# ROOT: the asked-for names -> {"name":"value",...} on stdout, the values never on
-# a command line (NUL-separated through one jq's stdin).
-_act_saved_values() {  # <steps>
-  local n key line missing="" store="${CONNECTORS_DIR:-/etc/5dive/connectors}/saved.env"
+# ROOT: the asked-for names -> {"name":{"value":…,"host":…},...} on stdout, the
+# values never on a command line (NUL-separated through one jq's stdin).
+#
+# A SAVED VALUE IS FOR ONE SITE. The first act that types it binds it to the site
+# that act starts on (saved.hosts, 600 root, beside the store); every later act
+# must start there, and the executor refuses to type it on a page of any other
+# site (a redirect, a click away). So a page cannot talk an agent into typing the
+# owner's LinkedIn password into a form of its own. A new value (the owner's
+# rewrite) or a remove clears the binding (5dive-cli `secret`).
+_act_saved_values() {  # <steps> <start-host>
+  local n key line missing="" bound start="$2" conn="${CONNECTORS_DIR:-/etc/5dive/connectors}"
+  local store="$conn/saved.env" hosts="$conn/saved.hosts"
   local -a names; mapfile -t names < <(jq -r '[.[] | .saved // empty] | unique[]' <<<"$1")
   for n in "${names[@]}"; do
     key="${n^^}"; key="${key//-/_}"
@@ -7156,9 +7164,37 @@ _act_saved_values() {  # <steps>
   [[ -z "$missing" ]] || die "$E_UNAVAILABLE" "nothing is saved as $missing. The owner saves a login in the 5dive app (Settings, Tools, Saved passwords), through a one-time link: never ask for it in chat."
   for n in "${names[@]}"; do
     key="${n^^}"; key="${key//-/_}"
+    bound="$(sed -n "s/^${key}=//p" "$hosts" 2>/dev/null | head -n 1)"
+    if [[ -n "$bound" ]] && ! _saved_host_within "$start" "$bound"; then
+      die "$E_USAGE" "$n is the owner's login for $bound, so it is typed only on $bound, not on $start. If the owner meant it for $start too, they save it again in the app."
+    fi
+    if [[ -z "$bound" ]]; then
+      bound="${start#www.}"
+      ( umask 077; { grep -vE "^${key}=" "$hosts" 2>/dev/null || true; printf '%s=%s\n' "$key" "$bound"; } > "$hosts.tmp" \
+          && mv -f "$hosts.tmp" "$hosts" ) || die "$E_UNAVAILABLE" "could not record which site $n is for; nothing was typed"
+    fi
+  done
+  for n in "${names[@]}"; do
+    key="${n^^}"; key="${key//-/_}"
     line="$(grep -m1 -E "^${key}=" "$store")"
-    printf '%s\0%s\0' "$n" "${line#*=}"
-  done | jq -Rsc 'split("\u0000") | .[:-1] as $a | [range(0; $a|length; 2) as $i | {($a[$i]): $a[$i+1]}] | add // {}'
+    printf '%s\0%s\0%s\0' "$n" "${line#*=}" "$(sed -n "s/^${key}=//p" "$hosts" | head -n 1)"
+  done | jq -Rsc 'split("\u0000") | .[:-1] as $a
+      | [range(0; $a|length; 3) as $i | {($a[$i]): {value: $a[$i+1], host: $a[$i+2]}}] | add // {}'
+}
+
+# A host and the site a value is for: the same host, or one under it.
+_saved_host_within() {  # <host> <site>
+  local h="${1,,}" b="${2,,}"
+  [[ -n "$h" && -n "$b" && ( "$h" == "$b" || "$h" == *".$b" ) ]]
+}
+
+# The host an act starts on: its URL, else its first goto.
+_act_start_host() {  # <url> <steps>
+  local u="$1" h
+  [[ -n "$u" ]] || u="$(jq -r '[.[] | select(.op == "goto") | .url // empty] | first // empty' <<<"$2")"
+  [[ "$u" =~ ^https?://[^/]+ ]] || return 1
+  h="${u#*://}"; h="${h%%/*}"; h="${h%%\?*}"; h="${h##*@}"; h="${h%%:*}"
+  printf '%s' "${h,,}"
 }
 
 # The seat's half: run this act again through root. Root's half: read, then
@@ -7167,7 +7203,9 @@ _act_saved_escalate() {  # <act argv...>
   if [[ $EUID -eq 0 ]]; then
     local seat="${SUDO_USER:-}" json
     [[ -n "$seat" && "$seat" != root ]] || die "$E_USAGE" "a saved login is typed in for an agent: run the act as that agent, not as root"
-    json="$(_act_saved_values "$steps")" || exit $?
+    local start; start="$(_act_start_host "$url" "$steps")" \
+      || die "$E_USAGE" "an act that types a saved login names the page it starts on (act <url> …), so the box knows which site the login is for"
+    json="$(_act_saved_values "$steps" "$start")" || exit $?
     FIVEDIVE_BROWSER_SAVED_FD=3 env -u FIVEDIVE_BROWSER_SEAT runuser -u "$seat" -- "$0" act "$@" 3< <(printf '%s' "$json")
     exit $?
   fi
@@ -7184,7 +7222,7 @@ _act_saved_read() {  # <steps>
   [[ "$fd" =~ ^[0-9]$ ]] || die "$E_USAGE" "FIVEDIVE_BROWSER_SAVED_FD names no file descriptor"
   j="$(cat <&"$fd" 2>/dev/null)"; eval "exec ${fd}<&-"
   jq -e --argjson want "$(jq -c '[.[] | .saved // empty] | unique' <<<"$1")" \
-    'type == "object" and (. as $o | $want | all(. as $n | $o[$n] | type == "string" and length > 0))' <<<"$j" >/dev/null 2>&1 \
+    'type == "object" and (. as $o | $want | all(. as $n | $o[$n].value | type == "string" and length > 0))' <<<"$j" >/dev/null 2>&1 \
     || die "$E_UNAVAILABLE" "the saved values did not arrive from root; nothing was typed"
   printf '%s' "$j"
 }
@@ -7194,7 +7232,7 @@ _act_saved_read() {  # <steps>
 _act_saved_scrub() {  # <stage>  (values JSON on stdin)
   node -e '
 const fs = require("fs"), path = require("path");
-const vals = Object.values(JSON.parse(fs.readFileSync(0, "utf8"))).filter((v) => v.length > 0);
+const vals = Object.values(JSON.parse(fs.readFileSync(0, "utf8"))).map((o) => (o && o.value) || "").filter((v) => v.length > 0);
 const forms = new Set();
 const html = (v) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/\x27/g, "&#39;");
 for (const v of vals) { forms.add(v); forms.add(JSON.stringify(v).slice(1, -1)); forms.add(html(v)); forms.add(encodeURIComponent(v)); }
@@ -7346,7 +7384,7 @@ cmd_act() {
   local steps_file="$stage/steps.json"
   ( umask 077; if [[ -n "$saved_json" ]]; then
       jq -c --slurpfile v <(printf '%s' "$saved_json") \
-        'map(if has("saved") then (.value = $v[0][.saved]) | del(.saved) else . end)' <<<"$steps"
+        'map(if has("saved") then (.value = $v[0][.saved].value) | (.host = ($v[0][.saved].host // "")) | del(.saved) else . end)' <<<"$steps"
     else printf '%s' "$steps"; fi > "$steps_file" ) || die "$E_UNAVAILABLE" "cannot stage the act's steps"
   # The kinds the owner lets through without asking, read once, before a step.
   allow_kinds="$(_policy_allowed)"

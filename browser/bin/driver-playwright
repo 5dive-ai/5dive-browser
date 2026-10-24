@@ -52,6 +52,12 @@ const aria = require(path.join(__dirname, '..', 'lib', 'aria.cjs'));
 // DIVE-4951: the seat's own proxy, parsed in ONE place for both launch sites.
 const proxy = require(path.join(__dirname, '..', 'lib', 'proxy.cjs'));
 const totp = require(path.join(__dirname, '..', 'lib', 'totp.cjs'));
+// DIVE-6844: never type a saved login on a page outside its own site.
+function savedHostCheck(page, s) {
+  if (s.host && !totp.hostAllowed(page.url(), s.host)) {
+    throw new Error(`this saved login is for ${s.host}, and the page is not on it (${(() => { try { return new URL(page.url()).host; } catch { return 'unknown'; } })()}); nothing was typed`);
+  }
+}
 const downloads = require(path.join(__dirname, '..', 'lib', 'downloads.cjs'));
 const gsignin = require(path.join(__dirname, '..', 'lib', 'google-signin.cjs'));
 const popup = require(path.join(__dirname, '..', 'lib', 'popup.cjs'));
@@ -638,6 +644,8 @@ async function main() {
         `anything is freeform reasoning with extra syntax.`);
     }
     const out = { op: s.op };
+    // DIVE-6844: the site a saved login is for (bin/browser sets it, never a page).
+    if ((s.op === 'fill' || s.op === 'type') && typeof s.host === 'string' && s.host) out.host = s.host;
     for (const field of spec) {
       if (typeof s[field] !== 'string' || !s[field]) {
         die(E_NOTHING_RAN, `step ${i + 1} (${s.op}) is missing '${field}'`);
@@ -768,8 +776,10 @@ async function main() {
           if (RUN_SETTLE_MS > 0) await page.waitForTimeout(RUN_SETTLE_MS);
           break;
         }
-        case 'fill':     await on((x, timeout) => page.fill(x, s.value, { timeout })); break;
-        case 'type':     await aria.typeKeys(page, sel, s.value, s.delay_ms, { timeoutMs: stepMs }); break;
+        // DIVE-6844: a saved login carries the site it is for, and is typed on
+        // no other (the page may have moved since the act began).
+        case 'fill':     savedHostCheck(page, s); await on((x, timeout) => page.fill(x, s.value, { timeout })); break;
+        case 'type':     savedHostCheck(page, s); await aria.typeKeys(page, sel, s.value, s.delay_ms, { timeoutMs: stepMs }); break;
         case 'click':    await on((x, timeout) => aria.clickStep(page, s, x, timeout, { log: (l) => process.stderr.write(`  ${l}\n`) })); break;
         case 'wait_for': await page.waitForSelector(sel, { timeout: stepMs }); break;
         case 'select':   await on((x, timeout) => page.selectOption(x, s.value, { timeout })); break;
