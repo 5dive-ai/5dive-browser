@@ -7014,7 +7014,8 @@ t  'T38d `type` is not one of the owner'"'"'s four: under careful, by a Send lab
 
 # --- T38e MUTANT: `type` mapped to page.fill in both executors ----------------------------
 MUT38="$TMP/t38/mut"; rm -rf "$MUT38"; cp -r "$ROOT/browser" "$MUT38"
-sed -i "s|^\( *case 'type': *\)await aria\.typeKeys(.*\$|\1await page.fill(sel, s.value); break;  // MUTANT (type as fill)|" \
+# The optional middle group is DIVE-6844's saved-login host check: it stays, so only the keys-vs-fill call mutates.
+sed -i "s|^\( *case 'type': *\)\(savedHostCheck(page, s); *\)\?await aria\.typeKeys(.*\$|\1\2await page.fill(sel, s.value); break;  // MUTANT (type as fill)|" \
   "$MUT38/bin/driver-playwright" "$MUT38/bin/session-daemon"
 t  'T38e (anchor) the mutation landed in both executors' '1 1' \
    "$(grep -c 'MUTANT (type as fill)' "$MUT38/bin/driver-playwright") $(grep -c 'MUTANT (type as fill)' "$MUT38/bin/session-daemon")"
