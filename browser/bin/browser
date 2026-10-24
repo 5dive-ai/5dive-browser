@@ -10073,7 +10073,7 @@ if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
     # `config` too: the drive default is one box-wide file (DIVE-5338).
     # `login-link` (DIVE-6219) installs box-wide services and writes /etc.
     # `claude enable|disable` (DIVE-6345) is the same policy file as adblock.
-    setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|claude-box|totp|login-link|act-saved|-h|--help|help|"") ;;
+    setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|claude-box|act-saved|totp|login-link|-h|--help|help|"") ;;
     *)
       # DIVE-4813: usually the caller, and for a brokered `serve` the owner.
       _drop="$(_root_drop_target "${SUDO_USER}" "$@")"
