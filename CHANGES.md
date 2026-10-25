@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Changed — a job that does something on a site ends with the result on the page (DIVE-6897), 1.55.1
+
+On the Online-Mind2Web interim (DIVE-6848, Haiku 5.5, 48 tasks), 5dive lost 9 tasks that a rival passed, and the judge's reasons were one pattern: the agent read the result as text, or took a shortcut, and the screen never showed it. It read the calculator's figure from the page text while the result panel stayed out of view, loaded a URL with the filters written in, took the answer from `read` of a page it never opened, cleared a filter after the results came up, or reported "could not" at the first control with no ref. The judge sees the screen and the steps, never the answer. The skill was tuned read-first (DIVE-6582) on fact-finding tasks; most of these are do-something tasks.
+
+The use-browser skill gets one section, **A job that DOES something: finish it on the page**: every step on the page with `act` (the site's search box, filters, sort, inputs, its Calculate button), never a URL shortcut or `read` in place of the page; a control with no ref is found in `page.html` and clicked by `css=`/`text=`, and a miss is not the end; a site that picked another country is changed on the page; once the result shows nothing undoes it; and the job ends on the result (an `--expect` that matches the result itself, or a `snapshot _public`). A question answered with `read` ends with a `snapshot` of the page that says it. Read-first for questions stays as it was.
+
+Unit file: `browser_plugin_unit.sh` T14c, 4 new arms, red on the 1.55.0 skill.
+
 ### Added — an agent types a login the owner saved, and never sees it (DIVE-6844), 1.55.0
 
 The owner saves a login or a detail once, through the box's one-time link (`5dive secret link --save=<name>`, from the app). It goes from the phone to the box only, into a root-only store no agent can read. An `act` step names it instead of carrying it: `{"op":"fill","selector":"ref=textbox/Password","saved":"linkedin-password"}`. Names: `sudo 5dive secret saved ls`.

@@ -38,6 +38,23 @@ needs nothing connected.
    text and refs the act printed, never the picture. Open the `page.png` once, at the end, only
    when no `--expect` matched, before you say the job worked.
 
+## A job that DOES something: finish it on the page
+
+A search, a filter, a sort, a calculator, a comparison: the job is done when **the page shows
+the result**, not when you know it. Whoever checks the work looks at the screen, not only at your answer.
+
+- **Every step on the page, with `act`**: the site's own search box, filters, sort, inputs and
+  its Calculate or Compare button. Never a URL with the filters written into it, and never
+  `read` or grep in place of the page that shows the result.
+- **A control with no ref** (a calendar day, a month arrow, a custom list): find it in
+  `page.html` and use `css=…` or `text=…`. A miss is not the end: try another selector or
+  another route on the same site before you report that it cannot be done.
+- **The site picked another country or city**: change it on the page, then carry on.
+- **Leave the result on screen.** Once it shows, never undo a filter, clear a field or move on.
+- **End on the result**: the last act's `--expect` matches the result itself (the figure, the
+  list), or else `5dive browser snapshot _public` shows it. Answer from that. A question
+  answered with `read` ends with `snapshot <url>` of the page that says it.
+
 ## Reading pages
 
 ```bash

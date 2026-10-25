@@ -2010,6 +2010,13 @@ tc 'T14c ...naming the owner-approval exit' 'exits **73**' "$UTXT"
 tc 'T14c ...saying the owner, not the agent, approves' 'not you' "$UTXT"
 tc 'T14c ...forbidding rephrasing around the stop' 'Do not rephrase the steps' "$UTXT"
 tc 'T14c ...never guessing between two accounts' 'never guess' "$UTXT"
+# DIVE-6897: on Online-Mind2Web 5dive lost where it read the result instead of leaving it on
+# screen; the judge sees the page, never the answer.
+UFLAT="$(tr -s '[:space:]' ' ' <<<"$UTXT")"
+tc 'T14c ...finishing a job that does something on the page' 'the job is done when **the page shows the result**' "$UFLAT"
+tc 'T14c ...never a URL with the filters written into it' 'Never a URL with the filters written into it' "$UFLAT"
+tc 'T14c ...never undoing the result once it shows' 'never undo a filter, clear a field or move on' "$UFLAT"
+tc 'T14c ...ending on a snapshot of the result' 'or else `5dive browser snapshot _public` shows it' "$UFLAT"
 tn 'T14c connect-site no longer sends agents to a normal fetch' 'use a normal fetch' "$SKILLTXT"
 tc 'T14c ...and points web work at use-browser instead' 'use-browser skill' "$SKILLTXT"
 
