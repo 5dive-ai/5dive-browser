@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — Shopify admin's product form is listed whole: the Description editor and the Status options get refs (DIVE-7007), 1.58.2
+
+On a Shopify trial store the Dropshipping Team's Clicker could not list a product: it called Title, Description and Status "fields the browser tool cannot reach" and saved nothing. Measured on the trial box's new-product page (`lib/aria.cjs`):
+
+- **A rich-text editor is a text field.** The Description is TinyMCE, an iframe whose `<body contenteditable>` has no role, so the map listed its toolbar and not the field. An element that starts an editable region and names no role is now a `textbox`: `ref=frame:Rich Text Area >> textbox/Rich Text Area. Press ALT-0 for help.`
+- **A web component is named by what it draws.** Each Status option draws its label and its small print through two `<slot>`s; `textContent` reads only the light DOM, so the map offered `clickable/Not visible on selected sales channels or markets` and never said "Draft". When an element's text crosses a shadow root or a filled slot it is now read in drawn order: `clickable/Draft Not visible on selected sales channels or markets`. Elements without either keep their old names, so no other ref changes.
+- **Slotted small print is not a second clickable.** The cursor test now asks the parent the element is drawn in (its slot, or a shadow root's host), not `parentElement`.
+- **`--wait-for=<css>` looks into open shadow roots**, as a step's selector already did: `--wait-for=input[name=title]` waited 30 s for a field `fill` could reach.
+
+Title, Price, Status, Save and Discard already had refs once the form had drawn. Live with this walk on the trial store, refs only: fill Title, Description and Price, click `button/Status`, then the Draft option, then `button/Save`. The product saved as Draft with all four values, read back after a reload, then deleted. `tests/browser_page_map_unit.sh` 48/48, four new mutants each red.
+
 ### Fixed — login links turn on for a self-hosted box: the HTTPS front can read its own config (DIVE-6980), 1.58.1
 
 `sudo 5dive browser login-link enable --via=ip` (and `--via=sslip`, `--via=domain`) ended in "no valid certificate ... after 2 minutes" on every fresh self-hosted box. The certificate was never the cause: the HTTPS unit runs Caddy as user `caddy` with `--config /var/lib/5dive/browser-link/Caddyfile`, and `/var/lib/5dive` is `root:<seat> 2750`, so Caddy could not reach its config and restarted every 5 s. The unit now hands the Caddyfile in with `LoadCredential=` and runs `--config %d/Caddyfile`: systemd reads it as root and gives Caddy its own read-only copy. `/var/lib/5dive` keeps its permissions, since it holds the box's secrets. Re-run `login-link enable` to rewrite the unit; a box that worked around it with `setfacl -m u:caddy:x /var/lib/5dive` can drop that ACL. `tests/browser_login_link_unit.sh` E13 checks the unit's user can read the config it names, with the old in-place path as the negative control.

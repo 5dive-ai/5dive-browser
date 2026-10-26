@@ -7,6 +7,11 @@
 # buttons in a shadow root, so every later click hit the banner), Adopt-a-Pet's custom
 # breed box. Table: bench/matrix-6848-2026-10-25/causes-6965.md.
 #
+# DIVE-7007 adds Shopify admin's new-product form (Polaris web components): its
+# Description is a TinyMCE <body contenteditable> with no role, and each Status option
+# draws its label and its small print through two <slot>s, so the map offered the
+# small print and not "Draft". M15-M19 and X4-X7 grade that.
+#
 # Graded against a DOM shim (the T23a pattern in browser_plugin_unit.sh: this suite
 # needs no Chrome and no jsdom). The shim implements the surface pageWalk touches,
 # including an INHERITED cursor, so the "outermost pointer only" rule is really tested.
@@ -23,7 +28,9 @@ cat > "$TMP/map.js" <<'MAP'
 const { pageWalk, INTERACTIVE } = require(process.env.ARIA);
 const docs = [];
 class Root {   // the document, or a shadow root: what querySelectorAll('*') walks
-  constructor(kids) { this.kids = kids; kids.forEach(k => { k.parent = null; k.root = this; }); }
+  constructor(kids, host = null) { this.kids = kids; this.host = host; this.nodeType = 11;
+    kids.forEach(k => { k.parent = null; k.root = this; }); }
+  get childNodes() { return this.kids; }
   flat() { const out = []; const go = (e) => { out.push(e); e.kids.forEach(go); }; this.kids.forEach(go); return out; }
   querySelectorAll() { return this.flat(); }
   getElementById(id) { return this.flat().find(e => e.id === id) || null; }
@@ -37,6 +44,12 @@ class El {
     kids.forEach(k => { k.parent = this; });
   }
   get parentElement() { return this.parent || null; }
+  get nodeType() { return 1; }
+  // the element's own text is one text node before its children, as textContent reads it
+  get childNodes() { if (!this._tn) this._tn = { nodeType: 3, nodeValue: this._t }; return (this._t ? [this._tn] : []).concat(this.kids); }
+  assignedNodes() { return this.assigned || []; }   // a <slot>'s; set where the fixture slots something
+  get isContentEditable() { const v = this.getAttribute('contenteditable');
+    if (v === 'true' || v === '') return true; if (v === 'false') return false; return !!(this.parent && this.parent.isContentEditable); }
   get id() { return this._a.id || ''; }
   getAttribute(n) { return Object.prototype.hasOwnProperty.call(this._a, n) ? this._a[n] : null; }
   hasAttribute(n) { return Object.prototype.hasOwnProperty.call(this._a, n); }
@@ -60,7 +73,8 @@ class El {
     return go(this);
   }
 }
-const cursorOf = (e) => e ? (e.css.cursor || cursorOf(e.parent)) : 'auto';
+// inherited along the tree the page DRAWS: a slotted child from its slot, a shadow root's top from its host
+const cursorOf = (e) => e ? (e.css.cursor || cursorOf(e.assignedSlot || e.parent || (e.root && e.root.host))) : 'auto';
 const DOC = {
   defaultView: { getComputedStyle: (e) => ({ display: e.css.display || 'block', visibility: 'visible', cursor: cursorOf(e) }) },
 };
@@ -74,7 +88,28 @@ banner.shadowRoot = new Root([
   new El('label', { for: 'pref' }, 'Remember me'),
   new El('input', { id: 'pref', type: 'checkbox' }),
 ]);
+// Shopify's Status picker option: a custom element whose shadow root draws a pointer
+// div holding two slots, the label (the host's own text) and the small print
+// (a <span slot=details>), in that order. textContent reads the host's light DOM only.
+const options = [];
+function option(label, details) {
+  const small = new El('span', { slot: 'details' }, details);
+  const host = new El('s-internal-picker-option', {}, label, [small]);
+  const sLabel = new El('slot'), sDetails = new El('slot', { name: 'details' });
+  host.shadowRoot = new Root([new El('div', {}, '', [sLabel, sDetails], P)], host);
+  sLabel.assigned = [host.childNodes[0]]; sDetails.assigned = [small]; small.assignedSlot = sDetails;
+  options.push(host.shadowRoot);
+  return host;
+}
 const body = new El('body', {}, '', [
+  // Shopify's Description: a rich-text editor's editing host, a paragraph inside it
+  new El('div', { contenteditable: 'true', 'aria-label': 'Rich Text Area' }, '', [new El('p', {}, 'Ceremonial grade')]),
+  // a contenteditable that names its own role keeps it
+  new El('div', { contenteditable: 'true', role: 'searchbox', 'aria-label': 'Find' }),
+  new El('div', { class: 'picker' }, '', [
+    option('Active', 'Sell via selected sales channels and markets'),
+    option('Draft', 'Not visible on selected sales channels or markets'),
+  ]),
   new El('a', { href: '/inbox' }, 'Inbox'),
   // a calendar: the arrow has no text, the day cells are divs, spans inside inherit the cursor
   new El('div', { class: 'cal' }, '', [
@@ -102,9 +137,10 @@ global.document = page;
 global.CSS = { escape: (s) => s };
 const mode = process.argv[2];
 const r = pageWalk({ interactiveOnly: mode === 'interactive', interactiveRoles: INTERACTIVE, mark: process.argv[3] || null });
-const stamped = [...page.flat(), ...banner.shadowRoot.flat()].filter(e => e.getAttribute('data-5dive-ref'));
+const shadows = [banner.shadowRoot, ...options];
+const stamped = [...page.flat(), ...shadows.flatMap(s => s.flat())].filter(e => e.getAttribute('data-5dive-ref'));
 console.log(JSON.stringify({ refs: r.nodes.map(n => n.ref), marker: r.marker,
-  marked: stamped.map(e => e.tagName.toLowerCase() + (e.getRootNode() === banner.shadowRoot ? '@shadow' : '')) }));
+  marked: stamped.map(e => e.tagName.toLowerCase() + (shadows.includes(e.getRootNode()) ? '@shadow' : '')) }));
 MAP
 
 REFS="$(ARIA="$ARIA" node "$TMP/map.js" interactive | jq -r '.refs|join(" ")')"
@@ -145,6 +181,36 @@ tc 'M13 the full tree lists the same clickables as --interactive' 'clickable/1 c
 t  'M14 clickable is an interactive role (look.cjs and the loading-screen count read the list)' 'yes' \
    "$(node -e 'process.stdout.write(require(process.argv[1]).INTERACTIVE.includes("clickable")?"yes":"no")' "$ARIA")"
 
+# Shopify's new-product form (DIVE-7007)
+tc 'M15 a rich-text editor with no role is a text field, by its label (Description)' 'textbox/Rich Text Area' "$REFS"
+tn 'M15b ...once: what is inside the editor is not a second field' 'textbox/Ceremonial' "$REFS"
+tc 'M15c (control) a contenteditable that names its role keeps it' 'searchbox/Find' "$REFS"
+tc 'M16 a picker option is named by what it draws, label then small print (Status: Draft)' \
+   'clickable/Draft Not visible on selected sales channels or markets' "$REFS"
+tc 'M16b ...the other option too' 'clickable/Active Sell via selected sales channels and markets' "$REFS"
+tn 'M17 the small print slotted into an option is not a second clickable' ' clickable/Not visible' " $REFS"
+tn 'M17b ...nor the other one' ' clickable/Sell via' " $REFS"
+MK3="$(ARIA="$ARIA" node "$TMP/map.js" interactive 'clickable/Draft Not visible on selected sales channels or markets')"
+t  'M18 marking the Draft option stamps its drawn div, in its shadow root' 'div@shadow' "$(jq -r '.marked|join(" ")' <<<"$MK3")"
+MK4="$(ARIA="$ARIA" node "$TMP/map.js" interactive 'textbox/Rich Text Area')"
+t  'M18b marking the editor stamps the editing host' 'div' "$(jq -r '.marked|join(" ")' <<<"$MK4")"
+t  'M18c (control) M0-M14 refs are unchanged by the drawn-text read' 'link/Inbox clickable/ clickable/1 clickable/2' \
+   "$(tr ' ' '\n' <<<"$REFS" | grep -E '^(link/Inbox|clickable/|clickable/[12])$' | paste -sd' ')"
+
+# --wait-for=<css> looks into open shadow roots, as the step's own selector does
+cat > "$TMP/vis.js" <<'VIS'
+const { _visibleIn } = require(process.env.ARIA);
+const doc = { defaultView: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) } };
+const el = (m, kids = []) => ({ m, kids, getClientRects: () => [{}], ownerDocument: doc });
+const root = (kids) => ({ querySelectorAll: (s) => { const all = []; const go = (e) => { all.push(e); (e.kids || []).forEach(go); }; kids.forEach(go);
+  return s === '*' ? all : all.filter(e => e.m === s); } });
+const field = el('s-internal-text-field'); field.shadowRoot = root([el('input[name=title]')]);
+global.document = Object.assign(root([el('main', [field])]), { body: { innerText: 'Add product' } });
+console.log([_visibleIn({ target: 'input[name=title]', mode: 'auto' }), _visibleIn({ target: 'input[name=price]', mode: 'auto' })].join(' '));
+VIS
+t  'M19 --wait-for=<css> finds a field drawn in a shadow root; an absent one stays absent' 'true false' \
+   "$(ARIA="$ARIA" node "$TMP/vis.js" 2>&1)"
+
 # ---- the mutants: each part of the change, removed, turns its arm red ---------
 MUT="$TMP/mut"; mkdir -p "$MUT"
 sed 's/      if (els\[j\].shadowRoot) elements(els\[j\].shadowRoot, into);//' "$ARIA" > "$MUT/noshadow.cjs"
@@ -155,10 +221,26 @@ sed "s/    if (!interactive\[role\] && clickable(el)) role = 'clickable';//" "$A
 t  'X2 (anchor) the no-clickable mutant really differs' 'yes' "$(cmp -s "$ARIA" "$MUT/noclick.cjs" && echo no || echo yes)"
 tn 'X2b without it the calendar day is gone' 'clickable/1' \
    "$(ARIA="$MUT/noclick.cjs" node "$TMP/map.js" interactive | jq -r '.refs|join(" ")')"
-sed 's/ || pointer(el.parentElement))) return false;/)) return false;/' "$ARIA" > "$MUT/noinherit.cjs"
+sed 's/ || pointer(drawnParent(el)))) return false;/)) return false;/' "$ARIA" > "$MUT/noinherit.cjs"
 t  'X3 (anchor) the inherited-cursor mutant really differs' 'yes' "$(cmp -s "$ARIA" "$MUT/noinherit.cjs" && echo no || echo yes)"
 tc 'X3b without the parent test the inner span is offered too' 'clickable/1#' \
    "$(ARIA="$MUT/noinherit.cjs" node "$TMP/map.js" interactive | jq -r '.refs|join(" ")')"
+
+sed '/el.isContentEditable === true && !(el.parentElement/d' "$ARIA" > "$MUT/noedit.cjs"
+t  'X4 (anchor) the no-editor mutant really differs' 'yes' "$(cmp -s "$ARIA" "$MUT/noedit.cjs" && echo no || echo yes)"
+tn 'X4b without it the Description editor is gone' 'textbox/Rich Text Area' \
+   "$(ARIA="$MUT/noedit.cjs" node "$TMP/map.js" interactive | jq -r '.refs|join(" ")')"
+sed "s/    return deep ? parts.join('') : null;/    return null;/" "$ARIA" > "$MUT/nodrawn.cjs"
+t  'X5 (anchor) the no-drawn-text mutant really differs' 'yes' "$(cmp -s "$ARIA" "$MUT/nodrawn.cjs" && echo no || echo yes)"
+tn 'X5b without it the Draft option has no name a seat can pick' 'clickable/Draft' \
+   "$(ARIA="$MUT/nodrawn.cjs" node "$TMP/map.js" interactive | jq -r '.refs|join(" ")')"
+sed '/    if (el.assignedSlot) return el.assignedSlot;/d' "$ARIA" > "$MUT/noslot.cjs"
+t  'X6 (anchor) the no-slot-parent mutant really differs' 'yes' "$(cmp -s "$ARIA" "$MUT/noslot.cjs" && echo no || echo yes)"
+tc 'X6b without it the slotted small print is offered as its own clickable' ' clickable/Not visible' \
+   " $(ARIA="$MUT/noslot.cjs" node "$TMP/map.js" interactive | jq -r '.refs|join(" ")')"
+sed 's/  try { els = deep(document, \[\]); } catch (e) { els = null; }/  try { els = document.querySelectorAll(t); } catch (e) { els = null; }/' "$ARIA" > "$MUT/noshadowwait.cjs"
+t  'X7 (anchor) the light-DOM-wait mutant really differs' 'yes' "$(cmp -s "$ARIA" "$MUT/noshadowwait.cjs" && echo no || echo yes)"
+t  'X7b without it the shadow-drawn field is never seen' 'false false' "$(ARIA="$MUT/noshadowwait.cjs" node "$TMP/vis.js" 2>&1)"
 
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]

@@ -82,6 +82,11 @@ function pageWalk(opts) {
   function roleOf(el) {
     var explicit = (el.getAttribute('role') || '').trim().split(/\s+/)[0];
     if (explicit) return explicit.toLowerCase();
+    // A RICH-TEXT EDITOR IS A TEXT FIELD (DIVE-7007). Shopify's product Description
+    // is TinyMCE: an iframe whose <body contenteditable> is the field a person types
+    // in, and it carries no role, so the map listed its toolbar and not the field.
+    // The editing host only: everything inside it is editable too.
+    if (el.isContentEditable === true && !(el.parentElement && el.parentElement.isContentEditable)) return 'textbox';
     var tag = el.tagName.toLowerCase();
     if (tag === 'input') {
       var t = (el.getAttribute('type') || 'text').toLowerCase();
@@ -92,8 +97,37 @@ function pageWalk(opts) {
     return ROLE_BY_TAG[tag] || null;
   }
 
+  // A WEB COMPONENT'S TEXT IS WHERE IT IS DRAWN (DIVE-7007). textContent reads the
+  // light DOM only, so a control whose words a shadow root draws, or that shows its
+  // light children through <slot>s in its own order, was named by the wrong words or
+  // none: Shopify's Status picker offered `clickable/Not visible on selected sales
+  // channels or markets` for the option a person reads as "Draft". So when the
+  // subtree crosses a shadow root or a filled slot, the name is read the way the page
+  // draws it, a slot's content set apart by spaces; otherwise it is textContent, as
+  // before, so no ref on a page without web components changes.
+  var DRAWN_NODES_MAX = 2000, DRAWN_CHARS_MAX = 400;
+  function drawnText(el) {
+    var deep = false, parts = [], len = 0, seen = 0;
+    function go(n) {
+      if (++seen > DRAWN_NODES_MAX || len > DRAWN_CHARS_MAX) return;
+      if (n.nodeType === 3) { parts.push(n.nodeValue); len += n.nodeValue.length; return; }
+      if (n.nodeType !== 1 && n.nodeType !== 11) return;
+      var t = n.tagName ? n.tagName.toLowerCase() : '';
+      if (t === 'script' || t === 'style') return;
+      if (t === 'slot' && typeof n.assignedNodes === 'function') {
+        var a = n.assignedNodes({ flatten: true });
+        if (a.length) { deep = true; parts.push(' '); a.forEach(go); parts.push(' '); return; }
+      }
+      if (n.shadowRoot) deep = true;
+      var kids = (n.shadowRoot || n).childNodes || [];
+      for (var i = 0; i < kids.length; i++) go(kids[i]);
+    }
+    go(el);
+    return deep ? parts.join('') : null;
+  }
   function text(el) {
-    return (el.textContent || '').replace(/\s+/g, ' ').trim();
+    var drawn = drawnText(el);
+    return (drawn !== null ? drawn : el.textContent || '').replace(/\s+/g, ' ').trim();
   }
 
   // Accessible name, in the order the ARIA spec resolves it, stopping at the
@@ -186,11 +220,21 @@ function pageWalk(opts) {
     var st = el && el.ownerDocument.defaultView.getComputedStyle(el);
     return !!(st && st.cursor === 'pointer');
   }
+  // THE PARENT IT IS DRAWN IN (DIVE-7007): a slotted child inherits its cursor from
+  // the slot, and a shadow root's top element from the host, not from parentElement.
+  // Without this, the small print slotted into each Shopify picker option inherited
+  // the option's pointer and was offered as a second clickable.
+  function drawnParent(el) {
+    if (el.assignedSlot) return el.assignedSlot;
+    if (el.parentElement) return el.parentElement;
+    var r = el.getRootNode ? el.getRootNode() : null;
+    return (r && r.host) || null;
+  }
   function clickable(el) {
     if (NEVER_CLICKABLE[el.tagName.toLowerCase()]) return false;
     var handler = el.hasAttribute('onclick');
-    if (!handler && (!pointer(el) || pointer(el.parentElement))) return false;
-    for (var p = el.parentElement; p; p = p.parentElement) {
+    if (!handler && (!pointer(el) || pointer(drawnParent(el)))) return false;
+    for (var p = drawnParent(el); p; p = drawnParent(p)) {
       if (interactive[roleOf(p)]) return false;
     }
     return !(typeof el.querySelector === 'function' && el.querySelector(CONTROL));
@@ -1125,8 +1169,18 @@ function _visibleIn(arg) {
   var body = document.body;
   var text = norm(body ? (body.innerText || body.textContent) : '');
   if (arg.mode === 'text') return text.indexOf(norm(t)) >= 0;
+  // INTO OPEN SHADOW ROOTS, as the step's own selector goes (DIVE-7007): on Shopify
+  // `fill input[name=title]` worked and `--wait-for=input[name=title]` waited 30 s,
+  // because the field is drawn inside <s-internal-text-field>'s shadow root.
+  function deep(root, into) {
+    var hit = root.querySelectorAll(t);
+    for (var i = 0; i < hit.length; i++) into.push(hit[i]);
+    var all = root.querySelectorAll('*');
+    for (var j = 0; j < all.length; j++) if (all[j].shadowRoot) deep(all[j].shadowRoot, into);
+    return into;
+  }
   var els = null;
-  try { els = document.querySelectorAll(t); } catch (e) { els = null; }
+  try { els = deep(document, []); } catch (e) { els = null; }
   if (els) for (var i = 0; i < els.length; i++) if (shown(els[i])) return true;
   return text.indexOf(norm(t)) >= 0;
 }
