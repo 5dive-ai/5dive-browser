@@ -8,7 +8,7 @@ that file stays where it is.
 
 ## Unreleased
 
-### Changed — the page map reaches inside frames, and a step follows a ref into one (DIVE-6966), 1.57.0
+### Changed — the page map reaches inside frames, and a step follows a ref into one (DIVE-6966), 1.58.0
 
 The third gap from DIVE-6965's cause table. Chase's IRA calculator sits in a cross-origin iframe: `snapshot` listed none of its controls, and OpenClaw passed by snapshotting the frame and pressing ArrowUp on each slider. Now (`lib/aria.cjs`):
 
@@ -19,6 +19,11 @@ The third gap from DIVE-6965's cause table. Chase's IRA calculator sits in a cro
 - A step on the page's own control does not visit frames, so it costs what it did.
 
 Live on the rig's Chrome, Chase's traditional IRA calculator: 80 → 88 refs, sliders 0 → 7, all as `frame:traditional-ira-calculator >> slider/…`; `press ArrowUp` on the first moved it 25 → 26, the owner's check read it in its frame, and `snapshot` listed exactly what the walk did. The walk took 89 → 174 ms. Unit file: `browser_frames_unit.sh` 38/38, four mutants each red.
+### Added — a saved login is a pair with an optional 2FA code, and an agent at a sign-in page asks to sign in once or save it (DIVE-6973), 1.57.0
+
+- **Fill by field.** A Vault item holds a login, a password and an optional 2FA key. An `act` step names one: `"saved":"github.login"`, `"github.password"`, or `"github.2fa"`, which types the current 6-digit code. A bare `"saved":"<name>"` is still a one-value item, so DIVE-6844's items keep working.
+- **One root hop, now through the CLI.** Root asks `5dive secret _reveal --agent=<seat> --host=<site> <refs>`, which opens the encrypted Vault and writes down who used which item where. A box whose CLI has no such verb is read directly, as before. The 2FA key never leaves root: root turns it into the current code (lib/totp.cjs, the key on stdin) and hands over only the code, which every output is scrubbed of like the other values. The binding to one site is by item, so a pair's login and password go together.
+- **`5dive browser login-ask <site> [--url=<sign-in page>]`.** At a sign-in form with nothing saved, the agent never asks for a password in chat. This sends the owner one message in their language, with the tip to use a separate account for agents, and two buttons: "Sign in once" (recommended; the Connect flow) and "Save in Vault" (the box's one-time page for login, password and 2FA key, minted by root as `secret link --save=<name> --pair`, or a one-field page on an older CLI). The save link rides only a URL button, so Telegram's preview bot cannot spend it. A second ask for the same site within 7 days puts the Vault first and marks it recommended, because a sign-in that keeps dropping is what the Vault fixes. It uses the `_connect` grant every seat already has: no new sudo grant.
 
 ### Changed — the page map lists what a person can click: shadow roots and role-less clickables (DIVE-6965), 1.56.0
 
