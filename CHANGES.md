@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Changed — the page map lists what a person can click: shadow roots and role-less clickables (DIVE-6965), 1.56.0
+
+On bench v3 OpenClaw passed 14 tasks that 5dive failed. On 4 of them the control was on the page and `snapshot --interactive` did not list it, so the agent guessed selectors until it gave up. OpenClaw's snapshot listed them. The walk now does too (`lib/aria.cjs`, still one walk for `tree`, `snapshot` and a step's `ref=`):
+
+- **A shadow root is walked where its host stands.** FedEx's cookie banner (Usercentrics) keeps its buttons in one; the agent could not dismiss it and every later click hit the banner. A label or id inside a shadow root names its field from that root. The step finds the marker because Playwright's CSS pierces open shadow roots. A closed root stays shut.
+- **A role-less element a person would click is offered as `ref=clickable/<text>`**: drawn with a pointer cursor its parent does not have, or carrying an onclick, and neither inside a link or button nor holding one. WebMD's calendar arrow and day cells were divs like this: `ref=clickable/<` now moves the month.
+- **Not yet: iframes.** An embedded calculator (Chase's IRA tool) is still out of the map; a frame needs refs that every step op can follow into it, which is its own change.
+
+Live, old walk vs new on the rig's Chrome: FedEx's rate page 40 → 48 refs, with REJECT OPTIONAL COOKIES and ACCEPT ALL COOKIES now among them; WebMD's ovulation calculator 83 → 123 (the 40 calendar cells and arrows); Coursera's home page 189 → 189 (no noise). Unit file: `browser_page_map_unit.sh` 29/29, three mutants each red.
+
 ### Added — an agent types a login the owner saved, and never sees it (DIVE-6844), 1.55.0
 
 The owner saves a login or a detail once, through the box's one-time link (`5dive secret link --save=<name>`, from the app). It goes from the phone to the box only, into a root-only store no agent can read. An `act` step names it instead of carrying it: `{"op":"fill","selector":"ref=textbox/Password","saved":"linkedin-password"}`. Names: `sudo 5dive secret saved ls`.

@@ -47,7 +47,7 @@ const path = require('path');
 const INTERACTIVE = [
   'button', 'link', 'textbox', 'searchbox', 'checkbox', 'radio', 'combobox',
   'listbox', 'option', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'switch',
-  'slider', 'spinbutton', 'tab', 'treeitem',
+  'slider', 'spinbutton', 'tab', 'treeitem', 'clickable',
 ];
 
 // THE PAGE-SIDE WALK. Serialized into the browser by page.evaluate, so it may
@@ -71,6 +71,13 @@ function pageWalk(opts) {
     reset: 'button', image: 'button', search: 'searchbox', range: 'slider',
     number: 'spinbutton', file: 'button', hidden: null,
   };
+
+  // THE ROOT A NAME IS LOOKED UP IN. An id or a label[for] inside a shadow root
+  // is only found from that root; document.getElementById cannot see it.
+  function scopeOf(el) {
+    var r = el.getRootNode ? el.getRootNode() : null;
+    return r && r.getElementById && r.querySelector ? r : el.ownerDocument;
+  }
 
   function roleOf(el) {
     var explicit = (el.getAttribute('role') || '').trim().split(/\s+/)[0];
@@ -99,7 +106,7 @@ function pageWalk(opts) {
     var byId = el.getAttribute('aria-labelledby');
     if (byId) {
       var parts = byId.split(/\s+/).map(function (id) {
-        var n = el.ownerDocument.getElementById(id);
+        var n = scopeOf(el).getElementById(id);
         return n ? text(n) : '';
       }).filter(Boolean);
       if (parts.length) return parts.join(' ');
@@ -107,7 +114,7 @@ function pageWalk(opts) {
     var lab = el.getAttribute('aria-label');
     if (lab && lab.trim()) return lab.trim();
     if (el.id) {
-      var forLab = el.ownerDocument.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      var forLab = scopeOf(el).querySelector('label[for="' + CSS.escape(el.id) + '"]');
       if (forLab && text(forLab)) return text(forLab);
     }
     var wrap = el.closest ? el.closest('label') : null;
@@ -149,12 +156,53 @@ function pageWalk(opts) {
   var interactive = {};
   (opts.interactiveRoles || []).forEach(function (r) { interactive[r] = true; });
 
+  // ---- WHAT A PERSON CAN CLICK, NOT ONLY WHAT ARIA NAMES (DIVE-6965) --------
+  //
+  // On bench v3 OpenClaw passed 14 tasks 5dive failed, and on 4 of them the
+  // control was there and the walk did not list it: a calendar's month arrow and
+  // day cells (plain divs with a click handler), a cookie banner inside a shadow
+  // root (Usercentrics, so every later click hit the banner), custom dropdowns.
+  // OpenClaw's snapshot lists all of these; this walk now does too.
+  //
+  // A SHADOW ROOT IS WALKED where its host stands. document.querySelectorAll
+  // never enters one. The marker it stamps there is still found by the step:
+  // Playwright's CSS engine pierces open shadow roots. A closed one stays shut.
+  function elements(root, into) {
+    var els = root.querySelectorAll('*');
+    for (var j = 0; j < els.length; j++) {
+      into.push(els[j]);
+      if (els[j].shadowRoot) elements(els[j].shadowRoot, into);
+    }
+    return into;
+  }
+  // AN ELEMENT WITH NO ACTIONABLE ROLE IS `clickable` when it is drawn with a
+  // pointer cursor its parent does not have, or carries an onclick, and sits in
+  // no control and holds none. A pointer cursor is inherited, so without the
+  // parent test every span inside a card would be offered; a card that wraps a
+  // real link or button is that control's to answer for.
+  var NEVER_CLICKABLE = { html: 1, head: 1, body: 1, script: 1, style: 1 };
+  var CONTROL = 'a[href],button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=tab],[role=option]';
+  function pointer(el) {
+    var st = el && el.ownerDocument.defaultView.getComputedStyle(el);
+    return !!(st && st.cursor === 'pointer');
+  }
+  function clickable(el) {
+    if (NEVER_CLICKABLE[el.tagName.toLowerCase()]) return false;
+    var handler = el.hasAttribute('onclick');
+    if (!handler && (!pointer(el) || pointer(el.parentElement))) return false;
+    for (var p = el.parentElement; p; p = p.parentElement) {
+      if (interactive[roleOf(p)]) return false;
+    }
+    return !(typeof el.querySelector === 'function' && el.querySelector(CONTROL));
+  }
+
   var out = [];
   var seen = {};
-  var all = document.querySelectorAll('*');
+  var all = elements(document, []);
   for (var i = 0; i < all.length; i++) {
     var el = all[i];
     var role = roleOf(el);
+    if (!interactive[role] && clickable(el)) role = 'clickable';
     if (!role) continue;
     if (opts.interactiveOnly && !interactive[role]) continue;
     if (hidden(el)) continue;
