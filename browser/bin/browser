@@ -215,8 +215,10 @@ usage() {
                                       # the owner's ask; re-run with --approved=<id>.
                                       # --record=<name> saves the steps (never the
                                       # values typed) as a ROUTINE for replay.
-                                      # A fill/type step with "saved":"<name>" types
-                                      # a login the owner saved, never shown to you
+                                      # A fill/type step with "saved":"<name>.login"
+                                      # (.password, .2fa = the current code; a bare
+                                      # <name> for a one-value item) types a login
+                                      # the owner saved, never shown to you
                                       # (names: sudo 5dive secret saved ls).
   5dive browser snapshot <url> --delta  # after the first full snapshot: only what
                                       # changed (refs, text), and no page.png when
@@ -306,6 +308,13 @@ usage() {
                                       # they get a "Connect <site>" button, their tap opens
                                       # the one-time link, their "Done" tap checks the login.
                                       # Nothing is bound until they tap.
+  5dive browser login-ask <site> [--url=<sign-in page>]
+                                      # at a sign-in form with nothing saved: one owner
+                                      # message with two buttons, "Sign in once" (the
+                                      # Connect flow) and "Save in Vault" (a one-time page
+                                      # for login, password and 2FA key). A second ask
+                                      # for the site within 7 days puts the Vault first.
+                                      # Never ask for a password in chat.
   5dive browser connect-request <site> --challenge [--url=<page>] [--reason=<what you were doing>]
                                       # stuck on a captcha: the owner gets an "Open <site>"
                                       # button, clears the check in the box browser on that
@@ -7135,51 +7144,150 @@ _act_keep_page() {  # <site> <url>; runs with the lease held, before _page_open
 SAVED_SUDO=(sudo -n /usr/local/bin/5dive browser)
 [[ -n "${FIVEDIVE_BROWSER_SAVED_SUDO:-}" ]] && SAVED_SUDO=("$FIVEDIVE_BROWSER_SAVED_SUDO")
 SAVED_NAME_RE='^[a-z][a-z0-9-]{0,39}$'
+# DIVE-6973: a step names an ITEM, and for a login pair one of its fields:
+# "github.login", "github.password", "github.2fa" (the current 6-digit code). A
+# bare name is a one-value item, so DIVE-6844's items keep filling as before.
+SAVED_REF_RE='^[a-z][a-z0-9-]{0,39}(\.(login|password|2fa))?$'
+# Root's way into the Vault: the CLI's `secret _reveal`, which decrypts the item
+# and writes down who used it where. A box whose CLI predates it is read directly.
+SAVED_CLI=/usr/local/bin/5dive
+SAVED_ROOT_SEAM=0
+# A 2FA code with less than this left in its 30 s window is not handed over: the
+# act still opens its page before it types, and the site would get it too late.
+SAVED_TOTP_MIN_LEFT_S=12
+# TEST SEAMS, honoured only WITHOUT root: the CLI to ask, root's half run as this
+# same unprivileged user (it can read only what that user can), and the code's
+# margin. None of them can reach a store the caller could not already read.
+if [[ $EUID -ne 0 ]]; then
+  SAVED_CLI="${FIVEDIVE_BROWSER_SAVED_CLI:-$SAVED_CLI}"
+  [[ "${FIVEDIVE_BROWSER_SAVED_ROOT_SEAM:-}" == 1 ]] && SAVED_ROOT_SEAM=1
+  [[ "${FIVEDIVE_BROWSER_TOTP_MIN_LEFT_S:-}" =~ ^[0-9]{1,2}$ ]] && SAVED_TOTP_MIN_LEFT_S="$FIVEDIVE_BROWSER_TOTP_MIN_LEFT_S"
+fi
 
 _act_saved_check() {  # <steps>
   local bad
-  bad=$(jq -r --arg re "$SAVED_NAME_RE" '[.[] | select(has("saved"))
+  bad=$(jq -r --arg re "$SAVED_REF_RE" '[.[] | select(has("saved"))
       | select((.op != "fill" and .op != "type") or (.saved | type != "string") or (.saved | test($re) | not) or has("value"))]
       | first // empty | tojson' <<<"$steps")
-  [[ -z "$bad" ]] || die "$E_USAGE" "a saved login goes in a fill or type step, by name and with no value of its own: {\"op\":\"fill\",\"selector\":\"…\",\"saved\":\"linkedin-password\"}. Got: $(jq -c 'del(.value)' <<<"$bad")"
+  [[ -z "$bad" ]] || die "$E_USAGE" "a saved login goes in a fill or type step, by name and with no value of its own: {\"op\":\"fill\",\"selector\":\"…\",\"saved\":\"github.password\"} (fields: <name>.login, <name>.password, <name>.2fa; a bare <name> for a one-value item). Got: $(jq -c 'del(.value)' <<<"$bad")"
 }
 
-# ROOT: the asked-for names -> {"name":{"value":…,"host":…},...} on stdout, the
-# values never on a command line (NUL-separated through one jq's stdin).
-#
-# A SAVED VALUE IS FOR ONE SITE. The first act that types it binds it to the site
-# that act starts on (saved.hosts, 600 root, beside the store); every later act
-# must start there, and the executor refuses to type it on a page of any other
-# site (a redirect, a click away). So a page cannot talk an agent into typing the
-# owner's LinkedIn password into a form of its own. A new value (the owner's
-# rewrite) or a remove clears the binding (5dive-cli `secret`).
-_act_saved_values() {  # <steps> <start-host>
-  local n key line missing="" bound start="$2" conn="${CONNECTORS_DIR:-/etc/5dive/connectors}"
-  local store="$conn/saved.env" hosts="$conn/saved.hosts"
-  local -a names; mapfile -t names < <(jq -r '[.[] | .saved // empty] | unique[]' <<<"$1")
-  for n in "${names[@]}"; do
-    key="${n^^}"; key="${key//-/_}"
-    grep -qE "^${key}=" "$store" 2>/dev/null || missing+="${missing:+, }$n"
+# An item's store key, and a ref's: linkedin-password -> LINKEDIN_PASSWORD,
+# github.login -> GITHUB__LOGIN (a name cannot hold `--`, so `__` is never one).
+_saved_key_of() { local k="${1^^}"; printf '%s' "${k//-/_}"; }
+_saved_ref_key() {
+  local k; k="$(_saved_key_of "${1%%.*}")"
+  [[ "$1" == *.* ]] && k+="__$(printf '%s' "${1#*.}" | tr '[:lower:]' '[:upper:]')"
+  printf '%s' "$k"
+}
+
+# What the agent is told when an item is not there: the Vault, and the ask that
+# fills it. Never "ask for it in chat".
+_saved_missing() {  # <what> <start-host>
+  die "$E_UNAVAILABLE" "nothing is saved as $1. Never ask for a password in chat: run 5dive browser login-ask ${2#www.}, which asks the owner to sign in once or to save the login in their Vault (the 5dive app), then fill it by name on your next turn."
+}
+
+# ROOT: the refs' plaintext as one JSON object {"<ref>":"<value>"} on stdout.
+# Through the CLI's `secret _reveal` (DIVE-6973: it decrypts, and records the use);
+# on a box whose CLI has no such verb, the plain store read directly (DIVE-6844).
+# No value is ever on a command line: _reveal prints it, jq reads it on stdin.
+_saved_reveal() {  # <seat> <start-host> <ref>...
+  local seat="$1" start="$2" out rc=0 err miss conn="${CONNECTORS_DIR:-/etc/5dive/connectors}"; shift 2
+  # The real CLI reads the real store: a store somewhere else (a test's) is read here.
+  if [[ -x "$SAVED_CLI" ]] && { [[ "$SAVED_CLI" != /usr/local/bin/5dive ]] || [[ "$conn" == /etc/5dive/connectors ]]; }; then
+    err="$(mktemp)"
+    out="$("$SAVED_CLI" secret _reveal "--agent=$seat" "--host=$start" "$@" 2>"$err")" || rc=$?
+    if (( rc == 0 )); then
+      rm -f "$err"
+      jq -ce 'if (.ok == true and (.data | type) == "object") then .data else . end | select(type == "object")' <<<"$out" 2>/dev/null \
+        || die "$E_UNAVAILABLE" "the box's 5dive CLI answered the Vault read with something that is not a list of values; nothing was typed"
+      return 0
+    fi
+    if (( rc == 2 )) && grep -qE 'unknown secret command|unknown flag' "$err"; then
+      rm -f "$err"   # an older CLI: the plain store, below
+    elif (( rc == 4 )); then
+      miss="$(sed -n 's/.*nothing is saved as:\{0,1\} //p' "$err" | head -n 1 | tr -d '\000-\037' | cut -c1-200)"; rm -f "$err"
+      _saved_missing "${miss:-$(IFS=,; printf '%s' "$*")}" "$start"
+    else
+      miss="$(grep -v '^$' "$err" | tail -n 1 | sed 's/^error: //' | tr -d '\000-\037' | cut -c1-200)"; rm -f "$err"
+      die "$E_UNAVAILABLE" "the Vault could not be read (${miss:-the 5dive CLI exited $rc}); nothing was typed"
+    fi
+  fi
+  local store="$conn/saved.env" r key line missing=""
+  for r in "$@"; do
+    key="$(_saved_ref_key "$r")"
+    grep -qE "^${key}=" "$store" 2>/dev/null || missing+="${missing:+, }$r"
   done
-  [[ -z "$missing" ]] || die "$E_UNAVAILABLE" "nothing is saved as $missing. The owner saves a login in the 5dive app (Settings, Tools, Saved passwords), through a one-time link: never ask for it in chat."
-  for n in "${names[@]}"; do
-    key="${n^^}"; key="${key//-/_}"
+  [[ -z "$missing" ]] || _saved_missing "$missing" "$start"
+  for r in "$@"; do
+    key="$(_saved_ref_key "$r")"
+    line="$(grep -m1 -E "^${key}=" "$store")"
+    [[ "${line#*=}" != v1:* ]] \
+      || die "$E_UNAVAILABLE" "$r is saved encrypted and this box's 5dive CLI cannot open it (no \`secret _reveal\`). Update the CLI: sudo 5dive update. Nothing was typed."
+    printf '%s\0%s\0' "$r" "${line#*=}"
+  done | jq -Rsc 'split("\u0000") | .[:-1] as $a | [range(0; $a|length; 2) as $i | {($a[$i]): $a[$i+1]}] | add // {}'
+}
+
+# ROOT: the asked-for refs -> {"<ref>":{"value":…,"host":…},...} on stdout.
+#
+# A SAVED VALUE IS FOR ONE SITE. The first act that types an item binds it to the
+# site that act starts on (saved.hosts, 600 root, beside the store; by ITEM, so
+# a pair's login and password go together); every later act must start there,
+# and the executor refuses to type it on a page of any other site (a redirect, a
+# click away). So a page cannot talk an agent into typing the owner's LinkedIn
+# password into a form of its own. A new value (the owner's rewrite) or a remove
+# clears the binding (5dive-cli `secret`).
+#
+# A `.2fa` ref is the authenticator seed in the store; root turns it into the
+# current 6-digit code here (lib/totp.cjs, the seed on node's stdin) and only the
+# code goes on to the seat.
+_act_saved_values() {  # <steps> <start-host> <seat>
+  local item key bound start="$2" seat="$3" conn="${CONNECTORS_DIR:-/etc/5dive/connectors}" raw hostmap="{}"
+  local hosts="$conn/saved.hosts"
+  local -a refs items
+  mapfile -t refs < <(jq -r '[.[] | .saved // empty] | unique[]' <<<"$1")
+  mapfile -t items < <(printf '%s\n' "${refs[@]}" | sed 's/\..*$//' | sort -u)
+  for item in "${items[@]}"; do
+    key="$(_saved_key_of "$item")"
     bound="$(sed -n "s/^${key}=//p" "$hosts" 2>/dev/null | head -n 1)"
     if [[ -n "$bound" ]] && ! _saved_host_within "$start" "$bound"; then
-      die "$E_USAGE" "$n is the owner's login for $bound, so it is typed only on $bound, not on $start. If the owner meant it for $start too, they save it again in the app."
+      die "$E_USAGE" "$item is the owner's login for $bound, so it is typed only on $bound, not on $start. If the owner meant it for $start too, they save it again in the app."
     fi
+  done
+  raw="$(_saved_reveal "$seat" "$start" "${refs[@]}")" || exit $?
+  for item in "${items[@]}"; do
+    key="$(_saved_key_of "$item")"
+    bound="$(sed -n "s/^${key}=//p" "$hosts" 2>/dev/null | head -n 1)"
     if [[ -z "$bound" ]]; then
       bound="${start#www.}"
       ( umask 077; { grep -vE "^${key}=" "$hosts" 2>/dev/null || true; printf '%s=%s\n' "$key" "$bound"; } > "$hosts.tmp" \
-          && mv -f "$hosts.tmp" "$hosts" ) || die "$E_UNAVAILABLE" "could not record which site $n is for; nothing was typed"
+          && mv -f "$hosts.tmp" "$hosts" ) || die "$E_UNAVAILABLE" "could not record which site $item is for; nothing was typed"
     fi
+    hostmap="$(jq -c --arg i "$item" --arg h "$bound" '.[$i] = $h' <<<"$hostmap")"
   done
-  for n in "${names[@]}"; do
-    key="${n^^}"; key="${key//-/_}"
-    line="$(grep -m1 -E "^${key}=" "$store")"
-    printf '%s\0%s\0%s\0' "$n" "${line#*=}" "$(sed -n "s/^${key}=//p" "$hosts" | head -n 1)"
-  done | jq -Rsc 'split("\u0000") | .[:-1] as $a
-      | [range(0; $a|length; 3) as $i | {($a[$i]): {value: $a[$i+1], host: $a[$i+2]}}] | add // {}'
+  # The values arrive on stdin, the hosts (not secrets) and the lib path on argv.
+  printf '%s' "$raw" | node -e '
+const fs = require("fs");
+const totp = require(process.argv[1]);
+const hosts = JSON.parse(process.argv[2]), minLeft = Number(process.argv[3]);
+const raw = JSON.parse(fs.readFileSync(0, "utf8"));
+(async () => {
+  const out = {};
+  for (const [ref, v] of Object.entries(raw)) {
+    if (typeof v !== "string" || v.length === 0) continue;
+    let value = v;
+    if (ref.endsWith(".2fa")) {
+      const seed = totp.base32Decode(v);
+      if (!seed || seed.length < 10) { process.stderr.write(`the 2FA key saved as ${ref} is not a usable authenticator key; the owner saves it again in the Vault\n`); process.exit(3); }
+      const left = totp.STEP_S - (Math.floor(Date.now() / 1000) % totp.STEP_S);
+      if (left < minLeft) await new Promise((r) => setTimeout(r, left * 1000 + 250));
+      value = totp.codeAt(seed, Date.now());
+    }
+    out[ref] = { value, host: hosts[ref.split(".")[0]] || "" };
+  }
+  process.stdout.write(JSON.stringify(out));
+})();' "$_SELF_DIR/../lib/totp.cjs" "$hostmap" "$SAVED_TOTP_MIN_LEFT_S" \
+    || die "$E_UNAVAILABLE" "the saved values could not be prepared; nothing was typed"
 }
 
 # A host and the site a value is for: the same host, or one under it.
@@ -7200,13 +7308,22 @@ _act_start_host() {  # <url> <steps>
 # The seat's half: run this act again through root. Root's half: read, then
 # back to the seat with the values on fd 3. Neither returns.
 _act_saved_escalate() {  # <act argv...>
-  if [[ $EUID -eq 0 ]]; then
-    local seat="${SUDO_USER:-}" json
-    [[ -n "$seat" && "$seat" != root ]] || die "$E_USAGE" "a saved login is typed in for an agent: run the act as that agent, not as root"
+  if [[ $EUID -eq 0 ]] || (( SAVED_ROOT_SEAM )); then
+    local seat json
+    if [[ $EUID -eq 0 ]]; then
+      seat="${SUDO_USER:-}"
+      [[ -n "$seat" && "$seat" != root ]] || die "$E_USAGE" "a saved login is typed in for an agent: run the act as that agent, not as root"
+    else
+      seat="$(id -un)"
+    fi
     local start; start="$(_act_start_host "$url" "$steps")" \
       || die "$E_USAGE" "an act that types a saved login names the page it starts on (act <url> …), so the box knows which site the login is for"
-    json="$(_act_saved_values "$steps" "$start")" || exit $?
-    FIVEDIVE_BROWSER_SAVED_FD=3 env -u FIVEDIVE_BROWSER_SEAT runuser -u "$seat" -- "$0" act "$@" 3< <(printf '%s' "$json")
+    json="$(_act_saved_values "$steps" "$start" "$seat")" || exit $?
+    if [[ $EUID -eq 0 ]]; then
+      FIVEDIVE_BROWSER_SAVED_FD=3 env -u FIVEDIVE_BROWSER_SEAT runuser -u "$seat" -- "$0" act "$@" 3< <(printf '%s' "$json")
+    else
+      FIVEDIVE_BROWSER_SAVED_FD=3 "$0" act "$@" 3< <(printf '%s' "$json")
+    fi
     exit $?
   fi
   if [[ "${SAVED_SUDO[0]}" == sudo ]]; then
@@ -7277,8 +7394,9 @@ cmd_act() {
         printf '  saw the page; --full derives page.md and prints the whole page instead.\n'
         printf '  --record=<routine> saves these steps (never the values typed) for `5dive browser replay`.\n'
         printf '  A fill or type step can name a login the owner saved instead of carrying it:\n'
-        printf '  {"op":"fill","selector":"ref=textbox/Password","saved":"<name>"}. It is typed in and never shown\n'
-        printf '  (the names: sudo 5dive secret saved ls). The owner saves one in the app, never in chat.\n'
+        printf '  {"op":"fill","selector":"ref=textbox/Password","saved":"<name>.password"}; <name>.login, and\n'
+        printf '  <name>.2fa for the current 6-digit code; a bare <name> for a one-value item. Typed in, never\n'
+        printf '  shown. Nothing saved yet: 5dive browser login-ask <site>. Never ask for a password in chat.\n'
         printf '  <url> may be omitted to continue on the page a served browser is already on. A served browser\n'
         printf '  already ON <url> is not reloaded (a goto step of your own does reload). An act on the public\n'
         printf '  profile starts a served browser for it, so its page survives to the next act.\n'
@@ -9093,7 +9211,7 @@ _connect_caller() {
 # whose bridge would show a dead button is refused up front instead.
 _connect_channel() {
   local seat="$1" name home t d tf
-  CONNECT_TG_TOKEN="" CONNECT_TG_OWNERS="" CONNECT_TG_TYPE=""
+  CONNECT_TG_TOKEN="" CONNECT_TG_OWNERS="" CONNECT_TG_TYPE="" CONNECT_TG_LANG=en
   name="${seat#agent-}"
   tf="$CONNECT_CONNECTORS_DIR/telegram-${name}.env"
   [[ -r "$tf" ]] && CONNECT_TG_TOKEN=$(sed -n 's/^TELEGRAM_BOT_TOKEN=//p' "$tf" | head -1)
@@ -9104,6 +9222,9 @@ _connect_channel() {
     [[ -r "$d" ]] || continue
     CONNECT_TG_TYPE="$t"
     CONNECT_TG_OWNERS=$(_tg_owner_ids "$d")
+    # DIVE-6973: the owner's language, from the lite-lang file the telegram plugin
+    # writes beside access.json from the sender's Telegram language_code.
+    case "$(head -c 16 "${d%/*}/lite-lang" 2>/dev/null)" in ru*|RU*) CONNECT_TG_LANG=ru ;; esac
     break
   done
   [[ -n "$CONNECT_TG_TOKEN" && -n "$CONNECT_TG_TYPE" ]]
@@ -9651,18 +9772,26 @@ _connect_handoff_ssh() {  # <caller> <site> <reason>
   _handoff_ssh_steps plain "$site" "$vport" "$pwf" "$caller" "$reason"
 }
 
+# One request code, stored as its hash: what a "Connect" / "Sign in once" button
+# carries. Sets CONNECT_CODE, CONNECT_CODE_FILE and CONNECT_EXP.
+_connect_mint() {  # <caller> <site> <kind> <url> <check> <reason>
+  local now
+  mkdir -p "$CONNECT_DIR" && chmod 700 "$CONNECT_DIR" || die "$E_UNAVAILABLE" "cannot create $CONNECT_DIR"
+  CONNECT_CODE=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  CONNECT_CODE_FILE=$(_connect_file "$CONNECT_CODE")
+  now=$(date -u +%s); CONNECT_EXP=$(( now + CONNECT_REQ_TTL ))
+  ( umask 077; printf 'op=request\nseat=%s\nsite=%s\nexpires_at=%s\ncreated_at=%s\nkind=%s\nurl=%s\ncheck=%s\nreason=%s\n' \
+      "$1" "$2" "$CONNECT_EXP" "$now" "$3" "$4" "$5" "$6" > "$CONNECT_CODE_FILE" )
+}
+
 # Mint one request code, store it, and send the ask (DIVE-6725: one sender for
 # the first ask and for the fresh button a late tap gets). Sets CONNECT_SENT and
 # CONNECT_EXP; returns 1, with the code removed, when Telegram took no message.
 _connect_send() {  # <caller> <site> <kind> <url> <reason> <check 0|1> <chat ids> [again]
   local caller="$1" site="$2" kind="$3" url="$4" reason="$5" check="$6" chats="$7" again="${8:-}"
-  local code f now exp label text kb sent=0 o resp
-  mkdir -p "$CONNECT_DIR" && chmod 700 "$CONNECT_DIR" || die "$E_UNAVAILABLE" "cannot create $CONNECT_DIR"
-  code=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
-  f=$(_connect_file "$code")
-  now=$(date -u +%s); exp=$(( now + CONNECT_REQ_TTL ))
-  ( umask 077; printf 'op=request\nseat=%s\nsite=%s\nexpires_at=%s\ncreated_at=%s\nkind=%s\nurl=%s\ncheck=%s\nreason=%s\n' \
-      "$caller" "$site" "$exp" "$now" "$kind" "$url" "$check" "$reason" > "$f" )
+  local code f exp label text kb sent=0 o resp
+  _connect_mint "$caller" "$site" "$kind" "$url" "$check" "$reason"
+  code="$CONNECT_CODE" f="$CONNECT_CODE_FILE" exp="$CONNECT_EXP"
 
   label="${caller#agent-}"
   if [[ "$kind" == challenge && "$check" == 1 ]]; then
@@ -9762,6 +9891,118 @@ _connect_request() {  # <caller> <site> <reason> [challenge <url> | handoff]
     printf 'You will get a channel message when they tap and when they finish. Then `5dive browser status %s` has the verdict.\n' "$site"
   fi
 }
+
+# >>> DIVE-6973 an agent at a sign-in page asks to sign in once, or to save it
+#
+# An agent that reaches a sign-in form with nothing saved for the site must never
+# ask for the password in chat. It runs `5dive browser login-ask <site>`, and the
+# owner gets ONE message, in their language, with two buttons:
+#   1. "Sign in once" (recommended): the Connect flow above. No password is
+#      stored anywhere, and the owner does the 2FA himself.
+#   2. "Save in Vault": the box's one-time save page for a login, a password and
+#      an optional 2FA key (`5dive secret link --save=<name> --pair`), phone ->
+#      box only. Then the agent fills `<name>.login` / `.password` / `.2fa`.
+# Sessions expire, and some sites drop one on a new IP. So when the same host was
+# asked about within 7 days, the Vault is offered first and marked recommended:
+# it lets the agent sign itself back in. Both carry the separate-account tip.
+# The save link is a one-time URL, so it goes ONLY in a URL button: Telegram's
+# preview bot fetches a link in the text and would spend it before the tap.
+LOGIN_ASK_WINDOW=$(( 7 * 86400 ))
+
+# A saved-item name for a site's host: github.com -> github, bbc.co.uk -> bbc.
+_saved_name_for_host() {  # <host>
+  local h="${1,,}" n c; h="${h#www.}"
+  local -a l; IFS=. read -ra l <<<"$h"; c=${#l[@]}
+  if (( c >= 3 )) && [[ ${#l[c-1]} == 2 && " co com org net gov ac edu " == *" ${l[c-2]} "* ]]; then n="${l[c-3]}"
+  elif (( c >= 2 )); then n="${l[c-2]}"
+  else n="${l[0]:-}"; fi
+  n="$(printf '%s' "$n" | tr -c 'a-z0-9-' '-' | tr -s '-')"
+  [[ "$n" =~ ^[a-z] ]] || n="site-${n#-}"
+  n="${n:0:40}"; while [[ "$n" == *- ]]; do n="${n%-}"; done
+  [[ "$n" =~ $SAVED_NAME_RE && "$n" != *--* ]] || n=login
+  printf '%s' "$n"
+}
+
+# ROOT: the one-time save page for <name>, as a pair page when the CLI has one.
+# Prints the URL (it never leaves root but for the button), or why there is none
+# on stderr.
+_connect_vault_link() {  # <name>
+  local out rc=0 err u
+  [[ -x "$SAVED_CLI" ]] || { echo "this box has no 5dive CLI at $SAVED_CLI" >&2; return 1; }
+  err="$(mktemp)"
+  out="$("$SAVED_CLI" --json secret link "--save=$1" --pair 2>"$err")" || rc=$?
+  if (( rc != 0 )) && grep -q 'unknown flag' "$err"; then
+    rc=0; out="$("$SAVED_CLI" --json secret link "--save=$1" 2>"$err")" || rc=$?   # an older CLI: one field
+  fi
+  u="$(jq -r '.data.url // empty' <<<"$out" 2>/dev/null)"
+  if (( rc != 0 )) || [[ ! "$u" =~ ^https://[^[:space:]]+$ ]]; then
+    grep -v '^$' "$err" | tail -n 1 | sed 's/^error: //' | cut -c1-200 >&2; rm -f "$err"; return 1
+  fi
+  rm -f "$err"; printf '%s' "$u"
+}
+
+_connect_login_ask() {  # <caller> <site> <url>
+  local caller="$1" site="$2" url="$3" host name first=signin now asks why="" vault="" kbf o resp sent=0
+  _valid_site "$site" && [[ "$site" != "$PUBLIC_SITE" ]] \
+    || die "$E_USAGE" "'$site' is not a site a person can log in to"
+  [[ -z "$url" ]] || _connect_page_ok "$site" "$url" || die "$E_USAGE" "--url must be an http(s) page on $site"
+  _connect_channel "$caller" \
+    || die "$E_UNAVAILABLE" "seat '$caller' has no paired Telegram channel, so there is nobody to ask. Never ask for the password in chat: the owner saves the login in the 5dive app's Vault."
+  [[ "$CONNECT_TG_TYPE" == claude ]] \
+    || die "$E_UNAVAILABLE" "this seat's Telegram bridge ($CONNECT_TG_TYPE) cannot relay a sign-in tap yet. Never ask for the password in chat: the owner saves the login in the 5dive app's Vault."
+  [[ -n "$CONNECT_TG_OWNERS" ]] \
+    || die "$E_UNAVAILABLE" "seat '$caller' has no paired owner on Telegram yet, so there is nobody to ask."
+
+  host="${url:-$(_site_url "$site")}"; host="${host#*://}"; host="${host%%/*}"; host="${host%%\?*}"; host="${host%%#*}"
+  host="${host##*@}"; host="${host%%:*}"; host="${host,,}"; host="${host#www.}"
+  name="$(_saved_name_for_host "$host")"
+  now=$(date -u +%s); asks="$CONNECT_DIR/login-asks"
+  mkdir -p "$CONNECT_DIR" && chmod 700 "$CONNECT_DIR" || die "$E_UNAVAILABLE" "cannot create $CONNECT_DIR"
+  awk -v h="$host" -v t="$(( now - LOGIN_ASK_WINDOW ))" '$1 == h && $2 + 0 >= t { f = 1 } END { exit !f }' "$asks" 2>/dev/null \
+    && first=vault
+
+  _connect_mint "$caller" "$site" login "" 1 "sign in to $host"
+  vault="$(_connect_vault_link "$name" 2>"$CONNECT_DIR/.vault-why.$$")" || { why="$(cat "$CONNECT_DIR/.vault-why.$$")"; vault=""; }
+  rm -f "$CONNECT_DIR/.vault-why.$$"
+
+  local t_ask t_tip b_in b_vault rec
+  if [[ "$CONNECT_TG_LANG" == ru ]]; then
+    t_ask="Чтобы я мог войти на ${host}, войдите один раз или сохраните вход в Сейф."
+    t_tip="Лучше заведите для агентов отдельный аккаунт. В вашем личном они смогут делать всё, что можете вы."
+    b_in="Войти один раз" b_vault="Сохранить в Сейф" rec=" (рекомендую)"
+  else
+    t_ask="So I can sign in to ${host}, sign in once or save the login in your Vault."
+    t_tip="Best to make a separate account for your agents. On your own account, they can do anything you can."
+    b_in="Sign in once" b_vault="Save in Vault" rec=" (recommended)"
+  fi
+  # The keyboard is built from stdin and handed to curl as a 0600 file, so the
+  # save link is on no command line while root holds it.
+  kbf="$CONNECT_DIR/.kb.$$"
+  ( umask 077; printf '%s' "$vault" | jq -Rsc --arg first "$first" --arg bin "$b_in" --arg v "$b_vault" --arg rec "$rec" \
+      --arg d "bconn:$CONNECT_CODE" '
+      . as $u
+      | {text: ($bin + (if $first == "signin" then $rec else "" end)), callback_data: $d} as $a
+      | (if $u == "" then null else {text: ($v + (if $first == "vault" then $rec else "" end)), url: $u} end) as $b
+      | {inline_keyboard: ((if $first == "vault" then [$b, $a] else [$a, $b] end) | map(select(. != null)) | map([.]))}' > "$kbf" ) \
+    || die "$E_UNAVAILABLE" "could not build the message; nobody was asked"
+  for o in $CONNECT_TG_OWNERS; do
+    resp=$(_connect_tg sendMessage --data-urlencode "chat_id=$o" --data-urlencode "text=${t_ask}"$'\n\n'"${t_tip}" \
+             --data-urlencode 'link_preview_options={"is_disabled":true}' --data-urlencode "reply_markup@$kbf")
+    [[ "$(jq -r '.ok // false' <<<"$resp" 2>/dev/null)" == true ]] && sent=$((sent + 1))
+  done
+  rm -f "$kbf"
+  (( sent > 0 )) || { rm -f "$CONNECT_CODE_FILE"; die "$E_UNAVAILABLE" "Telegram did not accept the message, so nobody was asked. Never ask for the password in chat."; }
+  ( umask 077; { awk -v t="$(( now - LOGIN_ASK_WINDOW ))" '$2 + 0 >= t' "$asks" 2>/dev/null || true; printf '%s %s\n' "$host" "$now"; } > "$asks.tmp" \
+      && mv -f "$asks.tmp" "$asks" ) || true
+
+  printf 'asked the owner to sign in to %s once or to save the login in their Vault as "%s" (%s message%s)%s.\n' \
+    "$host" "$name" "$sent" "$([[ $sent == 1 ]] || echo s)" \
+    "$([[ "$first" == vault ]] && printf '; %s was asked about in the last 7 days, so the Vault came first' "$host")"
+  [[ -n "$vault" ]] || printf 'The Vault button could not be made (%s), so only "Sign in once" was sent.\n' "${why:-no reason given}"
+  printf 'Never ask for the password in chat. On your next turn: after a sign-in, `5dive browser status %s`; after a save, fill by name: "saved":"%s.login", "%s.password" and, at a code prompt, "%s.2fa".\n' \
+    "$site" "$name" "$name" "$name"
+}
+# <<< DIVE-6973
 
 # Claim a code exactly once: the rename is atomic, so two taps (or a tap and a
 # replay) cannot both win.
@@ -9998,11 +10239,13 @@ cmd_connect_priv() {
              _connect_request "$CONNECT_CALLER" "${w[1]}" "${w[3]}" challenge "${w[2]}" ;;
     handoff) (( ${#w[@]} == 3 )) || die "$E_USAGE" "_connect handoff <site> <reason>"
              _connect_request "$CONNECT_CALLER" "${w[1]}" "${w[2]}" handoff ;;
+    login-ask) (( ${#w[@]} == 3 )) || die "$E_USAGE" "_connect login-ask <site> <url>"
+             _connect_login_ask "$CONNECT_CALLER" "${w[1]}" "${w[2]}" ;;
     tap)     (( ${#w[@]} == 3 )) || die "$E_USAGE" "_connect tap <code> <telegram user id>"
              _connect_tap "$CONNECT_CALLER" "${w[1]}" "${w[2]}" ;;
     done)    (( ${#w[@]} == 3 )) || die "$E_USAGE" "_connect done <code> <telegram user id>"
              _connect_done "$CONNECT_CALLER" "${w[1]}" "${w[2]}" ;;
-    *) die "$E_USAGE" "_connect: request, challenge, handoff, tap or done" ;;
+    *) die "$E_USAGE" "_connect: request, challenge, handoff, login-ask, tap or done" ;;
   esac
 }
 
@@ -10035,6 +10278,33 @@ cmd_connect_request() {
   fi
   if (( rc == 1 )) && [[ "${CONNECT_PRIV[0]}" == sudo ]] && ! sudo -n -l /usr/local/bin/5dive browser _connect >/dev/null 2>&1; then
     die "$E_PERM" "this seat has no grant to send a Connect request. Ask the owner to use Connected sites in the 5dive dashboard."
+  fi
+  return "$rc"
+}
+# `login-ask` — the agent's verb at a sign-in form with nothing saved (DIVE-6973).
+# Unprivileged, like connect-request, and through the same grant: root mints the
+# Connect code and the save link and sends the one message.
+cmd_login_ask() {
+  local site="" url="" rc=0
+  while (($#)); do
+    case "$1" in
+      --url=*) url="${1#*=}" ;;
+      -h|--help)
+        printf '%s login-ask <site> [--url=<sign-in page>]\n' "$PROG"
+        printf '  At a sign-in form with nothing saved: one owner message with "Sign in once" (recommended)\n'
+        printf '  and "Save in Vault". A second ask for the site within 7 days puts the Vault first.\n'
+        printf '  Never ask for a password in chat. Next turn: fill "saved":"<name>.login" / .password / .2fa.\n'
+        return 0 ;;
+      -*) die "$E_USAGE" "unknown flag: $1" ;;
+      *) [[ -z "$site" ]] || die "$E_USAGE" "one site at a time"; site="$1" ;;
+    esac; shift
+  done
+  [[ -n "$site" ]] || die "$E_USAGE" "which site? e.g. 5dive browser login-ask github.com"
+  _valid_site "$site" && [[ "$site" != "$PUBLIC_SITE" ]] || die "$E_USAGE" "'$site' is not a site a person can log in to"
+  [[ -z "$url" ]] || _connect_page_ok "$site" "$url" || die "$E_USAGE" "--url must be the http(s) sign-in page on $site, got: $url"
+  printf '%s\0' login-ask "$site" "$url" | "${CONNECT_PRIV[@]}" || rc=$?
+  if (( rc == 1 )) && [[ "${CONNECT_PRIV[0]}" == sudo ]] && ! sudo -n -l /usr/local/bin/5dive browser _connect >/dev/null 2>&1; then
+    die "$E_PERM" "this seat has no grant to message the owner. Never ask for the password in chat: the owner saves the login in the 5dive app's Vault."
   fi
   return "$rc"
 }
@@ -10847,6 +11117,7 @@ case "${1:-}" in
   viewer-redeem) shift; cmd_viewer_redeem "$@" ;;
   viewer-revoke) shift; cmd_viewer_revoke "$@" ;;
   connect-request) shift; cmd_connect_request "$@" ;;
+  login-ask) shift; cmd_login_ask "$@" ;;
   login-link) shift; cmd_login_link "$@" ;;
   handoff) shift; cmd_handoff "$@" ;;
   # Not in usage: the privileged half, reached only as `sudo -n … browser _connect`.

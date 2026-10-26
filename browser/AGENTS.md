@@ -328,11 +328,14 @@ gate to file so the owner can paste the seed on the box's one-time link. Never a
 in chat.
 
 **A login the owner saved.** To sign in or fill in the owner's details, name what they saved
-instead of typing it: `{"op":"fill","selector":"ref=textbox/Password","saved":"linkedin-password"}`
-in an `act`. The value is typed into the page and never shown to you: not in the output, the page
-text or a picture. `sudo 5dive secret saved ls` lists the names. Nothing saved under that name?
-Ask the owner to save it in the 5dive app (Settings, Tools, Saved passwords), which sends them a
-one-time link. Never ask for a password in chat.
+instead of typing it: `{"op":"fill","selector":"ref=textbox/Password","saved":"github.password"}`
+in an `act`. A login item has fields: `<name>.login`, `<name>.password` and `<name>.2fa`, which
+types the current 6-digit code; a bare `"saved":"<name>"` is a one-value item. The value is typed
+into the page and never shown to you: not in the output, the page text or a picture.
+`sudo 5dive secret saved ls` lists the names. Nothing saved for the site? Run
+`5dive browser login-ask <site>`: the owner gets one message with "Sign in once" (recommended)
+and "Save in Vault" (a one-time page on the box); a second ask for the site within 7 days puts
+the Vault first. On your next turn, check the login or fill by name. Never ask for a password in chat.
 
 ## What will actually go wrong
 

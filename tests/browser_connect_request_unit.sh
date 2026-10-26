@@ -23,6 +23,7 @@ trap 'rc=$?; [[ -n "$SRV_PID" ]] && kill "$SRV_PID" 2>/dev/null; rm -rf "$TMP"; 
 PASS=0; FAIL=0
 t()  { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL: %s\n   expected: %s\n   got:      %s\n' "$1" "$2" "$3"; fi; }
 tc() { if [[ "$3" == *"$2"* ]]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL: %s\n   expected to contain: %s\n   got: %s\n' "$1" "$2" "$3"; fi; }
+has_() { [[ "$2" == *"$1"* ]] && echo yes || echo no; }
 tn() { if [[ "$3" != *"$2"* ]]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL: %s\n   expected NOT to contain: %s\n   got: %s\n' "$1" "$2" "$3"; fi; }
 
 command -v jq >/dev/null && command -v python3 >/dev/null && command -v curl >/dev/null \
@@ -598,6 +599,111 @@ out=$("$BROWSER" connect-request booking.com 2>&1); rc=$?
 t  "O8 an owner outside allowFrom: refused, nobody messaged" "69 " "$rc $(sent_to)"
 printf '{"dmPolicy":"allowlist","allowFrom":["%s"],"groups":{}}\n' "$OWNER" >"$ACC"
 
+# ---- LA: login-ask (DIVE-6973) — sign in once, or save it in the Vault -----------
+# One owner message, two buttons in order, the save link only in a URL button,
+# the order swapped on a second ask for the host within 7 days, and no word in it
+# that asks for a password.
+cat >"$TMP/fake-5dive" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE5_LOG"
+[[ -f "$FAKE_CTL.nolink" ]] && { echo "error: this box has no https name an owner's browser can reach" >&2; exit 5; }
+for a in "$@"; do
+  [[ "$a" == --pair && -f "$FAKE_CTL.nopair" ]] && { echo "error: unknown flag: --pair" >&2; exit 2; }
+done
+save=""; for a in "$@"; do [[ "$a" == --save=* ]] && save="${a#*=}"; done
+jq -nc --arg u "https://secrets.box.test/TOK-ONE-TIME-$save" --arg s "$save" '{ok:true, data:{url:$u, save:$s}}'
+SH
+chmod +x "$TMP/fake-5dive"
+export FIVEDIVE_BROWSER_SAVED_CLI="$TMP/fake-5dive" FAKE5_LOG="$TMP/fake5.log"
+lmsg() { jq -c 'select(.path|test("sendMessage"))' "$TMP/stub.log" | tail -1; }
+ltext() { lmsg | jq -r '.form.text'; }
+lkb() { lmsg | jq -r '.form.reply_markup' | jq -c "$1"; }
+lareset() { reset; : >"$FAKE5_LOG"; rm -f "$TMP"/ctl.{nolink,nopair} "$TMP/req/login-asks"; }
+NOPW() {  # the owner's message never asks for a password, in either language
+  local x="${1,,}"
+  [[ "$x" != *password* && "$x" != *пароль* && "$x" != *"send me"* && "$x" != *пришли* ]] && echo clean || echo ASKS
+}
+
+lareset
+out=$("$BROWSER" login-ask github.com 2>&1); rc=$?
+t  "LA1 login-ask exits 0, one message to the owner" "0 1 $OWNER" "$rc $(jq -c 'select(.path|test("sendMessage"))' "$TMP/stub.log" | wc -l) $(lmsg | jq -r .form.chat_id)"
+tc "LA1 the ask, in English" "So I can sign in to github.com, sign in once or save the login in your Vault." "$(ltext)"
+tc "LA1 the separate-account line" "Best to make a separate account for your agents. On your own account, they can do anything you can." "$(ltext)"
+t  "LA2 buttons in order: Sign in once (recommended), then Save in Vault" \
+   '["Sign in once (recommended)","Save in Vault"]' "$(lkb '[.inline_keyboard[][0].text]')"
+LCODE=$(lkb '.inline_keyboard[0][0].callback_data' | tr -d '"' | sed 's/^bconn://')
+t  "LA2 Sign in once is the Connect flow's button (a live request code)" "yes" "$([[ "$LCODE" =~ ^[0-9a-f]{48}$ ]] && echo yes || echo no)"
+t  "LA2 Save in Vault is a URL button with the box's pair save page for github" \
+   '"https://secrets.box.test/TOK-ONE-TIME-github"' "$(lkb '.inline_keyboard[1][0].url')"
+t  "LA2 ...minted by root as a pair page" "--json secret link --save=github --pair" "$(cat "$FAKE5_LOG")"
+t  "LA3 the one-time link is not in the text, and previews are off" "no true" \
+   "$(has_ 'secrets.box.test' "$(ltext)") $(lmsg | jq -r '.form.link_preview_options' | jq -r '.is_disabled')"
+t  "LA3 ...and the agent never sees it" no "$(has_ 'TOK-ONE-TIME' "$out")"
+t  "LA4 the owner's message asks for no password" clean "$(NOPW "$(ltext) $(lkb '[.inline_keyboard[][0].text]')")"
+t  "LA4 ...and the agent is told never to ask in chat, and the refs to fill" "yes yes no no" \
+   "$(has_ 'Never ask for the password in chat' "$out") $(has_ '"saved":"github.login", "github.password"' "$out") $(has_ 'send me the password' "${out,,}") $(has_ 'пришли пароль' "$out")"
+out2=$(priv tap "$LCODE" "$OWNER" 2>&1); rc=$?
+t  "LA5 the owner's tap on Sign in once opens the login link, as connect-request's does" "0 1" "$rc $(binds)"
+
+# A second ask for the same host within 7 days: the Vault comes first, recommended.
+reset; : >"$FAKE5_LOG"
+out=$("$BROWSER" login-ask github.com --url=https://github.com/login 2>&1); rc=$?
+t  "LA6 second ask within 7 days: Save in Vault first and recommended" \
+   '0 ["Save in Vault (recommended)","Sign in once"]' "$rc $(lkb '[.inline_keyboard[][0].text]')"
+tc "LA6 ...and the agent is told why" "so the Vault came first" "$out"
+t  "LA6 the Sign in once button is still the Connect code" yes \
+   "$([[ "$(lkb '.inline_keyboard[1][0].callback_data' | tr -d '"')" =~ ^bconn:[0-9a-f]{48}$ ]] && echo yes || echo no)"
+# Another host is its own count.
+reset
+out=$("$BROWSER" login-ask booking.com 2>&1)
+t  "LA7 another host's first ask: Sign in once first" '"Sign in once (recommended)"' "$(lkb '.inline_keyboard[0][0].text')"
+# An ask older than 7 days does not count.
+printf 'github.com %s\n' "$(( $(date -u +%s) - 8 * 86400 ))" >"$TMP/req/login-asks"
+reset
+out=$("$BROWSER" login-ask github.com 2>&1)
+t  "LA8 an ask 8 days ago: Sign in once first again" '"Sign in once (recommended)"' "$(lkb '.inline_keyboard[0][0].text')"
+t  "LA8 ...and the stale line is dropped from the record" "1" "$(grep -c '^github.com ' "$TMP/req/login-asks")"
+
+# The owner's language: Russian when their Telegram is.
+LANGF="$TMP/home/.claude/channels/telegram/lite-lang"
+printf 'ru\n' >"$LANGF"
+lareset
+out=$("$BROWSER" login-ask github.com 2>&1); rc=$?
+tc "LA9 RU: the ask" "Чтобы я мог войти на github.com, войдите один раз или сохраните вход в Сейф." "$(ltext)"
+tc "LA9 RU: the separate-account line" "отдельный аккаунт" "$(ltext)"
+t  "LA9 RU: the buttons, in order" '["Войти один раз (рекомендую)","Сохранить в Сейф"]' "$(lkb '[.inline_keyboard[][0].text]')"
+t  "LA9 RU: asks for no password" clean "$(NOPW "$(ltext) $(lkb '[.inline_keyboard[][0].text]')")"
+reset
+out=$("$BROWSER" login-ask github.com 2>&1)
+t  "LA9 RU: a second ask puts the Vault first" '["Сохранить в Сейф (рекомендую)","Войти один раз"]' "$(lkb '[.inline_keyboard[][0].text]')"
+rm -f "$LANGF"
+
+# An older CLI with no pair page: a one-field save link, still a button.
+lareset; : >"$TMP/ctl.nopair"
+out=$("$BROWSER" login-ask github.com 2>&1); rc=$?
+t  "LA10 CLI without --pair: a plain save link, still the second button" \
+   '0 "https://secrets.box.test/TOK-ONE-TIME-github"' "$rc $(lkb '.inline_keyboard[1][0].url')"
+tc "LA10 ...it asked for the pair first" "--save=github --pair" "$(cat "$FAKE5_LOG")"
+# No save page to be had: Sign in once alone, and the agent is told why.
+lareset; : >"$TMP/ctl.nolink"
+out=$("$BROWSER" login-ask github.com 2>&1); rc=$?
+t  "LA11 no save page: only Sign in once is sent" '0 ["Sign in once (recommended)"]' "$rc $(lkb '[.inline_keyboard[][0].text]')"
+tc "LA11 ...and the agent hears why" "The Vault button could not be made (this box has no https name" "$out"
+# Telegram refuses: nobody asked, nothing recorded, so the next ask is a first.
+lareset; : >"$TMP/ctl.tgfail"
+out=$("$BROWSER" login-ask github.com 2>&1); rc=$?
+t  "LA12 Telegram refuses: exit 69, no ask recorded" "69 0" "$rc $(grep -c '^github.com ' "$TMP/req/login-asks" 2>/dev/null || echo 0)"
+rm -f "$TMP/ctl.tgfail"
+# The name a site gets, and what is refused.
+lareset
+out=$("$BROWSER" login-ask bbc.co.uk --url=https://www.bbc.co.uk/signin 2>&1); rc=$?
+t  "LA13 a site's item name: bbc.co.uk -> bbc" "0 --json secret link --save=bbc --pair" "$rc $(cat "$FAKE5_LOG")"
+reset
+out=$("$BROWSER" login-ask github.com --url=https://evil.test/login 2>&1); rc=$?
+t  "LA14 --url on another site is refused, nobody asked" "64 0" "$rc $(jq -c 'select(.path|test("sendMessage"))' "$TMP/stub.log" | wc -l)"
+lareset
+unset FIVEDIVE_BROWSER_SAVED_CLI
+
 # ---- S: the seams are not a door under root -------------------------------------------
 # EVERY top-level non-root block, not the first one: the on-demand serve's seams
 # (DIVE-5389) live in a second block, and an awk that exits at the first `fi`
@@ -605,7 +711,8 @@ printf '{"dmPolicy":"allowlist","allowFrom":["%s"],"groups":{}}\n' "$OWNER" >"$A
 seam_block=$(awk '/^if \[\[ \$EUID -ne 0 \]\]; then$/{p=1} p{print} p&&/^fi$/{p=0}' "$BROWSER")
 t  "S0 the scan reads every non-root block" "$(grep -c '^if \[\[ \$EUID -ne 0 \]\]; then$' "$BROWSER")" "$(grep -c '^if \[\[ \$EUID -ne 0 \]\]; then$' <<<"$seam_block")"
 for v in FIVEDIVE_BROWSER_CONNECT_DIR FIVEDIVE_CONNECTOR_DIR FIVEDIVE_CONNECTORD_ENV FIVEDIVE_PROVISIONING_ENV FIVEDIVE_SHELLD_URL FIVEDIVE_TELEGRAM_API FIVEDIVE_BROWSER_CONNECT_SELF FIVEDIVE_BROWSER_CONNECT_PRIV \
-         FIVEDIVE_BROWSER_SSH_USER FIVEDIVE_BROWSER_SSH_ADDR FIVEDIVE_BROWSER_CONNECT_LOOK_S FIVEDIVE_BROWSER_WAKE_PRIV FIVEDIVE_BROWSER_SERVE_MIN_MB FIVEDIVE_BROWSER_MEMINFO FIVEDIVE_BROWSER_SUDOERS_DIR FIVEDIVE_BROWSER_VISUDO; do
+         FIVEDIVE_BROWSER_SSH_USER FIVEDIVE_BROWSER_SSH_ADDR FIVEDIVE_BROWSER_CONNECT_LOOK_S FIVEDIVE_BROWSER_WAKE_PRIV FIVEDIVE_BROWSER_SERVE_MIN_MB FIVEDIVE_BROWSER_MEMINFO FIVEDIVE_BROWSER_SUDOERS_DIR FIVEDIVE_BROWSER_VISUDO \
+         FIVEDIVE_BROWSER_SAVED_CLI FIVEDIVE_BROWSER_SAVED_ROOT_SEAM FIVEDIVE_BROWSER_TOTP_MIN_LEFT_S; do
   t "S1 $v is used at all (a seam the file never reads grades nothing)" 1 "$(( $(grep -c "$v" "$BROWSER") > 0 ))"
   t "S1 $v is read only inside the non-root block" "$(grep -c "$v" "$BROWSER")" "$(grep -c "$v" <<<"$seam_block")"
 done
