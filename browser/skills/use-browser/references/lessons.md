@@ -38,3 +38,6 @@ Part of the use-browser skill. Read it before a form, a sign-up, a post or an up
 - **A site that flags the account as automated means stop there for the day.** After a captcha, a 403 or an "unusual activity" page on a site where you post, tell the owner and do nothing more on that site that day. Space later posts hours apart.
 - **A click can land on a different page than you meant**, like a notification that opens the feed instead of the post. Check the URL bar or title before you record a link or id from it; never guess one.
 - **An upsell or "verify your identity" prompt after an action is not the job.** Decline it ("Not now"); never start it.
+- **A mis-click can open a look-alike domain** (one letter missing, a scam or gambling page). After every click that leaves the page, check the host in the URL bar, not only after a go-to. Type nothing on a host you did not mean; go back. Shoot before you click near a banner or cover photo.
+- **A text editor can change what you type.** In many post and comment boxes, Enter after a list line adds a new bullet. Break lines with `shift+Enter`, then read the saved text back before you call it posted.
+- **Text saved through a web form can come back with different line endings** (CRLF) and no final newline. Compare the words, or normalise line endings and trailing space, before you call a byte check failed.
