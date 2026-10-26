@@ -9489,7 +9489,11 @@ User=caddy
 Group=caddy
 StateDirectory=$LINK_TLS_UNIT
 Environment=HOME=/var/lib/$LINK_TLS_UNIT XDG_DATA_HOME=/var/lib/$LINK_TLS_UNIT XDG_CONFIG_HOME=/var/lib/$LINK_TLS_UNIT
-ExecStart=/usr/bin/caddy run --config $LINK_STATE/Caddyfile --adapter caddyfile
+# Handed in, not read in place (DIVE-6980): /var/lib/5dive is root:<seat> 2750 and
+# holds the box's secrets, so user caddy cannot reach $LINK_STATE. systemd reads
+# the file as root and gives caddy its own read-only copy under %d.
+LoadCredential=Caddyfile:$LINK_STATE/Caddyfile
+ExecStart=/usr/bin/caddy run --config %d/Caddyfile --adapter caddyfile
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes

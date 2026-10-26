@@ -8,6 +8,10 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — login links turn on for a self-hosted box: the HTTPS front can read its own config (DIVE-6980), 1.58.1
+
+`sudo 5dive browser login-link enable --via=ip` (and `--via=sslip`, `--via=domain`) ended in "no valid certificate ... after 2 minutes" on every fresh self-hosted box. The certificate was never the cause: the HTTPS unit runs Caddy as user `caddy` with `--config /var/lib/5dive/browser-link/Caddyfile`, and `/var/lib/5dive` is `root:<seat> 2750`, so Caddy could not reach its config and restarted every 5 s. The unit now hands the Caddyfile in with `LoadCredential=` and runs `--config %d/Caddyfile`: systemd reads it as root and gives Caddy its own read-only copy. `/var/lib/5dive` keeps its permissions, since it holds the box's secrets. Re-run `login-link enable` to rewrite the unit; a box that worked around it with `setfacl -m u:caddy:x /var/lib/5dive` can drop that ACL. `tests/browser_login_link_unit.sh` E13 checks the unit's user can read the config it names, with the old in-place path as the negative control.
+
 ### Changed — the page map reaches inside frames, and a step follows a ref into one (DIVE-6966), 1.58.0
 
 The third gap from DIVE-6965's cause table. Chase's IRA calculator sits in a cross-origin iframe: `snapshot` listed none of its controls, and OpenClaw passed by snapshotting the frame and pressing ArrowUp on each slider. Now (`lib/aria.cjs`):

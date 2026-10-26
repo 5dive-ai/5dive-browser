@@ -191,6 +191,33 @@ tc "E8 ... from a copy, not the plugin's upgradable dir" "ExecStart=/usr/bin/pyt
 t  "E8 ... and the copy is there" 0 "$(cmp -s "$SERVER" "$TMP/link/lib/login-link-server.py"; echo $?)"
 tc "E8 the HTTPS unit is caddy's user" $'User=caddy\nGroup=caddy' "$(cat "$U/5dive-browser-link-tls.service")"
 tc "E8 ... with no new privileges" "NoNewPrivileges=yes" "$(cat "$U/5dive-browser-link-tls.service")"
+# E13 (DIVE-6980): can the HTTPS unit's user read the config its ExecStart names?
+# A fresh self-hosted box keeps /etc/5dive and /var/lib/5dive at root:<seat> 2750
+# (measured on the DIVE-6902 trial box and on poke-two), and user caddy is in
+# neither group, so a --config under either is unreadable and caddy exits 1 on a
+# 5 s restart loop. Only a credential works: systemd (root) reads its source.
+caddy_can_read_config() {  # <unit text> -> readable | unreadable:<why>
+  local unit="$1" cfg src
+  cfg=$(sed -n 's/^ExecStart=.* --config \([^ ]*\).*/\1/p' <<<"$unit")
+  if [[ "$cfg" == %d/* ]]; then
+    src=$(sed -n "s/^LoadCredential=${cfg#%d/}://p" <<<"$unit")
+    [[ "$src" == "$TMP/link/state/Caddyfile" ]] && { echo readable; return; }
+    echo "unreadable:no LoadCredential= for ${cfg#%d/} from the Caddyfile enable writes (got '${src}')"; return
+  fi
+  cfg="/var/lib/5dive/browser-link${cfg#"$TMP/link/state"}"   # the seam's state dir is the box's
+  case "$cfg" in
+    /var/lib/5dive/*|/etc/5dive/*) echo "unreadable:$cfg is under a root:<seat> 2750 dir" ;;
+    *) echo readable ;;
+  esac
+}
+TLSU=$(cat "$U/5dive-browser-link-tls.service")
+t  "E13 the HTTPS unit's user can read the config it runs" readable "$(caddy_can_read_config "$TLSU")"
+tc "E13 ... handed in as a credential from the Caddyfile enable writes" "LoadCredential=Caddyfile:$TMP/link/state/Caddyfile" "$TLSU"
+tc "E13 ... and caddy runs that copy" "ExecStart=/usr/bin/caddy run --config %d/Caddyfile --adapter caddyfile" "$TLSU"
+OLDU=$(grep -v '^LoadCredential=' <<<"$TLSU" | sed "s#--config %d/Caddyfile#--config $TMP/link/state/Caddyfile#")
+tc "E13 NEGATIVE CONTROL: the pre-fix unit (config read in place) is unreadable" "unreadable:/var/lib/5dive/browser-link/Caddyfile" "$(caddy_can_read_config "$OLDU")"
+NOCRED=$(grep -v '^LoadCredential=' <<<"$TLSU")
+tc "E13 NEGATIVE CONTROL: %d with no LoadCredential= is unreadable" "unreadable:no LoadCredential=" "$(caddy_can_read_config "$NOCRED")"
 
 out=$("$BROWSER" login-link enable --via=sslip 2>&1); rc=$?
 t  "E9 --via=sslip turns on, as <dashed ip>.sslip.io" "0 LINK_HOST=192-0-2-10.sslip.io" "$rc $(grep '^LINK_HOST=' "$FIVEDIVE_BROWSER_LINK_CONF")"
