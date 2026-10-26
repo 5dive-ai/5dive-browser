@@ -8,6 +8,18 @@ that file stays where it is.
 
 ## Unreleased
 
+### Changed — the page map reaches inside frames, and a step follows a ref into one (DIVE-6966), 1.57.0
+
+The third gap from DIVE-6965's cause table. Chase's IRA calculator sits in a cross-origin iframe: `snapshot` listed none of its controls, and OpenClaw passed by snapshotting the frame and pressing ArrowUp on each slider. Now (`lib/aria.cjs`):
+
+- **Every drawn child frame is walked**, cross-origin too, with the same walk through Playwright's handle on it (nested up to 3 deep, the first 20 frames, 3 s each). Hidden frames and 1x1 tracking pixels are skipped.
+- **A frame's refs name the frame**: `ref=frame:<title, aria-label, name, id or host> >> slider/Annual contribution`. Two sibling frames with one name take `#n`. Each frame counts its own `#n`, so no ref outside a frame changes.
+- **Every step op follows it.** The ref resolves to one selector that enters the frame (Playwright's `internal:control=enter-frame`, what `frameLocator` builds), so `fill`, `type`, `click`, `press`, `select`, `upload`, `wait_for` and the re-find need no frame code. The owner's check (pay, publish, send, delete) reads the control in its frame.
+- **`--expect` reads frame text** and field values, so a result shown inside the calculator verifies.
+- A step on the page's own control does not visit frames, so it costs what it did.
+
+Live on the rig's Chrome, Chase's traditional IRA calculator: 80 → 88 refs, sliders 0 → 7, all as `frame:traditional-ira-calculator >> slider/…`; `press ArrowUp` on the first moved it 25 → 26, the owner's check read it in its frame, and `snapshot` listed exactly what the walk did. The walk took 89 → 174 ms. Unit file: `browser_frames_unit.sh` 38/38, four mutants each red.
+
 ### Changed — the page map lists what a person can click: shadow roots and role-less clickables (DIVE-6965), 1.56.0
 
 On bench v3 OpenClaw passed 14 tasks that 5dive failed. On 4 of them the control was on the page and `snapshot --interactive` did not list it, so the agent guessed selectors until it gave up. OpenClaw's snapshot listed them. The walk now does too (`lib/aria.cjs`, still one walk for `tree`, `snapshot` and a step's `ref=`):

@@ -31,6 +31,10 @@ jobs:
       # A DOM shim with an inherited cursor, pure node, three mutants.
       - name: page map harness
         run: bash tests/browser_page_map_unit.sh
+      # DIVE-6966: the walk enters drawn child frames; a frame ref resolves to one
+      # selector that enters it. A page/frame shim, pure node, four mutants.
+      - name: frames harness
+        run: bash tests/browser_frames_unit.sh
       # DIVE-6317: Cloudflare's "Just a moment..." is watched in the same page load
       # before it is a stop. A fake page, pure node.
       - name: interstitial wait harness
