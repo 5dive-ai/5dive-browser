@@ -26,7 +26,8 @@ needs nothing connected.
    `{"op":"goto","url":…}` `{"op":"click","selector":…}` `{"op":"fill","selector":…,"value":…}`
    `{"op":"type","selector":…,"value":…}` `{"op":"select","selector":…,"value":…}`
    `{"op":"press","selector":…,"key":"Enter"}` `{"op":"wait_for","selector":"text=…"}`.
-   A selector is `ref=<role>/<name>` from the snapshot. Use `type` for search boxes and
+   A selector is `ref=<role>/<name>` from the snapshot; a control inside an embedded frame is
+   `ref=frame:<frame> >> <role>/<name>`, copied whole. Use `type` for search boxes and
    autocompletes that react to keystrokes, and `fill` for plain inputs. An act with a URL loads
    the page fresh, so fill and submit a form in one act; without a URL it carries on in the page
    the browser is on. **An act prints what it changed**: the refs that appeared (`+ ref=…`), the

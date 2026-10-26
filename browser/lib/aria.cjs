@@ -268,12 +268,168 @@ const REF_PREFIX = 'ref=';
 const isRef = (s) => typeof s === 'string' && s.startsWith(REF_PREFIX);
 const refBody = (s) => s.slice(REF_PREFIX.length);
 
-async function walk(page, { interactiveOnly = false, mark = null } = {}) {
-  return page.evaluate(pageWalk, {
-    interactiveOnly,
-    interactiveRoles: INTERACTIVE,
-    mark,
+// ---- A CONTROL INSIDE A FRAME (DIVE-6966) ------------------------------------
+//
+// On bench v3 Chase's IRA calculator lives in a cross-origin iframe: `snapshot`
+// listed 0 of its controls, and OpenClaw passed by snapshotting the frame and
+// pressing ArrowUp on each slider. document.querySelectorAll never enters a
+// frame, and a cross-origin one cannot be reached from the page's script at all,
+// so each drawn child frame gets the SAME walk through Playwright's own handle on
+// it, and its refs name the frame they are in:
+//
+//     ref=frame:IRA calculator >> slider/Annual contribution
+//
+// A FRAME IS NAMED BY ITS ELEMENT: title, aria-label, name, id, else the host it
+// loads. Two siblings with one name take #n, as a ref does. Nested frames chain.
+// The page's own refs are untouched: each frame counts its own #n, so a frame
+// that comes or goes never renumbers a ref outside it.
+//
+// THE STEP NEEDS NO FRAME CODE. The ref resolves to one selector that enters the
+// frame (`<frame> >> internal:control=enter-frame >> <element>`, the string
+// Playwright's frameLocator builds), and page.fill/click/press/waitForSelector
+// and page.locator all follow it. Only what runs a function in the page by hand
+// (stepRisk) resolves the frame first: frameFor below.
+//
+// A walk that resolves a ref on the page itself does not visit frames, so a step
+// on a page's own control costs what it did. Frames are walked only to list them
+// (tree, snapshot, the re-read after an act) and to resolve a ref that names one.
+const FRAME_PREFIX = 'frame:';
+const FRAME_SEP = ' >> ';
+const ENTER_FRAME = ' >> internal:control=enter-frame >> ';
+const FRAMES_MAX = 20;          // an ad-heavy page draws dozens; the first 20 drawn are walked
+const FRAME_DEPTH_MAX = 3;
+const FRAME_WALK_MS = 3000;     // a frame still loading answers nothing rather than holding the walk
+let frameSeq = 0;
+
+function splitRef(ref) {  // 'frame:A >> button/Go' -> { frames: ['A'], el: 'button/Go' }
+  const parts = String(ref).split(FRAME_SEP);
+  let i = 0;
+  while (i < parts.length - 1 && parts[i].startsWith(FRAME_PREFIX)) i++;
+  return { frames: parts.slice(0, i).map((p) => p.slice(FRAME_PREFIX.length)), el: parts.slice(i).join(FRAME_SEP) };
+}
+const framePrefix = (chain) => chain.map((l) => FRAME_PREFIX + l + FRAME_SEP).join('');
+// A label can hold neither the separator nor a slash (stepRisk reads the ref's name after the first one).
+const frameLabel = (l) => String(l || '').replace(/>>/g, '>').replace(/\//g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+
+function settled(p, ms) {  // p's value, or null when it fails or takes longer than ms
+  let timer;
+  return Promise.race([
+    Promise.resolve(p).catch(() => null),
+    new Promise((r) => { timer = setTimeout(() => r(null), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+// In the page that holds the frame element: its name, or null when it is not drawn
+// (display:none, or a 1x1 tracking pixel).
+function _frameLabelIn(el) {
+  var st = el.ownerDocument.defaultView.getComputedStyle(el);
+  if (st && (st.display === 'none' || st.visibility === 'hidden')) return null;
+  var b = el.getBoundingClientRect();
+  if (b.width < 2 || b.height < 2) return null;
+  var host = '';
+  try { host = new URL(el.getAttribute('src') || '', location.href).hostname; } catch (e) { host = ''; }
+  return el.getAttribute('title') || el.getAttribute('aria-label') || el.getAttribute('name') || el.id || host || 'frame';
+}
+
+// Every drawn child frame, outermost first: [{ frame, chain: ['A', 'B#2'] }].
+async function frameList(page) {
+  if (!page || typeof page.mainFrame !== 'function') return [];
+  const out = [];
+  async function kids(parent, chain, depth) {
+    if (depth > FRAME_DEPTH_MAX || out.length >= FRAMES_MAX) return;
+    const children = typeof parent.childFrames === 'function' ? parent.childFrames() : [];
+    const labels = await Promise.all(children.map((f) => settled((async () => {
+      const h = await f.frameElement();
+      try { return frameLabel(await h.evaluate(_frameLabelIn)) || null; } finally { h.dispose().catch(() => {}); }
+    })(), FRAME_WALK_MS)));
+    const total = {}, seen = {};
+    labels.forEach((l) => { if (l) total[l] = (total[l] || 0) + 1; });
+    const mine = [];
+    children.forEach((f, i) => {
+      const l = labels[i];
+      if (!l) return;
+      seen[l] = (seen[l] || 0) + 1;
+      mine.push({ frame: f, chain: chain.concat(total[l] > 1 ? `${l}#${seen[l]}` : l) });
+    });
+    for (const m of mine) {
+      if (out.length >= FRAMES_MAX) return;
+      out.push(m);
+      await kids(m.frame, m.chain, depth + 1);
+    }
+  }
+  await kids(page.mainFrame(), [], 1);
+  return out;
+}
+
+// The walk of every drawn frame, its refs prefixed with the frame they are in.
+async function frameNodes(page, args, frames = null) {
+  const list = frames || await frameList(page);
+  const walks = await Promise.all(list.map((f) =>
+    settled(f.frame.evaluate(pageWalk, { ...args, mark: null, snapshot: false }), FRAME_WALK_MS)));
+  const nodes = [];
+  list.forEach((f, i) => {
+    const w = walks[i];
+    if (!w || !Array.isArray(w.nodes)) return;
+    const pre = framePrefix(f.chain);
+    w.nodes.forEach((n) => nodes.push({ ...n, ref: pre + n.ref }));
   });
+  return nodes;
+}
+
+// Mark mode for a ref that names a frame: the element is marked in its frame, each
+// frame element in the page that holds it, and the selector enters them in order.
+async function markInFrame(page, ref, interactiveOnly) {
+  const { frames: want, el } = splitRef(ref);
+  const args = { interactiveOnly, interactiveRoles: INTERACTIVE };
+  const list = await frameList(page);
+  const hit = list.find((f) => f.chain.join(FRAME_SEP) === want.join(FRAME_SEP));
+  if (!hit) return { nodes: await frameNodes(page, args, list), marker: null };
+  const w = await hit.frame.evaluate(pageWalk, { ...args, mark: el });
+  const pre = framePrefix(hit.chain);
+  const nodes = w.nodes.map((n) => ({ ...n, ref: pre + n.ref }));
+  if (!w.marker) return { nodes, marker: null };
+  const path = [];
+  for (let f = hit.frame; f.parentFrame(); f = f.parentFrame()) path.unshift(f);
+  const sels = [];
+  for (const f of path) {
+    const id = `f${(++frameSeq).toString(36)}${Date.now().toString(36)}`;
+    const h = await f.frameElement();
+    try { await h.evaluate((e, v) => e.setAttribute('data-5dive-frame', v), id); } finally { h.dispose().catch(() => {}); }
+    sels.push(`[data-5dive-frame="${id}"]`);
+  }
+  sels.push(`[data-5dive-ref="${w.marker}"]`);
+  return { nodes, marker: w.marker, sel: sels.join(ENTER_FRAME) };
+}
+
+// One page function in every drawn frame, the answers joined (the re-read's text).
+async function framesEval(page, fn, arg) {
+  const list = await frameList(page);
+  const got = await Promise.all(list.map((f) => settled(f.frame.evaluate(fn, arg), FRAME_WALK_MS)));
+  return got.filter(Boolean).map(String).join('\n');
+}
+
+// A selector that enters frames -> the frame it ends in and the selector there.
+async function frameFor(page, sel) {
+  const parts = String(sel).split(ENTER_FRAME);
+  if (parts.length === 1) return { at: page, sel };
+  let at = page;
+  for (const p of parts.slice(0, -1)) {
+    const h = await at.$(p);
+    if (!h) throw new Error(`the frame ${p} is no longer on the page`);
+    at = await h.contentFrame();
+    if (!at) throw new Error(`${p} is not a frame`);
+  }
+  return { at, sel: parts[parts.length - 1] };
+}
+
+async function walk(page, { interactiveOnly = false, mark = null } = {}) {
+  if (mark && splitRef(mark).frames.length) return markInFrame(page, mark, interactiveOnly);
+  const args = { interactiveOnly, interactiveRoles: INTERACTIVE };
+  const top = await page.evaluate(pageWalk, { ...args, mark });
+  if (mark || !top || !Array.isArray(top.nodes)) return top;
+  const more = await frameNodes(page, args);
+  if (more.length) top.nodes = top.nodes.concat(more);
+  return top;
 }
 
 // THE ATOMIC READ (DIVE-4653). One page.evaluate, one DOM instant, everything a
@@ -285,13 +441,20 @@ async function walk(page, { interactiveOnly = false, mark = null } = {}) {
 // Markdown, the links and the word count stay the pinned extractor's answer
 // about bytes we can hash and re-extract, rather than a second summariser living
 // in the page where nobody can check it.
+//
+// A frame's controls (DIVE-6966) are walked right after, not in the same instant:
+// a frame is another document, and only the page's own DOM goes to the extractor.
 async function snapshot(page, { interactiveOnly = false } = {}) {
-  return page.evaluate(pageWalk, {
+  const snap = await page.evaluate(pageWalk, {
     interactiveOnly,
     interactiveRoles: INTERACTIVE,
     mark: null,
     snapshot: true,
   });
+  if (!snap || !Array.isArray(snap.nodes)) return snap;
+  const more = await frameNodes(page, { interactiveOnly, interactiveRoles: INTERACTIVE });
+  if (more.length) snap.nodes = snap.nodes.concat(more);
+  return snap;
 }
 
 // ref=  ->  a CSS selector for the one element it names, or a refusal.
@@ -304,9 +467,10 @@ async function snapshot(page, { interactiveOnly = false } = {}) {
 // most expensive.
 async function resolveRef(page, sel) {
   const ref = refBody(sel);
-  const { nodes, marker } = await walk(page, { mark: ref });
+  const { nodes, marker, sel: framed } = await walk(page, { mark: ref });
+  if (framed) return framed;   // a control inside a frame (DIVE-6966)
   if (marker) return `[data-5dive-ref="${marker}"]`;
-  const roleOnly = ref.split('/')[0];
+  const roleOnly = refParts(ref).role;
   const near = nodes.filter((n) => n.role === roleOnly).slice(0, 8).map((n) => `ref=${n.ref}`);
   const hint = near.length
     ? ` Refs of that role on this page: ${near.join(', ')}.`
@@ -758,26 +922,28 @@ function cleanPayload(p) {
 async function stepRisk(page, step, sel) {
   if (!step || (step.op !== 'click' && step.op !== 'press')) return null;
   let cls = null, label = '';
+  let at = page, inSel = sel;   // a control inside a frame is read in its frame (DIVE-6966)
+  try { ({ at, sel: inSel } = await frameFor(page, sel)); } catch (e) { at = page; inSel = sel; }
   if (step.op === 'press') {
     const key = String(step.key || '');
     if (!/(^|\+)Enter$/i.test(key)) return null;
     if (/(Control|Meta|Ctrl|Cmd)\+/i.test(key)) { cls = 'send'; label = key; }
     else if (/^Enter$/i.test(key)) {
       let composer = false;
-      try { composer = (await page.evaluate(_composerIn, { sel, op: step.op, composerOf: true })) === true; } catch (e) { composer = false; }
+      try { composer = (await at.evaluate(_composerIn, { sel: inSel, op: step.op, composerOf: true })) === true; } catch (e) { composer = false; }
       if (composer) { cls = 'send'; label = `${key} in a composer with no form`; }
     }
   }
   if (!cls) {
     const refName = isRef(step.selector) ? refBody(step.selector).replace(/^[^/]*\//, '').replace(/#\d+$/, '') : '';
     let live = '';
-    try { live = await page.evaluate(_labelIn, { sel, op: step.op, riskOf: true }); } catch (e) { live = ''; }
+    try { live = await at.evaluate(_labelIn, { sel: inSel, op: step.op, riskOf: true }); } catch (e) { live = ''; }
     label = [refName, live].filter(Boolean).join(' | ').slice(0, 200);
     cls = classifyLabel(label);
   }
   if (!cls) return null;
   let payload = {};
-  try { payload = await page.evaluate(_payloadIn, { sel, op: step.op, cls, payloadOf: true }); } catch (e) { payload = {}; }
+  try { payload = await at.evaluate(_payloadIn, { sel: inSel, op: step.op, cls, payloadOf: true }); } catch (e) { payload = {}; }
   return { cls, label: cleanText(label), payload: cleanPayload(payload) };
 }
 
@@ -815,8 +981,9 @@ const REPICK_OP = { click: 'click', fill: 'fill', type: 'fill', select: 'select'
 const SELF_BROWSER = path.join(__dirname, '..', 'bin', 'browser');
 
 function refParts(ref) {  // 'button/Decline#2' -> { role: 'button', name: 'Decline' }
-  const role = ref.split('/')[0];
-  return { role, name: ref.slice(role.length + 1).replace(/#\d+$/, '') };
+  const el = splitRef(ref).el;   // a frame's ref is read past its frame (DIVE-6966)
+  const role = el.split('/')[0];
+  return { role, name: el.slice(role.length + 1).replace(/#\d+$/, '') };
 }
 
 // The by-name tier: EVERY node that qualifies, so the caller can see there were two.
@@ -841,10 +1008,11 @@ function nameMatches(nodes, ref) {
 // is that same field. Exactly one such ref on the page, or none is picked.
 const FIELD_ROLES = ['textbox', 'searchbox', 'combobox'];
 function fieldRoleMatch(nodes, ref) {
-  const role = ref.split('/')[0];
+  const { frames, el } = splitRef(ref);
+  const role = el.split('/')[0];
   if (!FIELD_ROLES.includes(role)) return null;
-  const rest = ref.slice(role.length);
-  const hits = FIELD_ROLES.filter((r) => r !== role).map((r) => r + rest)
+  const rest = el.slice(role.length);
+  const hits = FIELD_ROLES.filter((r) => r !== role).map((r) => framePrefix(frames) + r + rest)
     .filter((alt) => (nodes || []).some((x) => x.ref === alt));
   return hits.length === 1 ? hits[0] : null;
 }
@@ -1185,6 +1353,9 @@ async function pageAfter(page, { settleMs = 0, waitFor = null, waitTimeoutMs = 3
     try { o.html = String(await page.content()); } catch (e) { /* recorded empty */ }
     try { o.text = String(await page.evaluate(_textIn, { textOf: true }) || ''); } catch (e) { /* recorded empty */ }
     try { o.values = String(await page.evaluate(_valuesIn, { valuesOf: true }) || ''); } catch (e) { /* recorded empty */ }
+    // And every drawn frame's (DIVE-6966): a value set in a calculator's frame is read there.
+    try { const t = await framesEval(page, _textIn, { textOf: true }); if (t) o.text += '\n' + t; } catch (e) { /* the page's own */ }
+    try { const v = await framesEval(page, _valuesIn, { valuesOf: true }); if (v) o.values = [o.values, v].filter(Boolean).join('\n'); } catch (e) { /* the page's own */ }
     return o;
   };
   const re = expectRe(expect);
@@ -1345,6 +1516,7 @@ module.exports = { INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSel
   onRef, refind, REFIND_OPS, _markFocusedIn, clickStep, FAILED_SETTLE_MS, COVERED_CLICK_MS,
   requestWatch, settleQuiet,
   isRef, render, REF_PREFIX,
+  splitRef, frameList, frameFor, FRAME_PREFIX, ENTER_FRAME,
   typeDelay, typeRefusal, typeKeys, TYPE_DELAY_DEFAULT, TYPE_DELAY_MAX,
   classifyLabel, stepRisk, pageAfter, stepErrorText, NEEDS_OWNER_PREFIX, E_NEEDS_OWNER, OWNER_ALLOWED_PREFIX,
   STEP_FAILED_PREFIX, failedStep,
