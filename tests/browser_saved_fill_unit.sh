@@ -47,7 +47,7 @@ BROWSER="$ROOT/browser/bin/browser"
 
 TMP="$(mktemp -d /tmp/d6844.XXXXXX)"
 _KILL=()
-trap 'rc=$?; for p in "${_KILL[@]}"; do kill "$p" 2>/dev/null; done; rm -rf "${TMP:-}"; echo "HARNESS-RC=$rc"' EXIT
+trap 'rc=$?; for p in "${_KILL[@]}"; do kill "$p" 2>/dev/null; done; rm -rf "${TMP:-}" 2>/dev/null || sudo -n rm -rf "${TMP:-}"; echo "HARNESS-RC=$rc"' EXIT
 
 PASS=0; FAIL=0; SKIP=0
 gha() {
@@ -118,6 +118,7 @@ export PWREC="$TMP/pw.jsonl"; : > "$PWREC"
 # its HTML, its text and its tree, so a scrub that did not run would leak it.
 export PWHTML="<html><body><form><input id=\"pw\" value=\"$(printf '%s' "$SECRET" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g')\"><p>typed: $SECRET</p></form></body></html>"
 export PWTEXT="typed: $SECRET"
+S_PWHTML="$PWHTML" S_PWTEXT="$PWTEXT"   # the S page; root's half (R) types on it again
 jq -nc --arg v "$SECRET" '{nodes:[{ref:"textbox/Password",role:"textbox",name:"Password",value:$v}],marker:"m-1"}' > "$TMP/walk.json"
 export PWWALK="$TMP/walk.json"
 
@@ -292,7 +293,7 @@ arm 'V6 a bound item on another site: refused, no _reveal, nothing typed' "yes y
 # V7: a field that is not one of the three, or a dangling dot: refused up front.
 arm 'V7a "github.token" is refused' 'refused untyped' "$(s5 '[{"op":"fill","selector":"#pw","saved":"github.token"}]')"
 arm 'V7b "github." is refused' 'refused untyped' "$(s5 '[{"op":"fill","selector":"#pw","saved":"github."}]')"
-unset PWHTML PWTEXT
+export PWHTML="$S_PWHTML" PWTEXT="$S_PWTEXT"
 
 # ================================================================ R  root's half
 if [[ $EUID -ne 0 ]] && sudo -n true 2>/dev/null; then
