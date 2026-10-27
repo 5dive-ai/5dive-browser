@@ -51,6 +51,10 @@ jobs:
       # sign-in; a fake google-chrome records which profile each render ran in.
       - name: page-join harness
         run: bash tests/browser_page_join_unit.sh
+      # DIVE-7075: setup after the hires gives each storeless registry seat its store.
+      # id, chown, systemctl and visudo faked: no account, unit or sudoers is touched.
+      - name: setup back-fill harness
+        run: bash tests/browser_setup_backfill_unit.sh
       # DIVE-4992: the agent-initiated Connect request and its privileged half.
       # Loopback stubs for Telegram and shelld, a fake relay-seat browser.
       - name: connect-request harness
