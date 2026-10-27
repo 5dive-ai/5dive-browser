@@ -118,6 +118,8 @@ printf 'CONNECTORD_TOKEN=connectord-secret-token-0123456789\n' >"$TMP/connectord
 printf 'FIVE_DOMAIN=box.example.5dive.ai\n' >"$TMP/provisioning.env"
 
 export FIVEDIVE_BROWSER_CONNECT_DIR="$TMP/req"
+# DIVE-7078: where a no-Telegram ask's readable summary goes, and the login hook.
+export FIVEDIVE_BROWSER_ASKS_DIR="$TMP/asks" FIVEDIVE_BROWSER_PROFILE_D="$TMP/profile.d/5dive-browser-asks.sh"
 export FIVEDIVE_CONNECTOR_DIR="$TMP/connectors"
 export FIVEDIVE_BROWSER_CONNECT_HOME="$TMP/home"
 export FIVEDIVE_CONNECTORD_ENV="$TMP/connectord.env"
@@ -532,7 +534,9 @@ out=$(FIVEDIVE_BROWSER_CONNECT_HOME="$TMP/nohome" priv handoff tiktok.com "solve
 t  "X8 no paired owner: still exits 0, nobody messaged" "0 0" "$rc $(grep -c sendMessage "$TMP/stub.log")"
 tc "X8 ... and the steps are PRINTED instead" "ssh -N -L 5900:127.0.0.1:5917 lodar@203.0.113.7" "$out"
 tc "X8 ... with how to hand the window back" "or run on the box: sudo -u $ME 5dive browser handoff tiktok.com --close" "$out"
-t  "X8 ... and no Done code is left behind" "" "$(ls "$TMP/req")"
+# DIVE-7078: the one code left is the owner's shell Done, which no button can claim.
+t  "X8 ... and the only Done code left is the login shell's" "1 1" "$(grep -l '^via=shell$' "$TMP"/req/[0-9a-f]* 2>/dev/null | wc -l) $(ls "$TMP"/req | grep -cE '^[0-9a-f]{64}$')"
+tc "X8 ... and the steps wait in the owner's login shell" "The steps wait in the owner's login shell on this box" "$out"
 
 reset; rm -rf "$TMP/req"/*; : >"$TMP/ctl.tgfail"
 out=$(priv handoff tiktok.com "" 2>&1); rc=$?
@@ -712,7 +716,7 @@ seam_block=$(awk '/^if \[\[ \$EUID -ne 0 \]\]; then$/{p=1} p{print} p&&/^fi$/{p=
 t  "S0 the scan reads every non-root block" "$(grep -c '^if \[\[ \$EUID -ne 0 \]\]; then$' "$BROWSER")" "$(grep -c '^if \[\[ \$EUID -ne 0 \]\]; then$' <<<"$seam_block")"
 for v in FIVEDIVE_BROWSER_CONNECT_DIR FIVEDIVE_CONNECTOR_DIR FIVEDIVE_CONNECTORD_ENV FIVEDIVE_PROVISIONING_ENV FIVEDIVE_SHELLD_URL FIVEDIVE_TELEGRAM_API FIVEDIVE_BROWSER_CONNECT_SELF FIVEDIVE_BROWSER_CONNECT_PRIV \
          FIVEDIVE_BROWSER_SSH_USER FIVEDIVE_BROWSER_SSH_ADDR FIVEDIVE_BROWSER_CONNECT_LOOK_S FIVEDIVE_BROWSER_WAKE_PRIV FIVEDIVE_BROWSER_SERVE_MIN_MB FIVEDIVE_BROWSER_MEMINFO FIVEDIVE_BROWSER_SUDOERS_DIR FIVEDIVE_BROWSER_VISUDO \
-         FIVEDIVE_BROWSER_SAVED_CLI FIVEDIVE_BROWSER_SAVED_ROOT_SEAM FIVEDIVE_BROWSER_TOTP_MIN_LEFT_S; do
+         FIVEDIVE_BROWSER_SAVED_CLI FIVEDIVE_BROWSER_SAVED_ROOT_SEAM FIVEDIVE_BROWSER_TOTP_MIN_LEFT_S FIVEDIVE_BROWSER_ASKS_DIR FIVEDIVE_BROWSER_PROFILE_D; do
   t "S1 $v is used at all (a seam the file never reads grades nothing)" 1 "$(( $(grep -c "$v" "$BROWSER") > 0 ))"
   t "S1 $v is read only inside the non-root block" "$(grep -c "$v" "$BROWSER")" "$(grep -c "$v" <<<"$seam_block")"
 done
