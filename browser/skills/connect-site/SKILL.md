@@ -75,7 +75,7 @@ You never see the link. Their answer comes back to you as a chat message; then r
 ask on a box can take about 2 minutes while it sets up its secure web address; if it cannot
 make one, the chat tells the owner to use their login shell (below) and you get a message.
 
-**On a self-hosted box (no 5dive domain) not linked to the app, with nobody paired on Telegram**, the same
+**On a self-hosted box (no 5dive domain) with nobody paired on Telegram**, not linked to the app, the same
 `connect-request` (and `--challenge`) still reaches the owner: the ask waits in their login
 shell on the box (DIVE-7078). Their next login lists it. `sudo 5dive browser asks open <site>`
 gives them the one-time login link, or the SSH steps to the same window when login links are
