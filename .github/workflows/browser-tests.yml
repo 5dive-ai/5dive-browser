@@ -99,6 +99,10 @@ jobs:
       # check is `unverifiable` not "Needs you", and the generic header check.
       - name: served probe and generic check harness
         run: bash tests/browser_served_probe_unit.sh
+      # DIVE-7079: two sites of one sign-in group are never probed at once (one
+      # Chrome per profile dir), and the shopify.com adapter's both halves.
+      - name: status group serial harness
+        run: bash tests/browser_status_group_serial_unit.sh
       # DIVE-5287: input mode. Routing through the real bin/browser with a fake
       # daemon, lib/x11.cjs unit arms, and LIVE arms against the runner's own
       # Xvfb + Chrome (real XTEST input, isTrusted, navigator.webdriver false).

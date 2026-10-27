@@ -2150,10 +2150,18 @@ _auth_status() {
   # was most of why 5dive was the slowest arm. A few at a time, not all at once:
   # every probe is a whole browser, on the same box as everything else. The lines
   # still print in site order, after the probes are done.
+  #
+  # ONE PROFILE DIRECTORY, ONE PROBE AT A TIME (DIVE-7079). Sites in a sign-in
+  # group are links to one `.group-<id>` directory (DIVE-6013), and Chrome runs
+  # one instance per --user-data-dir: on the Dropshipping trial google.com and
+  # shopify.com were probed at once and the second died on SingletonLock ("File
+  # exists"). So the side-by-side unit is the directory a site RESOLVES to: each
+  # job walks one directory's sites in series, and directories still run in
+  # parallel. Each site keeps its own probe and its own line.
   local jobs="${FIVEDIVE_BROWSER_STATUS_JOBS:-3}"
   [[ "$jobs" =~ ^[1-9][0-9]?$ ]] || die "$E_USAGE" "FIVEDIVE_BROWSER_STATUS_JOBS takes a number from 1 to 99; got: $jobs"
   local res; res=$(mktemp -d /tmp/5dive-browser-status.XXXXXXXX) || die "$E_UNAVAILABLE" "cannot stage the status probes"
-  local -a sites=()
+  local -a sites=() dirs=() profs=()
   for d in "$seat_dir"/*/; do
     [[ -d "$d" ]] || continue
     site=$(basename "$d")
@@ -2162,12 +2170,20 @@ _auth_status() {
     [[ -z "$only" || "$only" == "$site" ]] || continue
     found=1
     _audit "$d" 700
-    sites+=("$site")
+    sites+=("$site"); dirs+=("$d")
+    profs+=("$(readlink -f -- "$d" 2>/dev/null || printf '%s' "$d")")
+  done
+  local i j
+  for i in "${!sites[@]}"; do
+    for (( j = 0; j < i; j++ )); do [[ "${profs[$j]}" == "${profs[$i]}" ]] && continue 2; done
     while (( $(jobs -rp | wc -l) >= jobs )); do wait -n; done
-    ( _probe "$site" "$d" >"$res/${#sites[@]}.out"; printf '%s' "$?" >"$res/${#sites[@]}.rc" ) &
+    ( for (( j = i; j < ${#sites[@]}; j++ )); do
+        [[ "${profs[$j]}" == "${profs[$i]}" ]] || continue
+        _probe "${sites[$j]}" "${dirs[$j]}" >"$res/$((j + 1)).out"; printf '%s' "$?" >"$res/$((j + 1)).rc"
+      done ) &
   done
   wait
-  local i prc
+  local prc
   for i in "${!sites[@]}"; do
     prc=$(cat "$res/$((i + 1)).rc" 2>/dev/null) || prc=2
     printf '  %-20s %s\n' "${sites[$i]}" "$(cat "$res/$((i + 1)).out" 2>/dev/null)"

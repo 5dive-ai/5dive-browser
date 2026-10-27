@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a signed-in Shopify admin reads signed in, and two sites of one sign-in group are not probed at once (DIVE-7079), 1.58.7
+
+Two gaps from the Dropshipping Team trial (DIVE-6902). Both made `status` say a working login was gone, so the team stopped and waited for a person.
+
+- **`shopify.com` has an adapter.** With none, the generic check read the "Log in" link in shopify.com's public header and said "session expired" while admin.shopify.com was signed in. The adapter probes the admin. Measured on the trial box: two throwaway profiles land on accounts.shopify.com's login (behind a Cloudflare check from a server), which the logged-out marker matches; the signed-in store matches the signed-in marker, and `status` read `authenticated` where 1.58.2 read `session expired`.
+- **One profile directory, one probe at a time.** Sites in a group are links to one Chrome profile (DIVE-6013), and `status` ran up to three probes side by side (DIVE-6582), so google.com and shopify.com in the group Main opened that profile twice and the second died on Chrome's SingletonLock ("File exists"). `status` now runs the sites of one directory one after another, and different directories still side by side. Each site keeps its own line.
+
+`tests/browser_status_group_serial_unit.sh`, 12 arms, with a fake Chrome that holds `SingletonLock` as Chrome does; S4 runs the same layout through 1.58.2 (`STATUS_BASELINE_BIN=`) and it clashes.
+
 ### Fixed — a new site uses the Google sign-in already in the default group, not the signed-out public profile (DIVE-7076), 1.58.6
 
 On the Dropshipping trial box the seat's Main held a live Google sign-in, Clicker opened shopify.com's sign-up with a page verb, and it ran in the public profile, so "Continue with Google" asked for an email. Joining a group happened only in `auth` and `serve`, the person's verbs, and `group move` refused a site with no profile.
