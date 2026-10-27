@@ -33,8 +33,8 @@ offer copy-only text or a copy button, but must not prefetch the URL.
 
 ## When YOU need the owner logged in: ask with a button (DIVE-4992)
 
-Do not walk the owner through the dashboard, and never hand them a link you made
-yourself. Ask from your own seat:
+Do not walk the owner through the login steps yourself, and never hand them a link you
+made yourself. Ask from your own seat:
 
 ```bash
 5dive browser connect-request <site> --reason="<one line: why you need it>"
@@ -47,9 +47,17 @@ They log in, then tap **Done**. Done revokes the view, stops the browser and pro
 that order. You get a channel message at each step, `[browser connect] …`. After the
 Done message, `5dive browser status <site>` has the verdict. Do not poll while you wait.
 
-If `connect-request` refuses because the seat has no paired owner, its Telegram bridge
-cannot relay the tap, or it has no grant, fall back to the owner's own path, the shipped
-flow below.
+**On a self-hosted box (no 5dive domain) with nobody paired on Telegram**, the same
+`connect-request` (and `--challenge`) still reaches the owner: the ask waits in their login
+shell on the box (DIVE-7078). Their next login lists it. `sudo 5dive browser asks open <site>`
+gives them the one-time login link, or the SSH steps to the same window when login links are
+off, and `sudo 5dive browser asks done <site>` checks the login and messages you. You never
+see the link. If you talk to the owner before then, tell them once to run
+`sudo 5dive browser asks`; never run it yourself, and do not poll while you wait.
+
+On a box 5dive built (it has a 5dive domain), if `connect-request` refuses because the seat
+has no paired owner, its Telegram bridge cannot relay the tap, or it has no grant, fall back
+to the owner's own path there, the shipped flow below. That flow exists only on those boxes.
 
 <!-- 5dive:connect-site-flow:begin -->
 ## The shipped flow

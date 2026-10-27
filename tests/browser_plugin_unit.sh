@@ -347,7 +347,7 @@ t  'T2c6 a root caller with SUDO_USER re-executes as the seat before touching a 
 # relay seat itself, only for serve/viewer/status. Dropped to the CALLER, it
 # would be the agent registering its own bind — the one thing the owner's tap
 # exists to prevent.
-t  'T2c7 ...but setup, adblock, config, the owner'"'"'s approve and the Connect relay stay root'"'"'s' 'yes' "$(grep -A16 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -q 'setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|claude-box|act-saved|totp|login-link|-h|--help|help|"") ;;' && echo yes || echo no)"
+t  'T2c7 ...but asks, setup, adblock, config, the owner'"'"'s approve and the Connect relay stay root'"'"'s' 'yes' "$(grep -A20 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -q '^\s*asks|setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|claude-box|act-saved|totp|login-link|-h|--help|help|"") ;;' && echo yes || echo no)"
 # DIVE-4997 added `adapters` (the owner's approve/reject/pending of a reflex
 # login check: root reads every seat's proposals and writes AS the seat), so six.
 # DIVE-5336 added `totp`, and only its `import` reaches the list (every other
@@ -365,7 +365,10 @@ t  'T2c7 ...but setup, adblock, config, the owner'"'"'s approve and the Connect 
 # act is plain `act` and drops). It reads root's saved store and drops to the
 # caller itself, the values on a private fd; with nothing saved in the steps it
 # drops before a page opens. Twelve.
-t  'T2c8 ...and no OTHER verb joined them' '12' "$(grep -A16 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -oP '^\s+\K[a-z_|-]+(?=\|-h\|--help)' | tr '|' '\n' | grep -c .)"
+# DIVE-7078 added `asks`: the owner at a login shell reads and claims root's
+# connect requests from seats with no Telegram owner. Thirteen. The case line
+# now sits 17 lines below the guard, so both arms read 20.
+t  'T2c8 ...and no OTHER verb joined them' '13' "$(grep -A20 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -oP '^\s+\K[a-z_|-]+(?=\|-h\|--help)' | tr '|' '\n' | grep -c .)"
 
 # DIVE-4813 — WHICH SEAT ROOT BECOMES. An admin agent asked to open a site the
 # box had connected under `claude` and was told to run `sudo -u claude 5dive

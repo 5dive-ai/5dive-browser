@@ -8,7 +8,7 @@ that file stays where it is.
 
 ## Unreleased
 
-### Fixed — a new site uses the Google sign-in already in the default group, not the signed-out public profile (DIVE-7076), 1.58.4
+### Fixed — a new site uses the Google sign-in already in the default group, not the signed-out public profile (DIVE-7076), 1.58.6
 
 On the Dropshipping trial box the seat's Main held a live Google sign-in, Clicker opened shopify.com's sign-up with a page verb, and it ran in the public profile, so "Continue with Google" asked for an email. Joining a group happened only in `auth` and `serve`, the person's verbs, and `group move` refused a site with no profile.
 
@@ -17,6 +17,17 @@ On the Dropshipping trial box the seat's Main held a live Google sign-in, Clicke
 - **`group move <site> <group>` links a site that has no profile yet**, a seat-runnable join with no person step; `--own` on such a site says it has none.
 
 `tests/browser_page_join_unit.sh` 30/30; on origin/main's `bin/browser` its J1 arms go red (negative control). `tests/browser_groups_unit.sh` 55/55, `tests/browser_google_signin_unit.sh` 65/65, `tests/browser_page_check_unit.sh` 39/39.
+
+### Fixed — a login or check request on a self-hosted box with no Telegram reaches the owner, never "use the dashboard" (DIVE-7078), 1.58.5
+
+In the Dropshipping trial the Clicker, on a self-hosted box with nobody paired on Telegram, asked for an X login and got "Ask the owner to use Connected sites in the 5dive dashboard", a page that box does not have. The owner seat had to mint the viewer link by hand.
+
+- **The ask waits in the owner's login shell.** With no front and nobody who can tap a button, `connect-request <site>` and `connect-request <site> --challenge --url=<page>` exit 0. Root keeps the request code; a summary with no secret in it goes to `/var/lib/5dive-browser-asks` (0755, since `/var/lib/5dive` is 2750), and `/etc/profile.d/5dive-browser-asks.sh` prints it at the owner's next interactive login. The hook is plain sh with no 5dive command in it, and is quiet for agent seats.
+- **`sudo 5dive browser asks`** lists what waits. `asks open <site>` is the tap: a one-time link on the box's login-link host when login links are on, else the SSH steps to the same window. `asks done <site>` is the Done tap: the same revoke, stop and probe (or, for a check, the hand-back and look), then the agent is told with `5dive agent send`. The agent never sees the link or the code; a code minted for the shell cannot be claimed by a button or by the agent's own `_connect`, and a button's cannot be claimed by `asks`.
+- **An SSH handoff with nobody to message** also lands its steps there, with a Done.
+- **No message on these paths names a dashboard**, and the connect-site skill and AGENTS.md say what to do on such a box. A hosted box, and a box whose owner taps on Telegram, are unchanged.
+
+`tests/browser_connect_shell_unit.sh` 84/84; on the pre-fix tree its N arms see today's die (exit 69, the dashboard words). `tests/browser_connect_request_unit.sh` 284/284 and `tests/browser_login_link_unit.sh` 148/148.
 
 ### Fixed — `sudo 5dive browser setup` gives a browser to the seats hired before it (DIVE-7075), 1.58.3
 
