@@ -307,7 +307,11 @@ usage() {
                                       # ask your paired owner, over Telegram, to log in:
                                       # they get a "Connect <site>" button, their tap opens
                                       # the one-time link, their "Done" tap checks the login.
-                                      # Nothing is bound until they tap.
+                                      # Nothing is bound until they tap. A self-hosted box
+                                      # linked to the 5dive app asks in your app chat
+                                      # instead: one Connect link, then Done or Not now.
+  5dive browser connect-done <site>   # after the owner's Done or Not now in the app chat:
+                                      # closes their view and prints the verdict
   5dive browser login-ask <site> [--url=<sign-in page>]
                                       # at a sign-in form with nothing saved: one owner
                                       # message with two buttons, "Sign in once" (the
@@ -447,7 +451,7 @@ usage() {
   a second group.
 USAGE
   # DIVE-6219: a hosted box never sees this option.
-  _connect_has_front || printf '\n  SELF-HOSTED BOX: login links are off until the owner opts in.\n  sudo 5dive browser login-link   # the choices, each with its trade-off\n  With nobody paired on Telegram, connect-request asks the owner in their login shell:\n  sudo 5dive browser asks         # what agents wait on them for; open <site>, done <site>\n'
+  _connect_has_front || printf '\n  SELF-HOSTED BOX: login links are off until the owner opts in.\n  sudo 5dive browser login-link   # the choices, each with its trade-off\n  Linked to the 5dive app, connect-request asks in your app chat (then: connect-done <site>).\n  Else with nobody paired on Telegram, it asks the owner in their login shell:\n  sudo 5dive browser asks         # what agents wait on them for; open <site>, done <site>\n'
 }
 
 # ---------------------------------------------------------------- profile store
@@ -9297,6 +9301,14 @@ CONNECT_SHELLD_URL=http://127.0.0.1:3101
 CONNECT_TG_API=https://api.telegram.org
 CONNECT_SELF="$0"
 CONNECT_PRIV=(sudo -n /usr/local/bin/5dive browser _connect)
+# DIVE-7133: a self-hosted box linked to 5dive.app (the link script's marker,
+# with the API, beside the box token). An ask goes to the agent's app chat first.
+CONNECT_CHATONLY_MARK=/etc/5dive/chat-only
+CONNECT_APP_OK=0             # set only in-process by the app path, never from the environment
+CONNECT_APP_FG=0             # the harness runs the https set-up in the foreground
+CONNECT_APP_VIEW_TTL=1800    # the link in the chat works once, for 30 minutes
+CONNECT_APP_WHY="" CONNECT_APP_HOST="" CONNECT_APP_EXP=""
+CONNECT_HTTPS_CADDYFILE=/etc/5dive/secret-https.Caddyfile
 HANDOFF_SSH_SEAM=0 HANDOFF_SSH_USER="" HANDOFF_SSH_ADDR=""
 # TEST SEAMS, honoured only WITHOUT root. Unprivileged, every one of them points
 # the caller at its OWN files with its OWN rights, so none of them can grant
@@ -9310,6 +9322,9 @@ if [[ $EUID -ne 0 ]]; then
   CONNECT_TG_API="${FIVEDIVE_TELEGRAM_API:-$CONNECT_TG_API}"
   CONNECT_SELF="${FIVEDIVE_BROWSER_CONNECT_SELF:-$CONNECT_SELF}"
   CONNECT_ASKS_DIR="${FIVEDIVE_BROWSER_ASKS_DIR:-$CONNECT_ASKS_DIR}"
+  CONNECT_CHATONLY_MARK="${FIVEDIVE_CHAT_ONLY_MARK:-$CONNECT_CHATONLY_MARK}"
+  CONNECT_HTTPS_CADDYFILE="${FIVEDIVE_SECRET_HTTPS_CADDYFILE:-$CONNECT_HTTPS_CADDYFILE}"
+  [[ -n "${FIVEDIVE_BROWSER_APP_FG:-}" ]] && CONNECT_APP_FG=1
   [[ -n "${FIVEDIVE_BROWSER_CONNECT_DIR:-}" ]] && CONNECT_SHELL_SEAM=1
   CONNECT_PROFILE_D="${FIVEDIVE_BROWSER_PROFILE_D:-$CONNECT_PROFILE_D}"
   [[ "${FIVEDIVE_BROWSER_CONNECT_LOOK_S:-}" =~ ^[0-9]+$ ]] \
@@ -9699,7 +9714,11 @@ _link_status() {
   printf 'login links: on, via %s — https://%s/browser/viewer/...\n' "$mode" "$host"
   if (( ! LINK_SEAM )); then
     printf '  server: %s\n' "$(systemctl is-active "$LINK_UNIT" 2>/dev/null || echo inactive)"
-    [[ "$mode" == proxy ]] || printf '  https:  %s\n' "$(systemctl is-active "$LINK_TLS_UNIT" 2>/dev/null || echo inactive)"
+    case "$mode" in
+      proxy) ;;
+      box) printf '  https:  %s (5dive secret https)\n' "$(systemctl is-active 5dive-secret-https 2>/dev/null || echo inactive)" ;;
+      *) printf '  https:  %s\n' "$(systemctl is-active "$LINK_TLS_UNIT" 2>/dev/null || echo inactive)" ;;
+    esac
   fi
   printf 'Turn off: sudo 5dive browser login-link disable\n'
 }
@@ -9727,12 +9746,21 @@ _link_enable() {
     domain|proxy)
       [[ "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]] \
         || die "$E_USAGE" "--via=$via needs --host=<a domain name>, e.g. --host=box.example.com" ;;
+    box)
+      # DIVE-7133: the box's one https front, made by `5dive secret https` (its IP
+      # certificate, sslip.io or the owner's domain), which forwards
+      # /browser/viewer/ to this server. Nothing of ours goes on 80/443.
+      [[ "$host" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]] \
+        || die "$E_USAGE" "--via=box needs --host=<the name 5dive secret https status shows>"
+      [[ "$port" == "$LINK_PORT_DEFAULT" ]] || die "$E_USAGE" "--via=box serves on port $LINK_PORT_DEFAULT, where the box's front forwards"
+      (( LINK_SEAM )) || grep -qF '/browser/viewer/' "$CONNECT_HTTPS_CADDYFILE" 2>/dev/null \
+        || die "$E_UNAVAILABLE" "this box's https front does not forward /browser/viewer/ yet. Run: sudo 5dive secret https enable --via=auto (5dive CLI with DIVE-7133), then again. Nothing changed." ;;
     cloudflare|trycloudflare|tunnel)
       die "$E_USAGE" "a Cloudflare quick tunnel is not offered: Cloudflare ends the TLS, so it would see the login link and every keystroke. Use --via=proxy with Tailscale Funnel instead." ;;
-    *) die "$E_USAGE" "--via must be ip, domain, sslip or proxy" ;;
+    *) die "$E_USAGE" "--via must be ip, domain, sslip, proxy or box" ;;
   esac
 
-  local front=1; [[ "$via" == proxy ]] && front=0
+  local front=1; [[ "$via" == proxy || "$via" == box ]] && front=0
   if (( ! LINK_SEAM )); then
     # Re-enabling replaces our own front; anything ELSE on 80/443 is the owner's.
     systemctl stop "$LINK_TLS_UNIT" "$LINK_UNIT" >/dev/null 2>&1 || true
@@ -9800,6 +9828,7 @@ _link_enable() {
     domain) printf '  served under your own domain; only your DNS is trusted.\n' ;;
     sslip)  printf '  note: sslip.io'"'"'s operator could redirect this name and read a login. --via=ip avoids that.\n' ;;
     proxy)  printf '  your HTTPS front must forward /browser/viewer/ (and nothing else) to http://127.0.0.1:%s.\n' "$port" ;;
+    box)    printf '  served by this box'"'"'s own https front (5dive secret https), on the same name as its secret links.\n' ;;
   esac
   printf 'An agent'"'"'s `5dive browser connect-request <site>` now sends a working link. Turn off: sudo 5dive browser login-link disable\n'
 }
@@ -10019,10 +10048,14 @@ _connect_request() {  # <caller> <site> <reason> [challenge <url> | handoff]
      && { ! _link_on || ! _connect_channel "$caller" || [[ "$CONNECT_TG_TYPE" != claude || -z "$CONNECT_TG_OWNERS" ]]; }; then
     _connect_handoff_ssh "$caller" "$site" "$reason"; return
   fi
+  # DIVE-7133: a self-hosted box linked to 5dive.app asks in the agent's app chat
+  # first, then Telegram, then the login shell.
   # DIVE-7078: a self-hosted box with nobody to tap a button has no dashboard
   # either, so the ask waits in its owner's login shell. A hosted box keeps its words.
-  local shell=0
-  if ! _connect_has_front && ! { _connect_channel "$caller" && [[ "$CONNECT_TG_TYPE" == claude && -n "$CONNECT_TG_OWNERS" ]]; }; then
+  local shell=0 app=0
+  if [[ "$kind" != handoff ]] && _connect_app_linked "$caller"; then
+    app=1
+  elif ! _connect_has_front && ! { _connect_channel "$caller" && [[ "$CONNECT_TG_TYPE" == claude && -n "$CONNECT_TG_OWNERS" ]]; }; then
     shell=1
   else
     _connect_channel "$caller" \
@@ -10051,6 +10084,7 @@ _connect_request() {  # <caller> <site> <reason> [challenge <url> | handoff]
     fi
   fi
 
+  if (( app )); then _connect_app_ask "$caller" "$site" "$kind" "$url" "$reason" "$check"; return; fi
   if (( shell )); then _connect_shell_ask "$caller" "$site" "$kind" "$url" "$reason" "$check"; return; fi
   _connect_send "$caller" "$site" "$kind" "$url" "$reason" "$check" "$CONNECT_TG_OWNERS" \
     || die "$E_UNAVAILABLE" "Telegram did not accept the Connect message, so nobody was asked. Nothing was bound."
@@ -10330,6 +10364,251 @@ cmd_asks() {
 }
 # <<< DIVE-7078
 
+# >>> DIVE-7133 an ask in the agent's 5dive app chat
+#
+# A self-hosted box linked to 5dive.app (DIVE-6816: chat only, the box calls out
+# and nothing on it listens for 5dive) sent its asks to the login shell, and
+# signing a site in took SSH. Its owner already reads each agent's chat in the
+# app, so the ask goes there, as ONE message with a Connect link:
+#   - root mints the code and taps it at once, in this process: the app cannot
+#     call the box back, so there is no tap to wait for. The link is the box's
+#     own viewer over the box's own https (`5dive secret https`, DIVE-7113), one
+#     use, 30 minutes. Only the link crosses 5dive's API, in the message's
+#     metadata, never in its text (the text is what a phone push shows);
+#   - the message carries Done and Not now. Either comes back to the agent as a
+#     chat message, and the agent runs `connect-done <site>`: root closes the
+#     view and probes, as a Telegram Done does. The view gives nobody anything,
+#     so the asking seat may close its own;
+#   - a box whose https cannot be made (behind a home router) says so in the
+#     chat in one line and leaves the ask in the login shell.
+# Order: the app chat, then Telegram, then the login shell. A hosted box never gets here.
+
+_connect_app_rec() { printf '%s/app/%s' "${CONNECT_DIR:?}" "$(_connect_shell_key "$1" "$2")"; }
+
+# The box is linked: the marker names the API and the box token is there. Sets CONNECT_APP_API.
+_connect_app_linked() {  # <caller>
+  local api tok
+  CONNECT_APP_API=""
+  _connect_has_front && return 1
+  [[ "$1" =~ ^agent-[a-z][a-z0-9-]{0,15}$ ]] || return 1   # the chat's agent-name rule
+  api=$(sed -n 's/^API=//p' "$CONNECT_CHATONLY_MARK" 2>/dev/null | head -1)
+  [[ "$api" =~ ^https?://[A-Za-z0-9.:-]+(/[A-Za-z0-9._/-]*)?$ ]] || return 1
+  tok=$(sed -n 's/^CONNECTORD_TOKEN=//p' "$CONNECT_CONNECTORD_ENV" 2>/dev/null | head -1)
+  [[ -n "$tok" ]] || return 1
+  CONNECT_APP_API="${api%/}"
+}
+
+# One agent message in the owner's app chat. The token goes on curl's stdin and
+# the body (it can hold the link) through a root-only file, so neither is in argv.
+_connect_app_post() {  # <caller> <text> <metadata json>
+  local f tok rc=0
+  mkdir -p "$CONNECT_DIR" && chmod 700 "$CONNECT_DIR" || return 1
+  f="$CONNECT_DIR/.app-post.$$"
+  ( umask 077; jq -nc --arg a "${1#agent-}" --arg b "$2" --argjson m "$3" '{agent:$a, body:$b, metadata:$m}' > "$f" ) || { rm -f "$f"; return 1; }
+  tok=$(sed -n 's/^CONNECTORD_TOKEN=//p' "$CONNECT_CONNECTORD_ENV" 2>/dev/null | head -1)
+  printf 'header = "authorization: Bearer %s"\n' "$tok" \
+    | curl -sS -4 -f -o /dev/null --max-time 15 --config - -X POST -H 'content-type: application/json' \
+        --data-binary "@$f" "$CONNECT_APP_API/server/messages/event" 2>/dev/null || rc=1
+  rm -f "$f"
+  return "$rc"
+}
+
+# The host a Connect link opens on. `now`: only what is already there. `make`:
+# the box's https front (made when missing, up to ~2 minutes), with the login
+# link server behind it. Sets CONNECT_APP_HOST, or CONNECT_APP_WHY when there is none.
+_connect_app_host() {  # <now|make>
+  local out h err
+  CONNECT_APP_WHY="" CONNECT_APP_HOST=""
+  _link_on && { CONNECT_APP_HOST=$(_link_host); return 0; }
+  [[ -x "$SAVED_CLI" ]] || { CONNECT_APP_WHY="this box has no 5dive CLI"; return 1; }
+  out=$("$SAVED_CLI" --json secret https status 2>/dev/null) || out=""
+  h=$(jq -r 'if .data.on == true then .data.host // "" else "" end' <<<"$out" 2>/dev/null)
+  if [[ -z "$h" ]]; then
+    [[ "$1" == make ]] || return 1
+    out=$("$SAVED_CLI" --json secret https enable --via=auto 2>/dev/null) || true
+    h=$(jq -r '.data.host // ""' <<<"$out" 2>/dev/null)
+    if [[ -z "$h" ]]; then
+      CONNECT_APP_WHY=$(jq -r '.error.message // ""' <<<"$out" 2>/dev/null | tr -d '\000-\037\177' | cut -c1-200)
+      [[ -n "$CONNECT_APP_WHY" ]] || CONNECT_APP_WHY="it could not make a secure web address"
+      return 1
+    fi
+  else
+    # A front from before DIVE-7133 is rewritten with the viewer route (no new certificate).
+    grep -qF '/browser/viewer/' "$CONNECT_HTTPS_CADDYFILE" 2>/dev/null \
+      || "$SAVED_CLI" --json secret https enable --via=auto >/dev/null 2>&1 || true
+  fi
+  err=$(mktemp)
+  if ! ( _link_enable --via=box "--host=$h" ) >/dev/null 2>"$err"; then
+    CONNECT_APP_WHY=$(grep -v '^$' "$err" | tail -1 | sed 's/^[^:]*: //' | cut -c1-200); rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
+  CONNECT_APP_HOST=$(_link_host)
+  [[ -n "$CONNECT_APP_HOST" ]]
+}
+
+# The message's words and the link's label. The text never holds the link.
+_connect_app_words() {  # <kind> <check> <site> <reason> <who>
+  local kind="$1" check="$2" site="$3" reason="$4" who="$5"
+  if [[ "$kind" == challenge && "$check" == 1 ]]; then
+    APP_TEXT="🧩 ${who} is stuck on a check on ${site} and cannot go on by itself."
+    [[ -n "$reason" ]] && APP_TEXT+=$'\n'"Doing: ${reason}"
+    APP_TEXT+=$'\n\n'"Tap Open to see that page in the browser on your server. Clear the check yourself, then tap Done. ${who} never solves these."
+    APP_LABEL="Open ${site}"
+  elif [[ "$kind" == challenge ]]; then
+    APP_TEXT="🖐 ${who} is working on ${site} and needs you to take over."
+    [[ -n "$reason" ]] && APP_TEXT+=$'\n'"What to do: ${reason}"
+    APP_TEXT+=$'\n\n'"Tap Open to see that page in the browser on your server. Do it, then tap Done."
+    APP_LABEL="Open ${site}"
+  else
+    APP_TEXT="🔐 ${who} asks you to log in to ${site} in the browser on your server."
+    [[ -n "$reason" ]] && APP_TEXT+=$'\n'"Why: ${reason}"
+    APP_TEXT+=$'\n\n'"Tap Connect and log in yourself. ${who} never sees your password. Then tap Done."
+    APP_LABEL="Connect ${site}"
+  fi
+}
+
+# Mint, tap and post. rc 0 = the owner has the message; sets CONNECT_APP_EXP.
+# Anything that fails takes back what was made, so no live link outlives it.
+_connect_app_send() {  # <caller> <site> <kind> <url> <reason> <check> <host>
+  local caller="$1" site="$2" kind="$3" url="$4" reason="$5" check="$6" host="$7" out link done exp rec meta who
+  who="${caller#agent-}"
+  _connect_mint "$caller" "$site" "$kind" "$url" "$check" "$reason" "$CONNECT_REQ_TTL" app
+  out=$(CONNECT_APP_OK=1 CONNECT_VIEW_TTL="$CONNECT_APP_VIEW_TTL" _connect_tap "$caller" "$CONNECT_CODE" app 2>/dev/null) \
+    || { rm -f "$CONNECT_CODE_FILE"; CONNECT_APP_WHY="the browser on this box did not open a view of $site"; return 1; }
+  link=$(sed -n 's/^url=//p' <<<"$out" | head -1); done=$(sed -n 's/^done=//p' <<<"$out" | head -1)
+  exp=$(sed -n 's/^expires=//p' <<<"$out" | head -1)
+  if [[ "$link" != "https://$host/browser/viewer/"* || ! "$done" =~ ^[0-9a-f]{48}$ ]]; then
+    _connect_as_box viewer-revoke "$site" >/dev/null 2>&1 || true
+    [[ "$done" =~ ^[0-9a-f]{48}$ ]] && rm -f "$(_connect_file "$done")"
+    CONNECT_APP_WHY="the box made an unusable link"; return 1
+  fi
+  rec=$(_connect_app_rec "$caller" "$site")
+  _connect_app_drop "$caller" "$site"
+  mkdir -p "${rec%/*}" && chmod 700 "${rec%/*}" \
+    && ( umask 077; printf 'seat=%s\nsite=%s\nkind=%s\ncheck=%s\ndone=%s\n' "$caller" "$site" "$kind" "$check" "$done" > "$rec" ) \
+    || { _connect_as_box viewer-revoke "$site" >/dev/null 2>&1; rm -f "$(_connect_file "$done")"; CONNECT_APP_WHY="cannot write $rec"; return 1; }
+  _connect_app_words "$kind" "$check" "$site" "$reason" "$who"
+  meta=$(jq -nc --arg u "$link" --arg l "$APP_LABEL" --arg q "browser-done-$site" \
+    '{link:{url:$u, label:$l}, question:{id:$q, options:[{label:"Done"},{label:"Not now"}]}}')
+  if ! _connect_app_post "$caller" "$APP_TEXT" "$meta"; then
+    _connect_as_box viewer-revoke "$site" >/dev/null 2>&1 || true
+    _connect_app_drop "$caller" "$site"
+    CONNECT_APP_WHY="5dive.app did not take the message"; return 1
+  fi
+  CONNECT_APP_EXP="$exp"
+}
+
+_connect_app_drop() {  # <seat> <site>
+  local rec c; rec=$(_connect_app_rec "$1" "$2")
+  c=$(_connect_field "$rec" done)
+  [[ "$c" =~ ^[0-9a-f]{48}$ ]] && rm -f -- "$(_connect_file "$c")"
+  rm -f -- "$rec"
+}
+
+# No link: one line in the chat, and the ask waits in the login shell.
+# rc 2 = not even the shell ask could be written; rc 1 = the chat did not take it.
+_connect_app_nolink() {  # <caller> <site> <kind> <url> <reason> <check> <why>
+  local caller="$1" site="$2" who="${1#agent-}" text
+  ( _connect_shell_ask "$caller" "$site" "$3" "$4" "$5" "$6" ) >/dev/null 2>&1 || return 2
+  text="🔐 ${who} needs you to $(_connect_shell_what "$3" "$6" "$site") in the browser on your server."
+  [[ -n "$5" ]] && text+=$'\n'"Why: $5"
+  text+=$'\n\n'"Your server has no secure web address for a link ($7), so log in to your server and run: sudo 5dive browser asks"
+  _connect_app_post "$caller" "$text" '{}'
+}
+
+# Root, from _connect_request.
+_connect_app_ask() {  # <caller> <site> <kind> <url> <reason> <check>
+  local caller="$1" site="$2" host
+  if _connect_app_host now; then
+    host="$CONNECT_APP_HOST"
+    if _connect_app_send "$@" "$host"; then
+      _connect_app_told "$site" "$host"; return 0
+    fi
+    local why="$CONNECT_APP_WHY" nrc=0
+    _connect_app_nolink "$@" "$why" || nrc=$?
+    (( nrc != 2 )) || die "$E_UNAVAILABLE" "nobody was asked: $why, and the ask could not be left in the owner's login shell either."
+    if (( nrc == 1 )); then
+      printf 'no Connect link could be sent (%s) and the 5dive app did not take the message, so the ask waits in the owner'"'"'s login shell on this box. Tell them in your reply to run on the server: sudo 5dive browser asks. You get a message from this box when they finish. Do not poll.\n' "$why"
+    else
+      printf 'no Connect link could be sent (%s), so the owner was told in your 5dive app chat to open it from their login shell on this box (sudo 5dive browser asks). You get a message from this box when they finish. Do not poll.\n' "$why"
+    fi
+    return 0
+  fi
+  # No front yet: making one takes up to ~2 minutes, so it runs on after this returns.
+  printf 'this box is setting up its secure web address first (about 2 minutes), then the owner gets a Connect link to %s in your chat in the 5dive app, with Done and Not now. If the address cannot be made, they are told there to use their login shell instead, and you get a message from this box.\n' "$site"
+  _connect_app_next_steps "$site"
+  if (( CONNECT_APP_FG )); then _connect_app_later "$@"; return 0; fi
+  # sudo's use_pty hangs up the session when this call returns: the set-up
+  # ignores the hangup and writes to no terminal, so it outlives the call. It
+  # takes a TMPDIR of its own: this call's is removed when the call returns.
+  ( trap '' HUP; _tmp_claim; trap - EXIT; _connect_app_later "$@" ) </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+}
+
+_connect_app_later() {  # <caller> <site> <kind> <url> <reason> <check>
+  local host who="${1#agent-}" note
+  if _connect_app_host make && host="$CONNECT_APP_HOST" && _connect_app_send "$@" "$host"; then return 0; fi
+  local why="$CONNECT_APP_WHY" nrc=0
+  _connect_app_nolink "$@" "$why" || nrc=$?
+  case "$nrc" in
+    0) note="[browser connect] No Connect link could be sent for $2 ($why). The owner was told in your 5dive app chat to run on the server: sudo 5dive browser asks. You get a message from this box when they finish. Do not poll." ;;
+    1) note="[browser connect] No Connect link could be sent for $2 ($why), and the 5dive app did not take the message. The ask waits in the owner's login shell: tell them in your reply to run on the server: sudo 5dive browser asks." ;;
+    *) note="[browser connect] Nobody was asked about $2: $why. Tell the owner in your reply that $2 needs them in the browser on this box." ;;
+  esac
+  printf '%s' "$note" | "$SAVED_CLI" agent send "$who" --message-file=- >/dev/null 2>&1 || true
+}
+
+_connect_app_told() {  # <site> <host>
+  printf 'asked the owner in your chat in the 5dive app: one Connect link to %s in this box'"'"'s browser (on https://%s, one use, until %s), with Done and Not now. You never see the link. Nothing is bound until they open it.\n' \
+    "$1" "$2" "$CONNECT_APP_EXP"
+  _connect_app_next_steps "$1"
+}
+
+_connect_app_next_steps() {  # <site>
+  printf 'Their Done or Not now comes back to you as a chat message. Then run: 5dive browser connect-done %s (it closes their view and gives you the verdict). Do not poll.\n' "$1"
+}
+
+# Root: the asking seat closes its own app ask, after the owner's Done or Not now.
+_connect_app_done() {  # <caller> <site>
+  local caller="$1" site="$2" rec code kind out rc=0 st src chk
+  _valid_site "$site" || die "$E_USAGE" "'$site' is not a site"
+  rec=$(_connect_app_rec "$caller" "$site")
+  code=$(_connect_field "$rec" done) kind=$(_connect_field "$rec" kind)
+  [[ "$code" =~ ^[0-9a-f]{48}$ ]] || die "$E_USAGE" "nothing of yours waits on $site in the owner's app chat"
+  out=$( CONNECT_APP_OK=1 _connect_done "$caller" "$code" app ) || rc=$?
+  _connect_app_drop "$caller" "$site"
+  (( rc == 0 )) || die "$E_UNAVAILABLE" "that ask is closed now (it expired or was already done). Ask again: 5dive browser connect-request $site"
+  st=$(sed -n 's/^status=//p' <<<"$out" | head -1); src=$(sed -n 's/^status_rc=//p' <<<"$out" | head -1)
+  chk=$(sed -n 's/^check=//p' <<<"$out" | head -1)
+  case "$kind" in
+    challenge)
+      printf 'the owner'"'"'s view is closed and the %s browser is back in your hands. %s\n' "$site" "${st:+$st.}"
+      [[ "$chk" == still ]] && printf 'A check is still on the page: say so once and stop; never try to solve it.\n'
+      printf 'First check what already happened (did the step you were on go through?) so nothing is sent twice, then re-read the page and carry on.\n' ;;
+    *)
+      if [[ "$src" == 0 ]]; then printf '%s is connected: %s\n' "$site" "$st"
+      else printf '%s is not confirmed logged in: %s\n' "$site" "${st:-no verdict}"; fi ;;
+  esac
+}
+
+# `connect-done` — the agent's verb, after the owner's Done or Not now in the app chat.
+cmd_connect_done() {
+  local site="" rc=0
+  while (($#)); do
+    case "$1" in
+      -h|--help) printf '%s connect-done <site>\n  After the owner answers Done or Not now in the 5dive app chat: closes their view and prints the verdict.\n' "$PROG"; return 0 ;;
+      -*) die "$E_USAGE" "unknown flag: $1" ;;
+      *) [[ -z "$site" ]] || die "$E_USAGE" "one site at a time"; site="$1" ;;
+    esac; shift
+  done
+  [[ -n "$site" ]] || die "$E_USAGE" "which site? e.g. 5dive browser connect-done github.com"
+  _valid_site "$site" || die "$E_USAGE" "'$site' is not a site"
+  printf '%s\0' app-done "$site" | "${CONNECT_PRIV[@]}" || rc=$?
+  return "$rc"
+}
+# <<< DIVE-7133
+
 # >>> DIVE-6973 an agent at a sign-in page asks to sign in once, or to save it
 #
 # An agent that reaches a sign-in form with nothing saved for the site must never
@@ -10455,11 +10734,15 @@ _connect_claim() {  # <caller> <code> <op> <sender>  -> sets CONNECT_SITE; print
     || die "$E_PERM" "that button was issued to another seat's bot, not this one"
   # DIVE-7078: an ask waiting in the owner's login shell is claimed only by root's
   # `asks`, in this process; a button can never claim one, nor `asks` a button's.
+  # DIVE-7133: an app-chat ask is claimed only by root's app path, in this process.
   if [[ "$(_connect_field "$f" via)" == shell ]]; then
     [[ "$sender" == shell && "$CONNECT_SHELL_OK" == 1 ]] \
       || die "$E_PERM" "that ask waits in the owner's login shell on this box, not on a button"
+  elif [[ "$(_connect_field "$f" via)" == app ]]; then
+    [[ "$sender" == app && "$CONNECT_APP_OK" == 1 ]] \
+      || die "$E_PERM" "that ask waits in the owner's 5dive app chat, not on a button"
   else
-    [[ "$sender" != shell ]] || die "$E_PERM" "that ask is not waiting in this box's login shell"
+    [[ "$sender" != shell && "$sender" != app ]] || die "$E_PERM" "that ask is not waiting in this box's login shell or app chat"
     _connect_is_owner "$caller" "$sender" \
       || die "$E_PERM" "only this seat's paired owner can use that button"
   fi
@@ -10471,7 +10754,7 @@ _connect_claim() {  # <caller> <code> <op> <sender>  -> sets CONNECT_SITE; print
     # 09:32:08Z a button that expired at 09:31:03Z and could only start over.
     # The paired owner (checked above) gets a fresh button with the same ask,
     # bound by the same rails, so the expired code itself still binds nothing.
-    if [[ "$op" == request && "$sender" != shell && "$exp" =~ ^[0-9]+$ ]] && (( $(date -u +%s) - exp <= CONNECT_LATE_TTL )) \
+    if [[ "$op" == request && "$sender" != shell && "$sender" != app && "$exp" =~ ^[0-9]+$ ]] && (( $(date -u +%s) - exp <= CONNECT_LATE_TTL )) \
        && _connect_send "$caller" "$(_connect_field "$claimed" site)" "$(_connect_field "$claimed" kind)" \
             "$(_connect_field "$claimed" url)" "$(_connect_field "$claimed" reason)" \
             "$(_connect_field "$claimed" check | grep -x 0 || echo 1)" "$sender" again; then
@@ -10587,7 +10870,7 @@ _connect_tap() {  # <caller> <code> <sender>
   f=$(_connect_file "$done_code")
   ( umask 077; printf 'op=done\nseat=%s\nsite=%s\nexpires_at=%s\nkind=%s\nurl=%s\ncheck=%s\n' \
       "$caller" "$site" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" "$kind" "$CONNECT_URL" "$CONNECT_CHECK" > "$f"
-    [[ "$sender" != shell ]] || printf 'via=shell\n' >> "$f" )
+    [[ "$sender" != shell && "$sender" != app ]] || printf 'via=%s\n' "$sender" >> "$f" )
   printf 'site=%s\nurl=https://%s%s\nexpires=%s\ndone=%s\nkind=%s\n' \
     "$site" "$host" "$path" "$(date -u -d "@$exp" +%Y-%m-%dT%H:%M:%SZ)" "$done_code" "$kind"
   # DIVE-6725: whether the box saw a check on the page, so the plugin's link
@@ -10702,7 +10985,9 @@ cmd_connect_priv() {
              _connect_tap "$CONNECT_CALLER" "${w[1]}" "${w[2]}" ;;
     done)    (( ${#w[@]} == 3 )) || die "$E_USAGE" "_connect done <code> <telegram user id>"
              _connect_done "$CONNECT_CALLER" "${w[1]}" "${w[2]}" ;;
-    *) die "$E_USAGE" "_connect: request, challenge, handoff, login-ask, tap or done" ;;
+    app-done) (( ${#w[@]} == 2 )) || die "$E_USAGE" "_connect app-done <site>"
+             _connect_app_done "$CONNECT_CALLER" "${w[1]}" ;;
+    *) die "$E_USAGE" "_connect: request, challenge, handoff, login-ask, tap, done or app-done" ;;
   esac
 }
 
@@ -11587,6 +11872,7 @@ case "${1:-}" in
   viewer-redeem) shift; cmd_viewer_redeem "$@" ;;
   viewer-revoke) shift; cmd_viewer_revoke "$@" ;;
   connect-request) shift; cmd_connect_request "$@" ;;
+  connect-done) shift; cmd_connect_done "$@" ;;
   login-ask) shift; cmd_login_ask "$@" ;;
   login-link) shift; cmd_login_link "$@" ;;
   asks) shift; cmd_asks "$@" ;;

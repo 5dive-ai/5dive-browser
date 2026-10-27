@@ -67,6 +67,8 @@ jobs:
       # shell, `asks open` is the tap and `asks done` the Done. A fake relay-seat browser.
       - name: connect-in-the-login-shell harness
         run: bash tests/browser_connect_shell_unit.sh
+      - name: connect-in-the-app-chat harness
+        run: bash tests/browser_connect_app_unit.sh
       # DIVE-4997: reflex drafts a login check, the owner approves it, drift.
       # A fake reflex CLI whose candidates really match the fixtures.
       - name: reflex propose harness
