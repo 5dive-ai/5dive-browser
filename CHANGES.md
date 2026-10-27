@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a new site uses the Google sign-in already in the default group, not the signed-out public profile (DIVE-7076), 1.58.4
+
+On the Dropshipping trial box the seat's Main held a live Google sign-in, Clicker opened shopify.com's sign-up with a page verb, and it ran in the public profile, so "Continue with Google" asked for an email. Joining a group happened only in `auth` and `serve`, the person's verbs, and `group move` refused a site with no profile.
+
+- **A page verb on a new site joins the default group** when that group already holds a site (a sign-in to share), and says so in one line: `shopify.com joined Main, so it opens in Main's browser and the sign-ins there (google.com) count here. To keep it apart: 5dive browser group move shopify.com --own`. Both the URL form and the named form (`shot shopify.com <url>`). An empty Main, `group default --none`, a labelled account, a group that already holds another account of the site, an existing per-site profile, and an IP or localhost host all keep today's answer.
+- **It is no login of its own until a person signs in to it:** not probed before a render, not in `status`, `probe-all` or the drift check, so it is never reported "logged out". `auth <site>` clears that.
+- **`group move <site> <group>` links a site that has no profile yet**, a seat-runnable join with no person step; `--own` on such a site says it has none.
+
+`tests/browser_page_join_unit.sh` 30/30; on origin/main's `bin/browser` its J1 arms go red (negative control). `tests/browser_groups_unit.sh` 55/55, `tests/browser_google_signin_unit.sh` 65/65, `tests/browser_page_check_unit.sh` 39/39.
+
 ### Fixed — Shopify admin's product form is listed whole: the Description editor and the Status options get refs (DIVE-7007), 1.58.2
 
 On a Shopify trial store the Dropshipping Team's Clicker could not list a product: it called Title, Description and Status "fields the browser tool cannot reach" and saved nothing. Measured on the trial box's new-product page (`lib/aria.cjs`):

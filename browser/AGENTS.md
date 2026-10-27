@@ -120,6 +120,13 @@ connected login, or the **public profile** (nothing logged in) when there is non
 fresh box `5dive browser snapshot https://example.com/ --interactive` just works. Connecting a
 site is only for pages where it must be the owner — their inbox, their cart, their repo.
 
+When this seat's default group (Main) already holds a sign-in, a URL with no profile of its
+own joins Main instead (DIVE-7076): it opens in Main's browser, so a Google sign-in made there
+counts on the new site's "Continue with Google", and the verb says so in one line. It is no
+login of its own until a person signs in to it: it is not probed or reported logged out.
+`5dive browser group move <site> --own` keeps it apart; `group default --none` turns joining off.
+`group move <site> <group>` also links a site that has no profile yet.
+
 If the owner has two accounts on one site (`github.com_work`, `github.com_personal`), a URL
 alone is refused and the refusal names both. **Ask the owner which one, never guess**, then
 name it: `5dive browser act github.com_work <url> --steps=…`.
