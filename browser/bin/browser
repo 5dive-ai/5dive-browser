@@ -1052,6 +1052,53 @@ _group_join_default() {  # <site> <own-site-path>
   printf '%s\n' "$g"
 }
 
+# DIVE-7076 — A PAGE VERB ON A NEW SITE USES THE SIGN-IN ALREADY IN THE DEFAULT GROUP.
+#
+# Joining used to happen only at `auth` and `serve`, the person's verbs, so a URL
+# with no profile went to the public profile: on the Dropshipping trial box the
+# seat's Main held a live Google sign-in, Clicker opened shopify.com's sign-up,
+# and "Continue with Google" asked for an email. The only way into Main was
+# `auth`, which then sat waiting for a person.
+#
+# So a page verb on a site with no profile joins it to the default group, but
+# only when that group already holds a site: an empty or missing group has no
+# sign-in to share, and the public profile stays the answer there. The DIVE-6013
+# rules are _group_join_default's and are not restated: a labelled account stays
+# its own, `group default --none` turns this off, one account per site per group.
+# Prints the group's id when it joined, rc 1 otherwise.
+_page_join_default() {  # <site>
+  local site="$1" g
+  _valid_site "$site" && ! _is_public "$site" && [[ "$site" != *_* ]] || return 1
+  [[ "$site" == *.* && ! "$site" =~ ^[0-9.]+$ ]] || return 1   # a site, not localhost or an IP
+  [[ -d "$(_seat_dir)" ]] || return 1
+  g=$(_group_default) || return 1
+  [[ -d "$(_group_dir "$g")" && -n "$(_group_sites "$g")" ]] || return 1
+  g=$(_group_join_default "$site" "$(_own_site_dir "$site")") && [[ -n "$g" ]] || return 1
+  : > "$(_group_dir "$g")/$PAGE_JOINED_FILE.$site" 2>/dev/null || true
+  _audit_row "$(_seat_dir)" group "page verb joined $site to $g" 2>/dev/null || true
+  printf '%s\n' "$g"
+}
+# A site a page verb joined, that no person has signed in to since: the group's
+# sign-ins are there, the site's own is not, so it is no login to probe, report
+# or call logged out. Exactly the public profile's answer, in the group's browser.
+# `auth` (a person signing in) and `group move` clear the note.
+PAGE_JOINED_FILE=".5dive-page-joined"
+_page_joined() {  # <site>
+  local p g; p="$(_own_site_dir "$1")"
+  g=$(_site_group "$p") || return 1
+  [[ -f "$(_group_dir "$g")/$PAGE_JOINED_FILE.$1" ]]
+}
+# The site a URL's host is named by: the host, less a leading www.
+_url_site() {  # <url>
+  local host="${1#*://}"
+  host="${host%%/*}"; host="${host%%\?*}"; host="${host%%#*}"; host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
+  printf '%s\n' "${host#www.}"
+}
+_page_joined_say() {  # <site> <group-id>
+  printf '%s: %s joined %s, so it opens in %s'"'"'s browser and the sign-ins there (%s) count here. To keep it apart: 5dive browser group move %s --own\n' \
+    "$PROG" "$1" "$(_group_name "$2")" "$(_group_name "$2")" "$(_group_sites "$2" | grep -vxF -- "$1" | paste -sd, - | sed 's/,/, /g')" "$1" >&2
+}
+
 # A group's browser serves every site in it, over ONE socket. A brokered seat
 # finds a site's socket by the site's name, so the other sites get a name for it:
 # a relative link in the rendezvous to the socket the browser was started on.
@@ -1284,7 +1331,12 @@ _group_move_one() {  # <site> <group> <own 0|1>
   local site="$1" target="$2" own="$3"
   _valid_site "$site" && ! _is_public "$site" || die "$E_USAGE" "'$site' is not a connected site"
   local p cur="" id="" why; p="$(_own_site_dir "$site")"
-  [[ -e "$p" || -L "$p" ]] || die "$E_UNAVAILABLE" "no profile for $site on this seat — connect it first (5dive browser auth $site)"
+  # DIVE-7076: a site with no profile yet is linked straight in; nothing to put aside.
+  local fresh=0
+  if [[ ! -e "$p" && ! -L "$p" ]]; then
+    (( ! own )) || { printf '%s has no profile on this seat yet\n' "$site"; return 0; }
+    fresh=1
+  fi
   cur=$(_site_group "$p") || cur=""
   [[ -n "$cur" || ! -L "$p" ]] || die "$E_PERM" "$p is a link this plugin did not make — refusing to move it"
   [[ -d "$p" ]] && _audit "$p" 700
@@ -1306,7 +1358,9 @@ _group_move_one() {  # <site> <group> <own 0|1>
     die "$E_UNAVAILABLE" "$(_group_name "$cur")'s browser was started as $site, so other seats reach it by that name; stop it first (5dive browser serve $site --stop)"
   fi
   local aside restored=0; aside="$(_seat_dir)/$GROUP_OWN_PREFIX$site"
-  if [[ -z "$cur" ]]; then
+  if (( fresh )); then
+    _group_link "$p" "$id" || die "$E_UNAVAILABLE" "could not link $site into $(_group_name "$id"); nothing changed"
+  elif [[ -z "$cur" ]]; then
     [[ ! -e "$aside" ]] || die "$E_UNAVAILABLE" "$aside already holds an earlier profile of $site — move it away by hand before moving $site again"
     mv -T -- "$p" "$aside" || die "$E_UNAVAILABLE" "could not put $site's own profile aside"
     _group_link "$p" "$id" || { mv -T -- "$aside" "$p"; die "$E_UNAVAILABLE" "could not link $site into $(_group_name "$id"); nothing changed"; }
@@ -1320,7 +1374,7 @@ _group_move_one() {  # <site> <group> <own 0|1>
   # The site's per-login notes in the group it LEFT, and any stale one in the
   # group it joined: a stamp from another browser is not this browser's verdict.
   local f
-  for f in .5dive-liveness .5dive-signed-in; do
+  for f in .5dive-liveness .5dive-signed-in "$PAGE_JOINED_FILE"; do
     [[ -n "$cur" ]] && rm -f -- "$(_group_dir "$cur")/$f.$site"
     [[ -n "$id" ]] && rm -f -- "$(_group_dir "$id")/$f.$site"
   done
@@ -1335,7 +1389,7 @@ _group_move_one() {  # <site> <group> <own 0|1>
   else
     printf 'moved %s to %s. It now shares %s'"'"'s sign-ins: if %s is signed in to Google, its "Continue with Google" sees that account. Anything else, sign in once (5dive browser auth %s).%s\n' \
       "$site" "$(_group_name "$id")" "$(_group_name "$id")" "$(_group_name "$id")" "$site" \
-      "$([[ -z "$cur" ]] && printf ' Its own profile is kept aside, not merged: 5dive browser group move %s --own brings it back.' "$site")"
+      "$([[ -z "$cur" ]] && (( ! fresh )) && printf ' Its own profile is kept aside, not merged: 5dive browser group move %s --own brings it back.' "$site")"
   fi
 }
 # <<< DIVE-6013
@@ -1969,6 +2023,8 @@ cmd_auth() {
   # box login for that site (scope (b), acceptance 5).
   local dir joined; dir="$(_own_site_dir "$site")"
   joined=$(_group_join_default "$site" "$dir")
+  # DIVE-7076: a person is signing in to it now, so it is a login from here on.
+  _page_joined "$site" && rm -f -- "$(_group_dir "$(_site_group "$dir")")/$PAGE_JOINED_FILE.$site"
   _ensure_profile_dir "$dir"
   _rv_offer_write "$(_seat)" "$site"
   [[ -n "$joined" ]] && printf '%s joined the group %s: it shares that browser, so a Google (or any) sign-in made there already counts here. Another group: 5dive browser group move %s <group>
@@ -2110,6 +2166,7 @@ _auth_status() {
     [[ -d "$d" ]] || continue
     site=$(basename "$d")
     _is_public "$site" && continue   # the public profile is not a login (DIVE-4943)
+    _page_joined "$site" && continue  # nor is a site a page verb joined (DIVE-7076)
     [[ -z "$only" || "$only" == "$site" ]] || continue
     found=1
     _audit "$d" 700
@@ -2692,6 +2749,7 @@ cmd_probe_all() {
     found=1
     site=$(basename "$d")
     _is_public "$site" && continue   # the public profile is not a login (DIVE-4943)
+    _page_joined "$site" && continue  # nor is a site a page verb joined (DIVE-7076)
     _audit "$d" 700
     # A SERVED SITE IS CHECKED THROUGH THE BROWSER THAT HOLDS IT (DIVE-5388).
     # This used to skip every served profile (DIVE-4519), and on a box that keeps
@@ -4517,6 +4575,7 @@ cmd_adapters_drift() {
   for d in "$seat_dir"/*/; do
     [[ -d "$d" ]] || continue
     site="$(basename "$d")"; _is_public "$site" && continue
+    _page_joined "$site" && continue   # no login of its own yet (DIVE-7076)
     [[ -z "$only" || "$only" == "$site" ]] || continue
     ad="$(_adapter_path "$site")"; [[ -f "$ad" ]] || continue
     om="$(_site_logged_out_marker "$site")"; im="$(_site_logged_in_marker "$site")"
@@ -5876,6 +5935,8 @@ _page_open_probe() {
   # THE PUBLIC PROFILE HAS NO LOGIN TO PROBE (DIVE-4943 scope 5). Asking it "are
   # you signed in" has no answer and would refuse every page on the web.
   _is_public "$site" && return 0
+  # DIVE-7076: a site a page verb joined has no login of its own to probe yet.
+  _page_joined "$site" && return 0
   local state; state=$(_PROBE_GENERIC=1 _probe "$site" "$dir")
   case "$state" in
     authenticated*) : ;;
@@ -11413,6 +11474,10 @@ case "${1:-}" in
     if [[ "${2:-}" =~ ^https?:// ]]; then
       _v="$1"; _u="$2"; shift 2
       _r="$(_route_site "$_u")" || exit $?
+      # DIVE-7076: a new site joins the default group when it holds a sign-in.
+      if _is_public "$_r" && _s="$(_url_site "$_u")" && _g="$(_page_join_default "$_s")"; then
+        _page_joined_say "$_s" "$_g"; _r="$_s"
+      fi
       set -- "$_v" "$_r" "$_u" "$@"
     fi ;;
 esac
@@ -11444,7 +11509,10 @@ _public_for_named() {  # _public_for_named <site> <url> -> 0 to open it in the p
 }
 case "${1:-}" in
   read|links|shot|snapshot|tree|act)
-    if [[ -n "${2:-}" && "${2:-}" != -* && "${3:-}" =~ ^https?:// ]] && _public_for_named "$2" "$3"; then
+    if [[ -n "${2:-}" && "${2:-}" != -* && "${3:-}" =~ ^https?:// ]] && _public_for_named "$2" "$3" \
+       && _g="$(_page_join_default "$2")"; then
+      _page_joined_say "$2" "$_g"     # DIVE-7076: the profile is now the group's link
+    elif [[ -n "${2:-}" && "${2:-}" != -* && "${3:-}" =~ ^https?:// ]] && _public_for_named "$2" "$3"; then
       printf '%s: no %s login on this seat or this box, so %s opens in the public profile (not logged in). If the page needs a login: 5dive browser auth %s\n' \
         "$PROG" "$2" "$3" "$2" >&2
       _v="$1"; _u="$3"; shift 3

@@ -8449,6 +8449,14 @@ pub50() { run env PATH="$SPATH" DISPLAY= NODE_PATH="$DSTUB/node_modules" PWREC="
 pub50stop() { env PATH="$SPATH" FIVEDIVE_BROWSER_SESSION_DAEMON="${2:-$DAEMONBIN}" "${1:-$BROWSER}" serve _public --stop >/dev/null 2>&1; }
 pub50live() { kill -0 "$(dkv "$PUB50/.5dive-serve" daemon_pid)" 2>/dev/null && echo yes || echo no; }
 gotos50() { tail -n +$(( $1 + 1 )) "$DREC" | jq -rs --arg u "$U50" '[.[]|select(.call=="goto" and .url==$u)]|length'; }
+# DIVE-7076: a page verb on a new site now joins the seat's default group when that group
+# holds sites, and earlier arms left sites in it. T50 grades the PUBLIC profile's served
+# browser, so it runs with no default group (`group default --none`, the documented way to
+# keep new sites apart) and puts the seat's own setting back after T50g.
+GDEF50="$FIVEDIVE_BROWSER_PROFILE_ROOT/$SEAT/.groups-default"
+GDEF50_SAVED=""; [[ -f "$GDEF50" ]] && GDEF50_SAVED="$(cat "$GDEF50")"
+run env PATH="$SPATH" "$BROWSER" group default --none
+t  'T50 (precondition) the default group is off for these arms' '0 none' "$RC $(head -n1 "$GDEF50" 2>/dev/null)"
 pub50stop
 t  'T50 (precondition) no public browser is served' no "$(pub50live)"
 
@@ -8514,6 +8522,7 @@ t  'T50f FIVEDIVE_BROWSER_PUBLIC_KEEP=0: no served browser after the act' no "$(
 tn 'T50f ...and no claim that one started' 'started a served browser' "$ERR"
 pub50stop
 tc 'T50g CHANGES.md carries the DIVE-5817 entry' 'DIVE-5817' "$(cat "$ROOT/CHANGES.md")"
+if [[ -n "$GDEF50_SAVED" ]]; then printf '%s\n' "$GDEF50_SAVED" > "$GDEF50"; else rm -f "$GDEF50"; fi
 
 # --- T51 a site named for one of its public pages opens in the public profile (DIVE-5817) ---
 # chill-gorge, clicker 2026-10-06: `act blogflock.com https://blogflock.com/register` was

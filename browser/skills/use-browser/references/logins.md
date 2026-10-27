@@ -17,8 +17,11 @@ An authenticator-app 2FA prompt is the one exception, and only on a site whose o
 seed on the box: `run` types the code itself, and `5dive browser totp fill <site> [<url>]` does
 it on demand. Neither shows you the code. With no seed saved, it stops like any challenge.
 
-**"Sign up / Sign in with Google" when the browser already holds a Google login.** Google's own
-pages get one fixed answer each, whatever site led there:
+**"Sign up / Sign in with Google" when the browser already holds a Google login.** If your
+default group (Main) holds the Google sign-in, a page verb on a new site puts that site in Main by
+itself and says so in one line ("shopify.com joined Main …"), so its Google button sees the
+account. Nothing for you to run first. Google's own pages get one fixed answer each, whatever
+site led there:
 
 - **You may click:** the account chooser, to pick the saved account the task names (never another
   one); the "Sign in to <app> with Google" / "Continue as …" confirm; a consent screen that asks

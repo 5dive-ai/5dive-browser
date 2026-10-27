@@ -8,7 +8,7 @@ that file stays where it is.
 
 ## Unreleased
 
-### Fixed — a signed-in Shopify admin reads signed in, and two sites of one sign-in group are not probed at once (DIVE-7079), 1.58.6
+### Fixed — a signed-in Shopify admin reads signed in, and two sites of one sign-in group are not probed at once (DIVE-7079), 1.58.7
 
 Two gaps from the Dropshipping Team trial (DIVE-6902). Both made `status` say a working login was gone, so the team stopped and waited for a person.
 
@@ -16,6 +16,16 @@ Two gaps from the Dropshipping Team trial (DIVE-6902). Both made `status` say a 
 - **One profile directory, one probe at a time.** Sites in a group are links to one Chrome profile (DIVE-6013), and `status` ran up to three probes side by side (DIVE-6582), so google.com and shopify.com in the group Main opened that profile twice and the second died on Chrome's SingletonLock ("File exists"). `status` now runs the sites of one directory one after another, and different directories still side by side. Each site keeps its own line.
 
 `tests/browser_status_group_serial_unit.sh`, 12 arms, with a fake Chrome that holds `SingletonLock` as Chrome does; S4 runs the same layout through 1.58.2 (`STATUS_BASELINE_BIN=`) and it clashes.
+
+### Fixed — a new site uses the Google sign-in already in the default group, not the signed-out public profile (DIVE-7076), 1.58.6
+
+On the Dropshipping trial box the seat's Main held a live Google sign-in, Clicker opened shopify.com's sign-up with a page verb, and it ran in the public profile, so "Continue with Google" asked for an email. Joining a group happened only in `auth` and `serve`, the person's verbs, and `group move` refused a site with no profile.
+
+- **A page verb on a new site joins the default group** when that group already holds a site (a sign-in to share), and says so in one line: `shopify.com joined Main, so it opens in Main's browser and the sign-ins there (google.com) count here. To keep it apart: 5dive browser group move shopify.com --own`. Both the URL form and the named form (`shot shopify.com <url>`). An empty Main, `group default --none`, a labelled account, a group that already holds another account of the site, an existing per-site profile, and an IP or localhost host all keep today's answer.
+- **It is no login of its own until a person signs in to it:** not probed before a render, not in `status`, `probe-all` or the drift check, so it is never reported "logged out". `auth <site>` clears that.
+- **`group move <site> <group>` links a site that has no profile yet**, a seat-runnable join with no person step; `--own` on such a site says it has none.
+
+`tests/browser_page_join_unit.sh` 30/30; on origin/main's `bin/browser` its J1 arms go red (negative control). `tests/browser_groups_unit.sh` 55/55, `tests/browser_google_signin_unit.sh` 65/65, `tests/browser_page_check_unit.sh` 39/39.
 
 ### Fixed — a login or check request on a self-hosted box with no Telegram reaches the owner, never "use the dashboard" (DIVE-7078), 1.58.5
 
