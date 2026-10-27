@@ -447,7 +447,7 @@ usage() {
   a second group.
 USAGE
   # DIVE-6219: a hosted box never sees this option.
-  _connect_has_front || printf '\n  SELF-HOSTED BOX: login links are off until the owner opts in.\n  sudo 5dive browser login-link   # the choices, each with its trade-off\n'
+  _connect_has_front || printf '\n  SELF-HOSTED BOX: login links are off until the owner opts in.\n  sudo 5dive browser login-link   # the choices, each with its trade-off\n  With nobody paired on Telegram, connect-request asks the owner in their login shell:\n  sudo 5dive browser asks         # what agents wait on them for; open <site>, done <site>\n'
 }
 
 # ---------------------------------------------------------------- profile store
@@ -9217,6 +9217,15 @@ CONNECT_LATE_TTL=7200        # a tap up to two hours late gets a fresh button (D
 CONNECT_LOOK_TIMEOUT=105
 CONNECT_DONE_LOOK_TIMEOUT=60
 CONNECT_DONE_TTL=7200        # and two hours to tap Done after that
+# DIVE-7078: a self-hosted box with nobody on Telegram. The ask waits in the
+# owner's login shell instead, so it waits as long as a person takes to log in.
+CONNECT_SHELL_TTL=86400
+# What is waiting, with no secret in it. Not under $STATE_DIR: that is root:<seat>
+# 2750, so the owner's own login could not read it (DIVE-6980).
+CONNECT_ASKS_DIR=/var/lib/5dive-browser-asks
+CONNECT_PROFILE_D=/etc/profile.d/5dive-browser-asks.sh
+CONNECT_SHELL_OK=0           # set only in-process by `asks`, never from the environment
+CONNECT_SHELL_SEAM=0         # `asks open|done` unprivileged, on the harness's own files
 CONNECT_VIEW_TTL=$VIEWER_TTL_DEFAULT
 CONNECT_REASON_MAX=200
 CONNECT_URL_MAX=1000
@@ -9239,6 +9248,9 @@ if [[ $EUID -ne 0 ]]; then
   CONNECT_SHELLD_URL="${FIVEDIVE_SHELLD_URL:-$CONNECT_SHELLD_URL}"
   CONNECT_TG_API="${FIVEDIVE_TELEGRAM_API:-$CONNECT_TG_API}"
   CONNECT_SELF="${FIVEDIVE_BROWSER_CONNECT_SELF:-$CONNECT_SELF}"
+  CONNECT_ASKS_DIR="${FIVEDIVE_BROWSER_ASKS_DIR:-$CONNECT_ASKS_DIR}"
+  [[ -n "${FIVEDIVE_BROWSER_CONNECT_DIR:-}" ]] && CONNECT_SHELL_SEAM=1
+  CONNECT_PROFILE_D="${FIVEDIVE_BROWSER_PROFILE_D:-$CONNECT_PROFILE_D}"
   [[ "${FIVEDIVE_BROWSER_CONNECT_LOOK_S:-}" =~ ^[0-9]+$ ]] \
     && CONNECT_LOOK_TIMEOUT="$FIVEDIVE_BROWSER_CONNECT_LOOK_S" CONNECT_DONE_LOOK_TIMEOUT="$FIVEDIVE_BROWSER_CONNECT_LOOK_S"
   [[ -n "${FIVEDIVE_BROWSER_CONNECT_PRIV:-}" ]] && CONNECT_PRIV=("$FIVEDIVE_BROWSER_CONNECT_PRIV" _connect)
@@ -9774,12 +9786,16 @@ _handoff_ssh_target() {
 
 # The steps, as plain text or as Telegram HTML (commands in <code>, so nothing
 # in them is turned into a link or previewed).
-_handoff_ssh_steps() {  # <plain|html> <site> <vnc port> <password file> <seat> <reason>
+# DIVE-7078: [<first line> <finish command>] word the same steps for an ask that
+# waits in the owner's login shell, whose Done is a command, not a button.
+_handoff_ssh_steps() {  # <plain|html> <site> <vnc port> <password file> <seat> <reason> [<first line> <finish command>]
   local fmt="$1" site="$2" vport="$3" pwf="$4" seat="$5" reason="$6" who="${5#agent-}" tgt
+  local head="${7:-}" finish="${8:-}"
+  [[ -n "$head" ]] || head="🖐 $who is working in $site on this box and needs you to take over."
   tgt=$(_handoff_ssh_target)
   _hs_t() { if [[ "$fmt" == html ]]; then sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<<"$1" | tr -d '\n'; else printf '%s' "$1"; fi; }
   _hs_c() { if [[ "$fmt" == html ]]; then printf '<code>%s</code>' "$(_hs_t "$1")"; else printf '  %s' "$1"; fi; }
-  _hs_t "🖐 $who is working in $site on this box and needs you to take over."; printf '\n'
+  _hs_t "$head"; printf '\n'
   [[ -n "$reason" ]] && { _hs_t "What for: $reason"; printf '\n'; }
   printf '\n'
   _hs_t "The same browser window is waiting for you over SSH. Nothing on it is public, so there is no link. On your laptop:"; printf '\n\n'
@@ -9789,6 +9805,10 @@ _handoff_ssh_steps() {  # <plain|html> <site> <vnc port> <password file> <seat> 
   _hs_c "ssh -t $tgt sudo cat $pwf"; printf '\n'
   _hs_t "3. Open this in Screen Sharing (Mac) or any VNC client, and enter the password:"; printf '\n'
   _hs_c "vnc://localhost:$HANDOFF_SSH_LOCAL_PORT"; printf '\n\n'
+  if [[ -n "$finish" ]]; then
+    _hs_t "$who waits while you are in it. When you are finished, close the VNC window, then run on the box: $finish  The view closes if nobody connects within $(( HANDOFF_SSH_TTL / 60 )) minutes."; printf '\n'
+    unset -f _hs_t _hs_c; return 0
+  fi
   _hs_t "$who is paused while you are in it. When you are finished, close the VNC window, then $( [[ "$fmt" == html ]] && printf 'tap Done' || printf 'tell %s, or run on the box: sudo -u %s 5dive browser handoff %s --close' "$who" "$seat" "$site" ). It carries on from the page you left. The view closes if nobody connects within $(( HANDOFF_SSH_TTL / 60 )) minutes."; printf '\n'
   unset -f _hs_t _hs_c
 }
@@ -9830,21 +9850,47 @@ _connect_handoff_ssh() {  # <caller> <site> <reason>
     rm -f "$f"
     printf 'Telegram did not accept the message, so the owner was not told. Give them these steps:\n\n'
   else
-    printf 'this box has no web front and this seat has no paired Telegram owner, so there is no link and nobody was messaged. Give the owner these steps:\n\n'
+    # DIVE-7078: nobody to message, so the same steps also wait in the owner's
+    # login shell, where their Done is a command and the agent is told of it.
+    # Best effort: the printed steps below still work if this cannot be written.
+    if ( _connect_handoff_shell "$caller" "$site" "$owner" "$vport" "$pwf" "$reason" ) 2>/dev/null; then
+      printf 'this box has no web front and this seat has no paired Telegram owner, so there is no link and nobody was messaged. The steps wait in the owner'"'"'s login shell on this box (sudo 5dive browser asks), and you get a message from this box when they finish. Here they are too, in case you can reach the owner another way:\n\n'
+    else
+      printf 'this box has no web front and this seat has no paired Telegram owner, so there is no link and nobody was messaged. Give the owner these steps:\n\n'
+    fi
   fi
   _handoff_ssh_steps plain "$site" "$vport" "$pwf" "$caller" "$reason"
 }
 
+# The no-paired-owner handoff's ask in the owner's login shell (DIVE-7078): the
+# steps, and a Done code only `asks done` can claim.
+_connect_handoff_shell() {  # <caller> <site> <window seat> <vnc port> <password file> <reason>
+  local done_code rec exp=$(( $(date -u +%s) + CONNECT_DONE_TTL ))
+  mkdir -p "$CONNECT_DIR" && chmod 700 "$CONNECT_DIR" || return 1
+  _connect_shell_drop "$1" "$2"
+  done_code=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  _connect_shell_put "$1" "$2" handoff 1 "$6" "$exp" open "done=$done_code"
+  rec=$(_connect_shell_rec "$1" "$2")
+  ( umask 077
+    printf 'op=done\nseat=%s\nsite=%s\nexpires_at=%s\nkind=handoff\nurl=\nowner=%s\nvia=shell\n' "$1" "$2" "$exp" "$3" > "$(_connect_file "$done_code")" \
+      && _handoff_ssh_steps plain "$2" "$4" "$5" "$1" "$6" "" "sudo 5dive browser asks done $2" > "$rec.steps" ) \
+    || { _connect_shell_drop "$1" "$2"; return 1; }
+  _connect_shell_notice || true
+}
+
 # One request code, stored as its hash: what a "Connect" / "Sign in once" button
 # carries. Sets CONNECT_CODE, CONNECT_CODE_FILE and CONNECT_EXP.
-_connect_mint() {  # <caller> <site> <kind> <url> <check> <reason>
+# [<ttl> shell]: a code for an ask that waits in the owner's login shell (DIVE-7078),
+# which only `asks` can claim, never a button.
+_connect_mint() {  # <caller> <site> <kind> <url> <check> <reason> [<ttl> <via>]
   local now
   mkdir -p "$CONNECT_DIR" && chmod 700 "$CONNECT_DIR" || die "$E_UNAVAILABLE" "cannot create $CONNECT_DIR"
   CONNECT_CODE=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
   CONNECT_CODE_FILE=$(_connect_file "$CONNECT_CODE")
-  now=$(date -u +%s); CONNECT_EXP=$(( now + CONNECT_REQ_TTL ))
+  now=$(date -u +%s); CONNECT_EXP=$(( now + ${7:-$CONNECT_REQ_TTL} ))
   ( umask 077; printf 'op=request\nseat=%s\nsite=%s\nexpires_at=%s\ncreated_at=%s\nkind=%s\nurl=%s\ncheck=%s\nreason=%s\n' \
-      "$1" "$2" "$CONNECT_EXP" "$now" "$3" "$4" "$5" "$6" > "$CONNECT_CODE_FILE" )
+      "$1" "$2" "$CONNECT_EXP" "$now" "$3" "$4" "$5" "$6" > "$CONNECT_CODE_FILE"
+    [[ -z "${8:-}" ]] || printf 'via=%s\n' "$8" >> "$CONNECT_CODE_FILE" )
 }
 
 # Mint one request code, store it, and send the ask (DIVE-6725: one sender for
@@ -9912,12 +9958,19 @@ _connect_request() {  # <caller> <site> <reason> [challenge <url> | handoff]
      && { ! _link_on || ! _connect_channel "$caller" || [[ "$CONNECT_TG_TYPE" != claude || -z "$CONNECT_TG_OWNERS" ]]; }; then
     _connect_handoff_ssh "$caller" "$site" "$reason"; return
   fi
-  _connect_channel "$caller" \
-    || die "$E_UNAVAILABLE" "seat '$caller' has no paired Telegram channel, so there is nobody to ask. Ask the owner to use Connected sites in the 5dive dashboard."
-  [[ "$CONNECT_TG_TYPE" == claude ]] \
-    || die "$E_UNAVAILABLE" "this seat's Telegram bridge ($CONNECT_TG_TYPE) cannot relay a Connect tap yet. Ask the owner to use Connected sites in the 5dive dashboard."
-  [[ -n "$CONNECT_TG_OWNERS" ]] \
-    || die "$E_UNAVAILABLE" "seat '$caller' has no paired owner on Telegram yet, so there is nobody to ask."
+  # DIVE-7078: a self-hosted box with nobody to tap a button has no dashboard
+  # either, so the ask waits in its owner's login shell. A hosted box keeps its words.
+  local shell=0
+  if ! _connect_has_front && ! { _connect_channel "$caller" && [[ "$CONNECT_TG_TYPE" == claude && -n "$CONNECT_TG_OWNERS" ]]; }; then
+    shell=1
+  else
+    _connect_channel "$caller" \
+      || die "$E_UNAVAILABLE" "seat '$caller' has no paired Telegram channel, so there is nobody to ask. Ask the owner to use Connected sites in the 5dive dashboard."
+    [[ "$CONNECT_TG_TYPE" == claude ]] \
+      || die "$E_UNAVAILABLE" "this seat's Telegram bridge ($CONNECT_TG_TYPE) cannot relay a Connect tap yet. Ask the owner to use Connected sites in the 5dive dashboard."
+    [[ -n "$CONNECT_TG_OWNERS" ]] \
+      || die "$E_UNAVAILABLE" "seat '$caller' has no paired owner on Telegram yet, so there is nobody to ask."
+  fi
 
   # DIVE-6725: look at the page before anyone is asked. An error page is not
   # sent at all; a page with no check on it is not called a captcha.
@@ -9937,6 +9990,7 @@ _connect_request() {  # <caller> <site> <reason> [challenge <url> | handoff]
     fi
   fi
 
+  if (( shell )); then _connect_shell_ask "$caller" "$site" "$kind" "$url" "$reason" "$check"; return; fi
   _connect_send "$caller" "$site" "$kind" "$url" "$reason" "$check" "$CONNECT_TG_OWNERS" \
     || die "$E_UNAVAILABLE" "Telegram did not accept the Connect message, so nobody was asked. Nothing was bound."
   local sent="$CONNECT_SENT" exp="$CONNECT_EXP"
@@ -9954,6 +10008,266 @@ _connect_request() {  # <caller> <site> <reason> [challenge <url> | handoff]
     printf 'You will get a channel message when they tap and when they finish. Then `5dive browser status %s` has the verdict.\n' "$site"
   fi
 }
+
+# >>> DIVE-7078 an ask that waits in the owner's login shell
+#
+# A self-hosted box with nobody paired on Telegram (the Dropshipping trial,
+# DIVE-6902) had nowhere to send a Connect button, and every refusal sent the
+# owner to a dashboard such a box does not have. Its owner's one look at the box
+# is their login shell, where DIVE-7077 already lists the task board's asks. So
+# the ask waits there:
+#   - root keeps the request code, as it does for a button: the agent never
+#     holds it, so it can never open the link itself;
+#   - a summary with no secret in it goes where any login can read it, and
+#     /etc/profile.d prints it at the owner's next login;
+#   - `sudo 5dive browser asks open <site>` is the tap: a one-time login link
+#     when login links are on, else the SSH steps to the same window;
+#   - `sudo 5dive browser asks done <site>` is the Done tap: the same check, and
+#     then the agent is told (5dive agent send), so it carries on without polling.
+# A hosted box, and a box whose owner taps buttons on Telegram, never get here.
+
+_connect_shell_key() { printf '%s.%s' "$1" "$2"; }   # <seat> <site>, both already validated
+_connect_shell_rec() { printf '%s/shell/%s' "${CONNECT_DIR:?}" "$(_connect_shell_key "$1" "$2")"; }
+_connect_shell_pub() { printf '%s/%s.ask' "${CONNECT_ASKS_DIR:?}" "$(_connect_shell_key "$1" "$2")"; }
+
+# Root's record (it holds the code) and the readable summary (it does not).
+_connect_shell_put() {  # <seat> <site> <kind> <check> <reason> <expires epoch> <waiting|open> <request=…|done=…>
+  local rec pub body
+  rec=$(_connect_shell_rec "$1" "$2"); pub=$(_connect_shell_pub "$1" "$2")
+  mkdir -p "${rec%/*}" && chmod 700 "$CONNECT_DIR" "${rec%/*}" || die "$E_UNAVAILABLE" "cannot create ${rec%/*}"
+  mkdir -p "$CONNECT_ASKS_DIR" && chmod 755 "$CONNECT_ASKS_DIR" || die "$E_UNAVAILABLE" "cannot create $CONNECT_ASKS_DIR"
+  body=$(printf 'seat=%s\nsite=%s\nkind=%s\ncheck=%s\nreason=%s\nexpires_at=%s\nstate=%s' "$1" "$2" "$3" "$4" "$5" "$6" "$7")
+  ( umask 077; printf '%s\n%s\n' "$body" "$8" > "$rec.$$" && mv -f "$rec.$$" "$rec" ) \
+    && ( umask 022; printf '%s\nline=%s needs you to %s in the browser on this box. See it: sudo 5dive browser asks\n' \
+           "$body" "${1#agent-}" "$(_connect_shell_what "$3" "$4" "$2")" > "$pub.$$" && mv -f "$pub.$$" "$pub" ) \
+    || die "$E_UNAVAILABLE" "could not write the ask for $2"
+}
+
+_connect_shell_drop() {  # <seat> <site>
+  local rec pub c; rec=$(_connect_shell_rec "$1" "$2"); pub=$(_connect_shell_pub "$1" "$2")
+  for c in "$(_connect_field "$rec" request)" "$(_connect_field "$rec" done)"; do
+    [[ "$c" =~ ^[0-9a-f]{48}$ ]] && rm -f -- "$(_connect_file "$c")"
+  done
+  rm -f -- "$rec" "$rec.steps" "$pub"
+}
+
+# What a login shell runs: plain sh over the readable summaries, with no 5dive
+# command in it, so a CLI that cannot run for this user cannot hide an ask. Quiet
+# for an agent seat and for anything that is not a terminal.
+_connect_shell_notice() {
+  local f="$CONNECT_PROFILE_D" d="$CONNECT_ASKS_DIR" want
+  [[ -d "${f%/*}" && "$d" =~ ^/[A-Za-z0-9._/-]+$ ]] || return 0
+  want=$(cat <<SH
+# 5dive browser (DIVE-7078): a login or check an agent waits on, shown at login.
+if [ -t 1 ] && case "\$-" in *i*) true ;; *) false ;; esac; then
+  case "\$(id -un 2>/dev/null)" in
+    agent-*) ;;
+    *) for _5d_f in $d/*.ask; do
+         [ -f "\$_5d_f" ] || continue
+         _5d_e=\$(sed -n 's/^expires_at=//p' "\$_5d_f" | head -n 1)
+         [ "\${_5d_e:-0}" -gt "\$(date +%s)" ] 2>/dev/null || continue
+         printf '5dive: %s\\n' "\$(sed -n 's/^line=//p' "\$_5d_f" | head -n 1 | tr -d '\\000-\\037\\177')"
+       done
+       unset _5d_f _5d_e ;;
+  esac
+fi
+SH
+)
+  [[ "$(cat "$f" 2>/dev/null)" == "$want" ]] && return 0
+  ( umask 022; printf '%s\n' "$want" > "$f.$$" && mv -f "$f.$$" "$f" ) 2>/dev/null
+}
+
+# What the owner is asked to do, in plain words.
+_connect_shell_what() {  # <kind> <check> <site>
+  case "$1" in
+    challenge) if [[ "$2" == 0 ]]; then printf 'take over on %s' "$3"; else printf 'clear a check on %s' "$3"; fi ;;
+    handoff)   printf 'take over in %s' "$3" ;;
+    *)         printf 'log in to %s' "$3" ;;
+  esac
+}
+
+# Root, from _connect_request: the ask is minted for the shell and nobody is messaged.
+_connect_shell_ask() {  # <caller> <site> <kind> <url> <reason> <check>
+  local caller="$1" site="$2" kind="$3" url="$4" reason="$5" check="$6"
+  _connect_shell_drop "$caller" "$site"   # a new ask replaces the seat's last one for the site
+  _connect_mint "$caller" "$site" "$kind" "$url" "$check" "$reason" "$CONNECT_SHELL_TTL" shell
+  _connect_shell_put "$caller" "$site" "$kind" "$check" "$reason" "$CONNECT_EXP" waiting "request=$CONNECT_CODE"
+  _connect_shell_notice || true
+  printf 'nobody on this box is paired on Telegram, so the owner was asked in their login shell on this box: their next login shows that you need them to %s, and `sudo 5dive browser asks` opens it. You never see the link. Nothing is bound until they open it; the ask expires %s.\n' \
+    "$(_connect_shell_what "$kind" "$check" "$site")" "$(date -u -d "@$CONNECT_EXP" +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'You get a message from this box when they finish. Do not poll. If you talk to the owner before then, tell them to run: sudo 5dive browser asks\n'
+}
+
+# The one record `asks open|done` acts on. Sets ASK_SEAT and ASK_REC.
+_asks_pick() {  # <site> [<seat>]
+  local site="$1" seat="${2:-}" f k; local -a hit=()
+  _valid_site "$site" || die "$E_USAGE" "'$site' is not a site"
+  for f in "$CONNECT_DIR"/shell/*."$site"; do
+    [[ -f "$f" && "$(_connect_field "$f" site)" == "$site" ]] || continue
+    k=$(_connect_field "$f" seat)
+    [[ -z "$seat" || "$k" == "$seat" || "$k" == "agent-$seat" ]] && hit+=("$k")
+  done
+  (( ${#hit[@]} )) || die "$E_USAGE" "nothing is waiting for you on $site. See what is: sudo 5dive browser asks"
+  (( ${#hit[@]} == 1 )) || die "$E_USAGE" "more than one agent waits on $site (${hit[*]}); add --seat=<one of them>"
+  ASK_SEAT="${hit[0]}" ASK_REC=$(_connect_shell_rec "${hit[0]}" "$site")
+}
+
+_asks_list() {
+  local now f n=0 seat site kind check reason exp state who out="" root=0
+  [[ $EUID -eq 0 ]] || (( CONNECT_SHELL_SEAM )) && root=1
+  now=$(date -u +%s)
+  for f in "$CONNECT_ASKS_DIR"/*.ask; do
+    [[ -f "$f" ]] || continue
+    seat=$(_connect_field "$f" seat) site=$(_connect_field "$f" site) exp=$(_connect_field "$f" expires_at)
+    [[ "$seat" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] && _valid_site "$site" || continue
+    if [[ ! "$exp" =~ ^[0-9]+$ ]] || (( exp <= now )); then
+      (( root )) && _connect_shell_drop "$seat" "$site"
+      continue
+    fi
+    kind=$(_connect_field "$f" kind) check=$(_connect_field "$f" check) state=$(_connect_field "$f" state)
+    reason=$(_connect_field "$f" reason | LC_ALL=C tr -d '\000-\037\177' | cut -c1-"$CONNECT_REASON_MAX")
+    who="${seat#agent-}"; n=$((n + 1))
+    out+=$(printf '\n  %s needs you to %s in the browser on this box.' "$who" "$(_connect_shell_what "$kind" "$check" "$site")")
+    [[ -n "$reason" ]] && out+=$(printf '\n  Why: %s' "$reason")
+    if [[ "$state" == open && "$kind" != handoff ]]; then
+      out+=$(printf '\n  When you are finished:  sudo 5dive browser asks done %s' "$site")
+    else
+      out+=$(printf '\n  Open it:  sudo 5dive browser asks open %s' "$site")
+    fi
+    out+=$'\n'
+  done
+  (( n )) || { printf 'nothing is waiting for you in the browser on this box.\n'; return 0; }
+  if (( n == 1 )); then printf '5dive: an agent is waiting for you in the browser on this box.\n'
+  else printf '5dive: %s agents are waiting for you in the browser on this box.\n' "$n"; fi
+  printf '%s\n' "$out"
+}
+
+# The tap. A link when login links are on; the SSH steps to the window when not.
+_asks_open() {  # <site> [<seat>]
+  _asks_pick "$@"
+  CONNECT_CALLER="$ASK_SEAT"   # the audit row names the agent that asked, as a tap does
+  local site="$1" seat="$ASK_SEAT" rec="$ASK_REC" kind check reason code who head rc=0
+  kind=$(_connect_field "$rec" kind) check=$(_connect_field "$rec" check) reason=$(_connect_field "$rec" reason)
+  who="${seat#agent-}"
+  if [[ "$(_connect_field "$rec" state)" == open ]]; then
+    [[ -f "$rec.steps" ]] && { cat "$rec.steps"; return 0; }
+    die "$E_PERM" "this one is already open, and its one-time link is shown only once. When you are finished: sudo 5dive browser asks done $site"
+  fi
+  code=$(_connect_field "$rec" request)
+  [[ "$code" =~ ^[0-9a-f]{48}$ ]] || die "$E_PERM" "this ask carries no usable code; ask $who to send it again"
+  case "$kind" in
+    challenge) if [[ "$check" == 0 ]]; then head="🖐 $who is working on $site and needs you to take over."
+               else head="🧩 $who is stuck on a check on $site and cannot go on by itself. Clear it yourself; $who never solves these."; fi ;;
+    *)         head="🔐 $who asks you to log in to $site in the browser on this box. You log in yourself; $who never sees your password." ;;
+  esac
+  if _link_on; then ( _asks_open_link "$seat" "$site" "$code" "$kind" "$check" "$reason" "$head" ) || rc=$?
+  else ( _asks_open_ssh "$seat" "$site" "$code" "$kind" "$check" "$reason" "$head" ) || rc=$?; fi
+  if (( rc != 0 )); then
+    _connect_shell_drop "$seat" "$site"
+    printf '%s: that ask is closed now. Ask %s to send it again.\n' "$PROG" "$who" >&2
+    exit "$rc"
+  fi
+}
+
+_asks_open_link() {  # <seat> <site> <code> <kind> <check> <reason> <first line>
+  local seat="$1" site="$2" out url done exp
+  out=$(_connect_tap "$seat" "$3" shell) || exit $?
+  url=$(sed -n 's/^url=//p' <<<"$out" | head -1); done=$(sed -n 's/^done=//p' <<<"$out" | head -1)
+  exp=$(sed -n 's/^expires=//p' <<<"$out" | head -1)
+  [[ "$url" =~ ^https://[A-Za-z0-9.-]+/browser/viewer/ && "$done" =~ ^[0-9a-f]{48}$ ]] \
+    || die "$E_UNAVAILABLE" "the box returned an unusable login link"
+  _connect_shell_put "$seat" "$site" "$4" "$5" "$6" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" open "done=$done"
+  printf '%s\n' "$7"
+  [[ -n "$6" ]] && printf 'Why: %s\n' "$6"
+  printf '\nOpen this one-time link in your own browser. It works once and expires %s. Do not paste it anywhere else:\n\n  %s\n\n' "$exp" "$url"
+  printf 'When you are finished, close the tab, then run:\n\n  sudo 5dive browser asks done %s\n' "$site"
+}
+
+_asks_open_ssh() {  # <seat> <site> <code> <kind> <check> <reason> <first line>
+  local seat="$1" site="$2" err line vport pwf done f rec; local -a at=()
+  _connect_claim "$seat" "$3" request shell
+  [[ "$CONNECT_KIND" == challenge ]] && _connect_page_ok "$site" "$CONNECT_URL" && at=("--url=$CONNECT_URL")
+  _connect_serve_person "$site" "${at[@]}"
+  err=$(mktemp)
+  _connect_as_box viewer "$site" --bind=local "--ttl=$HANDOFF_SSH_TTL" >/dev/null 2>"$err" \
+    || { line=$(tail -1 "$err"); rm -f -- "$err"; die "$E_UNAVAILABLE" "could not open a view of the $site window: $line"; }
+  line=$(grep -m1 '^local view: ' "$err"); rm -f -- "$err"
+  vport=$(sed -n 's/.*127\.0\.0\.1:\([0-9]\{1,5\}\) of this box.*/\1/p' <<<"$line")
+  pwf=$(sed -n 's/.*: sudo cat \(\/.*\/\.5dive-viewer\.pw\)$/\1/p' <<<"$line")
+  if [[ ! "$vport" =~ ^[0-9]{1,5}$ || ! "$pwf" =~ ^/[A-Za-z0-9._/@+-]+$ ]]; then
+    _connect_as_box viewer-revoke "$site" >/dev/null 2>&1 || true
+    die "$E_UNAVAILABLE" "the $site view did not say where it listens; it was closed"
+  fi
+  done=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'); f=$(_connect_file "$done")
+  ( umask 077; printf 'op=done\nseat=%s\nsite=%s\nexpires_at=%s\nkind=%s\nurl=%s\ncheck=%s\nvia=shell\n' \
+      "$seat" "$site" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" "$CONNECT_KIND" "$CONNECT_URL" "$CONNECT_CHECK" > "$f" )
+  _connect_shell_put "$seat" "$site" "$4" "$5" "$6" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" open "done=$done"
+  rec=$(_connect_shell_rec "$seat" "$site")
+  ( umask 077; _handoff_ssh_steps plain "$site" "$vport" "$pwf" "$seat" "$6" "$7" "sudo 5dive browser asks done $site" > "$rec.steps" )
+  cat "$rec.steps"
+  printf '\nLogin links are off on this box, so this is the way in over SSH. For a link instead: sudo 5dive browser login-link\n'
+}
+
+# The Done tap: the same check a button's Done runs, then the agent is told.
+_asks_done() {  # <site> [<seat>]
+  _asks_pick "$@"
+  CONNECT_CALLER="$ASK_SEAT"   # the audit row names the agent that asked, as a tap does
+  local site="$1" seat="$ASK_SEAT" rec="$ASK_REC" kind code out rc=0 st src chk who note
+  who="${seat#agent-}" kind=$(_connect_field "$rec" kind)
+  [[ "$(_connect_field "$rec" state)" == open ]] \
+    || die "$E_USAGE" "this one is not open yet. Open it first: sudo 5dive browser asks open $site"
+  code=$(_connect_field "$rec" done)
+  out=$( _connect_done "$seat" "$code" shell ) || rc=$?
+  _connect_shell_drop "$seat" "$site"
+  (( rc == 0 )) || { printf '%s: ask %s to send it again.\n' "$PROG" "$who" >&2; exit "$rc"; }
+  st=$(sed -n 's/^status=//p' <<<"$out" | head -1); src=$(sed -n 's/^status_rc=//p' <<<"$out" | head -1)
+  chk=$(sed -n 's/^check=//p' <<<"$out" | head -1)
+  case "$kind" in
+    challenge)
+      if [[ "$chk" == still ]]; then printf '⚠️ Thanks. The box still sees a check on %s, so %s will say so if it cannot go on.\n' "$site" "$who"
+      else printf '✅ Thanks. %s is carrying on with %s.\n' "$who" "$site"; fi
+      note="[browser challenge] The owner finished on $site, from their login shell on this box. The box browser for $site is back in your hands. ${st:+What it shows now: $st. }Carry on with the task now, without asking them again: first check what already happened (did the step you were on go through?) so nothing is sent twice, then re-read the page you were stopped on (5dive browser snapshot <that url>) and continue from that step. If a check is still on the page, say so once and stop; never try to solve it." ;;
+    handoff)
+      printf '✅ Thanks. %s has the %s window back.\n' "$who" "$site"
+      note="[browser handoff] The owner finished in $site, from their login shell on this box. The window is back in your hands, on the page they left. ${st:+Status: $st.}" ;;
+    *)
+      if [[ "$src" == 0 ]]; then printf '✅ %s is connected. %s can use it now.\n' "$site" "$who"
+      else printf '⚠️ %s is not confirmed logged in: %s\n' "$site" "${st:-no verdict}"; fi
+      note="[browser connect] The owner finished logging in to $site, from their login shell on this box. ${st:+Status: $st. }\`5dive browser status $site\` has the verdict." ;;
+  esac
+  if printf '%s' "$note" | "$SAVED_CLI" agent send "$who" --message-file=- >/dev/null 2>&1; then
+    printf '%s was told.\n' "$who"
+  else
+    printf 'This box could not message %s, so tell it yourself that you are done.\n' "$who"
+  fi
+}
+
+cmd_asks() {
+  local sub="${1:-}" site="" seat="" a; (( $# )) && shift
+  case "$sub" in
+    ""|list) _asks_list; return 0 ;;
+    -h|--help|help)
+      printf '%s asks                         what agents on this box wait on you for in the browser\n' "$PROG"
+      printf '%s asks open <site> [--seat=<s>] open it: a one-time login link, or the SSH steps to the window\n' "$PROG"
+      printf '%s asks done <site> [--seat=<s>] you are finished: the agent is checked back in and told\n' "$PROG"
+      return 0 ;;
+    open|done) ;;
+    *) die "$E_USAGE" "asks: list, open <site> or done <site>" ;;
+  esac
+  for a in "$@"; do
+    case "$a" in
+      --seat=*) seat="${a#*=}" ;;
+      -*) die "$E_USAGE" "unknown flag: $a" ;;
+      *) [[ -z "$site" ]] || die "$E_USAGE" "one site at a time"; site="$a" ;;
+    esac
+  done
+  [[ -n "$site" ]] || die "$E_USAGE" "which site? sudo 5dive browser asks $sub <site>"
+  [[ $EUID -eq 0 ]] || (( CONNECT_SHELL_SEAM )) \
+    || die "$E_PERM" "this opens the browser on this box for you, so it runs as root: sudo 5dive browser asks $sub $site"
+  CONNECT_SHELL_OK=1
+  if [[ "$sub" == open ]]; then _asks_open "$site" "$seat"; else _asks_done "$site" "$seat"; fi
+}
+# <<< DIVE-7078
 
 # >>> DIVE-6973 an agent at a sign-in page asks to sign in once, or to save it
 #
@@ -10078,8 +10392,16 @@ _connect_claim() {  # <caller> <code> <op> <sender>  -> sets CONNECT_SITE; print
   seat=$(_connect_field "$f" seat)
   [[ "$seat" == "$caller" ]] \
     || die "$E_PERM" "that button was issued to another seat's bot, not this one"
-  _connect_is_owner "$caller" "$sender" \
-    || die "$E_PERM" "only this seat's paired owner can use that button"
+  # DIVE-7078: an ask waiting in the owner's login shell is claimed only by root's
+  # `asks`, in this process; a button can never claim one, nor `asks` a button's.
+  if [[ "$(_connect_field "$f" via)" == shell ]]; then
+    [[ "$sender" == shell && "$CONNECT_SHELL_OK" == 1 ]] \
+      || die "$E_PERM" "that ask waits in the owner's login shell on this box, not on a button"
+  else
+    [[ "$sender" != shell ]] || die "$E_PERM" "that ask is not waiting in this box's login shell"
+    _connect_is_owner "$caller" "$sender" \
+      || die "$E_PERM" "only this seat's paired owner can use that button"
+  fi
   exp=$(_connect_field "$f" expires_at)
   claimed="$f.claimed.$$"
   mv "$f" "$claimed" 2>/dev/null || die "$E_PERM" "that button is not live (already used, expired, or never issued)"
@@ -10088,7 +10410,7 @@ _connect_claim() {  # <caller> <code> <op> <sender>  -> sets CONNECT_SITE; print
     # 09:32:08Z a button that expired at 09:31:03Z and could only start over.
     # The paired owner (checked above) gets a fresh button with the same ask,
     # bound by the same rails, so the expired code itself still binds nothing.
-    if [[ "$op" == request && "$exp" =~ ^[0-9]+$ ]] && (( $(date -u +%s) - exp <= CONNECT_LATE_TTL )) \
+    if [[ "$op" == request && "$sender" != shell && "$exp" =~ ^[0-9]+$ ]] && (( $(date -u +%s) - exp <= CONNECT_LATE_TTL )) \
        && _connect_send "$caller" "$(_connect_field "$claimed" site)" "$(_connect_field "$claimed" kind)" \
             "$(_connect_field "$claimed" url)" "$(_connect_field "$claimed" reason)" \
             "$(_connect_field "$claimed" check | grep -x 0 || echo 1)" "$sender" again; then
@@ -10124,6 +10446,29 @@ _connect_as_seat() {  # <seat> <browser verb args...>
   fi
 }
 
+# The box browser for <site>, started for a person to use (a tap, or an ask
+# opened from the owner's login shell).
+_connect_serve_person() {  # <site> [--url=<page>]
+  local site="$1" rc=0 e why; shift
+  local -a at=("$@")
+  e=$(mktemp)
+  # serve first, so an existing profile resolves the way it always has; auth
+  # only when serve says there is no profile, then serve once more (DIVE-4895).
+  # --login (DIVE-5203): a person is about to use this browser, so it is plain
+  # Chrome — for a captcha as much as for a sign-in, since the checks that refuse
+  # an automated browser's login are the same ones that keep re-asking it.
+  _connect_as_box serve "$site" --login "${at[@]}" >/dev/null 2>"$e" || rc=$?
+  if (( rc != 0 )) && grep -q '\bno profile for\b' "$e"; then
+    rc=0; _connect_as_box auth "$site" >/dev/null 2>"$e" || rc=$?
+    # auth on a display-less box serves the site's FRONT page itself, and a
+    # running browser keeps its tab; a captcha view must open on the stopped page.
+    (( rc == 0 && ${#at[@]} )) && { _connect_as_box serve "$site" --stop >/dev/null 2>&1 || true; }
+    (( rc == 0 )) && { rc=0; _connect_as_box serve "$site" --login "${at[@]}" >/dev/null 2>"$e" || rc=$?; }
+  fi
+  why=$(tail -1 "$e"); rm -f "$e"
+  (( rc == 0 )) || die "$E_UNAVAILABLE" "the browser for $site did not start: $why"
+}
+
 _connect_tap() {  # <caller> <code> <sender>
   local caller="$1" code="$2" sender="$3" site out err rc path exp bind token host done_code f
   _connect_claim "$caller" "$code" request "$sender"
@@ -10136,20 +10481,7 @@ _connect_tap() {  # <caller> <code> <sender>
   fi
 
   err=$(mktemp); trap 'rm -f "$err"' EXIT
-  # serve first, so an existing profile resolves the way it always has; auth
-  # only when serve says there is no profile, then serve once more (DIVE-4895).
-  # --login (DIVE-5203): a person is about to use this browser, so it is plain
-  # Chrome — for a captcha as much as for a sign-in, since the checks that refuse
-  # an automated browser's login are the same ones that keep re-asking it.
-  rc=0; _connect_as_box serve "$site" --login "${at[@]}" >/dev/null 2>"$err" || rc=$?
-  if (( rc != 0 )) && grep -q '\bno profile for\b' "$err"; then
-    rc=0; _connect_as_box auth "$site" >/dev/null 2>"$err" || rc=$?
-    # auth on a display-less box serves the site's FRONT page itself, and a
-    # running browser keeps its tab; a captcha view must open on the stopped page.
-    (( rc == 0 && ${#at[@]} )) && { _connect_as_box serve "$site" --stop >/dev/null 2>&1 || true; }
-    (( rc == 0 )) && { rc=0; _connect_as_box serve "$site" --login "${at[@]}" >/dev/null 2>"$err" || rc=$?; }
-  fi
-  (( rc == 0 )) || die "$E_UNAVAILABLE" "the browser for $site did not start: $(tail -1 "$err")"
+  _connect_serve_person "$site" "${at[@]}"
 
   bind=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
   rc=0; out=$(_connect_as_box viewer "$site" "--bind=$bind" "--ttl=$CONNECT_VIEW_TTL" 2>"$err") || rc=$?
@@ -10193,7 +10525,8 @@ _connect_tap() {  # <caller> <code> <sender>
   done_code=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
   f=$(_connect_file "$done_code")
   ( umask 077; printf 'op=done\nseat=%s\nsite=%s\nexpires_at=%s\nkind=%s\nurl=%s\ncheck=%s\n' \
-      "$caller" "$site" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" "$kind" "$CONNECT_URL" "$CONNECT_CHECK" > "$f" )
+      "$caller" "$site" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" "$kind" "$CONNECT_URL" "$CONNECT_CHECK" > "$f"
+    [[ "$sender" != shell ]] || printf 'via=shell\n' >> "$f" )
   printf 'site=%s\nurl=https://%s%s\nexpires=%s\ndone=%s\nkind=%s\n' \
     "$site" "$host" "$path" "$(date -u -d "@$exp" +%Y-%m-%dT%H:%M:%SZ)" "$done_code" "$kind"
   # DIVE-6725: whether the box saw a check on the page, so the plugin's link
@@ -10340,6 +10673,7 @@ cmd_connect_request() {
     printf '%s\0' request "$site" "$reason" | "${CONNECT_PRIV[@]}" || rc=$?
   fi
   if (( rc == 1 )) && [[ "${CONNECT_PRIV[0]}" == sudo ]] && ! sudo -n -l /usr/local/bin/5dive browser _connect >/dev/null 2>&1; then
+    _connect_has_front || die "$E_PERM" "this seat has no grant to send a Connect request, so nobody was asked. Tell the owner in your reply that $site needs them in the browser on this box."
     die "$E_PERM" "this seat has no grant to send a Connect request. Ask the owner to use Connected sites in the 5dive dashboard."
   fi
   return "$rc"
@@ -10406,7 +10740,8 @@ if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
     # `config` too: the drive default is one box-wide file (DIVE-5338).
     # `login-link` (DIVE-6219) installs box-wide services and writes /etc.
     # `claude enable|disable` (DIVE-6345) is the same policy file as adblock.
-    setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|claude-box|act-saved|totp|login-link|-h|--help|help|"") ;;
+    # `asks` (DIVE-7078) reads root's request codes for the owner at a login shell.
+    asks|setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|claude-box|act-saved|totp|login-link|-h|--help|help|"") ;;
     *)
       # DIVE-4813: usually the caller, and for a brokered `serve` the owner.
       _drop="$(_root_drop_target "${SUDO_USER}" "$@")"
@@ -11016,7 +11351,11 @@ cmd_handoff() {
           rm -f "$verr"
         fi
         if (( rc != 0 )); then
-          printf '%s: the owner could not be asked over Telegram (above). They can take over from the dashboard: Connected sites -> %s -> Connect opens this same window.\n' "$PROG" "$site" >&2
+          if _connect_has_front; then
+            printf '%s: the owner could not be asked over Telegram (above). They can take over from the dashboard: Connected sites -> %s -> Connect opens this same window.\n' "$PROG" "$site" >&2
+          else
+            printf '%s: the owner could not be asked (above). Tell them in your reply that the %s window on this box needs them.\n' "$PROG" "$site" >&2
+          fi
         fi
       fi
       printf 'Wait for them:  5dive browser handoff %s --wait\n' "$site"
@@ -11182,6 +11521,7 @@ case "${1:-}" in
   connect-request) shift; cmd_connect_request "$@" ;;
   login-ask) shift; cmd_login_ask "$@" ;;
   login-link) shift; cmd_login_link "$@" ;;
+  asks) shift; cmd_asks "$@" ;;
   handoff) shift; cmd_handoff "$@" ;;
   # Not in usage: the privileged half, reached only as `sudo -n … browser _connect`.
   _connect) shift; cmd_connect_priv "$@" ;;
