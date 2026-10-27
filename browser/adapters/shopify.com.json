@@ -1,0 +1,10 @@
+{
+  "_comment": "MEASURED on BOTH halves (DIVE-7079, 2026-10-27, the plugin's own capture and status on the Dropshipping trial box). It probes admin.shopify.com, not shopify.com: shopify.com's public header always carries a 'Log in' link, so the generic check read a signed-in store as expired (trial row DIVE-39 stalled on that). LOGGED OUT, two throwaway profiles on the trial box: admin.shopify.com sends you to accounts.shopify.com/session-service/login, and from a server that page is Cloudflare's 'Just a moment...' check (11 KB), with /session-service/login 3 matches and cZone: 'accounts.shopify.com' 1 match; the same render from 5dive-ci matched both too. Counted with both markers together: signed out 4 logged-out and 0 signed-in matches in each render. LOGGED IN, the trial store: the drawn admin (127 KB, the served session, waiting on these markers) has 5 signed-in and 0 logged-out matches, and `status shopify.com` read authenticated, where the build without this adapter read 'session expired'. The undrawn admin shell (14.5 KB) has 0 of either. Never use plain 'accounts.shopify.com' as a marker: the signed-in shell names it twice. The signed-in marker is a link into one store's Orders, Products or Customers; with it set, a page that shows neither marker (the real Shopify login form past Cloudflare was never observed, and a Cloudflare check on the admin itself) reads UNKNOWN, never authenticated.",
+  "site": "shopify.com",
+  "probe": {
+    "url": "https://admin.shopify.com/",
+    "logged_out_when_dom_matches": "cZone: ?'accounts\\.shopify\\.com'|/session-service/login",
+    "logged_in_when_dom_matches": "/store/[a-z0-9][a-z0-9-]*/(orders|products|customers)"
+  },
+  "actions": {}
+}
