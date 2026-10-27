@@ -68,7 +68,14 @@ They log in, then tap **Done**. Done revokes the view, stops the browser and pro
 that order. You get a channel message at each step, `[browser connect] …`. After the
 Done message, `5dive browser status <site>` has the verdict. Do not poll while you wait.
 
-**On a self-hosted box (no 5dive domain) with nobody paired on Telegram**, the same
+**On a self-hosted box linked to the 5dive app**, the ask goes to your chat there first: one
+**Connect <site>** link (or **Open <site>** for a check) with **Done** and **Not now** under it.
+You never see the link. Their answer comes back to you as a chat message; then run
+`5dive browser connect-done <site>`, which closes their view and prints the verdict. The first
+ask on a box can take about 2 minutes while it sets up its secure web address; if it cannot
+make one, the chat tells the owner to use their login shell (below) and you get a message.
+
+**On a self-hosted box (no 5dive domain) with nobody paired on Telegram**, not linked to the app, the same
 `connect-request` (and `--challenge`) still reaches the owner: the ask waits in their login
 shell on the box (DIVE-7078). Their next login lists it. `sudo 5dive browser asks open <site>`
 gives them the one-time login link, or the SSH steps to the same window when login links are

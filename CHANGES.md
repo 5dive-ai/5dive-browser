@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — on a self-hosted box linked to the 5dive app, a login or check ask arrives in the agent's app chat as one Connect link (DIVE-7133), 1.59.0
+
+Found by main's easy-login count (DIVE-6822): on a fresh self-hosted box linked chat-only to the app, `connect-request` sent the ask to the box's login shell, and signing a site in took SSH. The owner already reads each agent's chat in the app.
+
+- **The app chat comes first** (then Telegram, then the login shell). Root mints the ask and taps it at once (the app cannot call the box back), and posts ONE agent message to the box's API with the box token: the text says what is asked, and the one-time link (the box's own viewer, 30 minutes) rides only in the message's metadata, so a phone push never carries it. **Done** and **Not now** come back to the agent as a chat message; `5dive browser connect-done <site>` closes the view and prints the verdict, as a Telegram Done does.
+- **The link is on the box's own https.** `login-link enable --via=box --host=<name>` puts the login-link server behind the front `5dive secret https` makes (5dive CLI with DIVE-7133, which forwards `/browser/viewer/` to it), so the two no longer fight over ports 80 and 443. With no front yet, the first ask runs `5dive secret https enable --via=auto` (an IP certificate, then sslip.io) in the background, about 2 minutes, then posts.
+- **No https possible** (behind a home router): the chat says so in one line and gives `sudo 5dive browser asks`; the ask waits in the login shell and the agent is told.
+- A box not linked, or a hosted box, keeps today's path.
+
+`tests/browser_connect_app_unit.sh`, 75 arms with a fake API on loopback (F3: the background set-up survives the hangup when the call returns, under a pty); O6 runs the same fixture through 1.58.7 and nothing reaches the app. `browser_connect_shell_unit` 84/84, `browser_connect_request_unit` 284/284, `browser_login_link_unit` 148/148.
+
 ### Fixed — a signed-in Shopify admin reads signed in, and two sites of one sign-in group are not probed at once (DIVE-7079), 1.58.7
 
 Two gaps from the Dropshipping Team trial (DIVE-6902). Both made `status` say a working login was gone, so the team stopped and waited for a person.
