@@ -59,6 +59,10 @@ jobs:
       # The real login-link server on loopback, a fake viewer-redeem and bridge.
       - name: login-link harness
         run: bash tests/browser_login_link_unit.sh
+      # DIVE-7078: no Telegram on a self-hosted box: the ask waits in the owner's login
+      # shell, `asks open` is the tap and `asks done` the Done. A fake relay-seat browser.
+      - name: connect-in-the-login-shell harness
+        run: bash tests/browser_connect_shell_unit.sh
       # DIVE-4997: reflex drafts a login check, the owner approves it, drift.
       # A fake reflex CLI whose candidates really match the fixtures.
       - name: reflex propose harness
