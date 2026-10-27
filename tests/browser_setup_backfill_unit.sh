@@ -133,8 +133,10 @@ tn 'B4 ...says nothing about earlier hires'                    'hired before the
 
 # --- B5 negative control: today's main --------------------------------------
 OLD="$TMP/old"; mkdir -p "$OLD/bin"
+# grep -c, not -q: -q exits at the first match, git show takes SIGPIPE, and under pipefail
+# the `!` reads that as "not carried", so the control ran against a main that has the fix.
 if git -C "$ROOT" cat-file -e origin/main:browser/bin/browser 2>/dev/null \
-   && ! git -C "$ROOT" show origin/main:browser/bin/browser | grep -q '_setup_backfill_seats'; then
+   && ! git -C "$ROOT" show origin/main:browser/bin/browser | grep -c '_setup_backfill_seats' >/dev/null; then
   rm -rf "$OLD"; cp -r "$ROOT/browser" "$OLD"
   git -C "$ROOT" show origin/main:browser/bin/browser > "$OLD/bin/browser"; chmod +x "$OLD/bin/browser"
   fresh "$OLD"; AS=root go

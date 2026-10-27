@@ -147,8 +147,10 @@ out=$("$BROWSER" group move nothere.com --own 2>&1); rc=$?
 arm 'J8 --own on a site with no profile: rc 0, says so'  "0 yes" "$rc $(has 'has no profile on this seat yet' "$out")"
 
 # ---------------------------------------------------------------- J9 negative control
+# grep -c, not -q: -q exits at the first match, git show takes SIGPIPE, and under pipefail
+# the `!` reads that as "not carried", so the control ran against a main that has the fix.
 if git -C "$ROOT" cat-file -e origin/main:browser/bin/browser 2>/dev/null \
-   && ! git -C "$ROOT" show origin/main:browser/bin/browser | grep -q '_page_join_default'; then
+   && ! git -C "$ROOT" show origin/main:browser/bin/browser | grep -c '_page_join_default' >/dev/null; then
   OLD="$TMP/old"; cp -r "$ROOT/browser" "$OLD"
   git -C "$ROOT" show origin/main:browser/bin/browser > "$OLD/bin/browser"; chmod +x "$OLD/bin/browser"
   BIN="$OLD/bin/browser"; fresh; shot https://www.shopify.com/signup
