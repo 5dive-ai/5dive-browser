@@ -10,7 +10,7 @@
 #   B2 a re-run makes nothing and says nothing new.
 #   B3 a person (SUDO_USER) running the same line back-fills too.
 #   B4 a hire (FIVEDIVE_BROWSER_SEAT, what agent create passes) never back-fills.
-#   B5 negative control: origin/main's bin/browser leaves the B1 seats storeless.
+#   B5 negative control: the pre-fix bin/browser (pinned commit) leaves the B1 seats storeless.
 #
 # Driven through the real bin/browser as a subprocess, stack step off (the stack is
 # browser_setup_stack_unit.sh's), with fakes for id/chown/systemctl/visudo so no
@@ -131,18 +131,25 @@ t  'B4 a hire: its own store'                                  yes "$(has agent-
 t  'B4 ...and nobody else'"'"'s'                               no "$(has agent-beta)"
 tn 'B4 ...says nothing about earlier hires'                    'hired before the browser' "$OUT"
 
-# --- B5 negative control: today's main --------------------------------------
-OLD="$TMP/old"; mkdir -p "$OLD/bin"
-if git -C "$ROOT" cat-file -e origin/main:browser/bin/browser 2>/dev/null \
-   && ! git -C "$ROOT" show origin/main:browser/bin/browser | grep -q '_setup_backfill_seats'; then
+# --- B5 negative control: the tree before the fix ----------------------------
+# Pinned to 1d31aad1's first parent, not origin/main: once the fix merged,
+# origin/main IS the fix and the control could not go red (DIVE-7095). A shallow
+# CI checkout lacks the pin, so fetch that one commit; if it still does not
+# resolve, the control has not run and that is a FAIL, never a skip.
+B5_BASE=14a8317d4ca5803e6374dccccefde5aa9d5e54fa
+git -C "$ROOT" cat-file -e "$B5_BASE^{commit}" 2>/dev/null \
+  || git -C "$ROOT" fetch -q --depth=1 origin "$B5_BASE" >/dev/null 2>&1
+OLD="$TMP/old"
+if git -C "$ROOT" cat-file -e "$B5_BASE:browser/bin/browser" 2>/dev/null; then
   rm -rf "$OLD"; cp -r "$ROOT/browser" "$OLD"
-  git -C "$ROOT" show origin/main:browser/bin/browser > "$OLD/bin/browser"; chmod +x "$OLD/bin/browser"
+  git -C "$ROOT" show "$B5_BASE:browser/bin/browser" > "$OLD/bin/browser"; chmod +x "$OLD/bin/browser"
+  t  'B5 the pinned tree has no back-fill (anchor)'            0 "$(grep -c '_setup_backfill_seats' "$OLD/bin/browser")"
   fresh "$OLD"; AS=root go
   P0=$PASS F0=$FAIL; b1_arms B5m >/dev/null; RED=$((FAIL-F0)); PASS=$P0; FAIL=$F0
-  t  'B5 origin/main: the B1 arms go red (>= 4)'               yes "$( (( RED >= 4 )) && echo yes || echo no)"
+  t  'B5 pre-fix tree: the B1 arms go red (>= 4)'              yes "$( (( RED >= 4 )) && echo yes || echo no)"
   t  'B5 ...it leaves agent-alpha storeless'                   no "$(has agent-alpha)"
 else
-  echo 'B5 skipped: origin/main already carries the back-fill (or is not fetched)'
+  t  "B5 the pinned pre-fix tree $B5_BASE resolves (fetch failed: control NOT run)" yes no
 fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
