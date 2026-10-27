@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — `sudo 5dive browser setup` gives a browser to the seats hired before it (DIVE-7075), 1.58.3
+
+A self-hoster who imported a team first and added the browser after got "browser ready: agents you hire get a browser" while none of the twelve seats already hired could open a page. A store was made only at `agent create`, with the plugin already on, and the fix was `sudo env FIVEDIVE_BROWSER_SEAT=agent-<name> 5dive browser setup`, a line no owner would guess.
+
+- **Setup back-fills.** Run by a person (root, or the same line from a sudo user), setup now makes a store for every registry seat that has a unix account and no store, by running itself as that seat's hire: the same store, probe timer and rendezvous `agent create` makes. It prints `browser store made for N seat(s) hired before the browser: …`.
+- **The serve grant stays on the box seat's group**, as `agent create` pins it (DIVE-5478), so a back-fill never re-points it at a seat's private group (DIVE-5740).
+- **A sandboxed seat is skipped and named** with the command that makes its store, as at create. A seat that has a store, and a registry row with no unix account, are left alone. A hire (`FIVEDIVE_BROWSER_SEAT` set) never back-fills.
+
+`tests/browser_setup_backfill_unit.sh` 29/29; on origin/main's `bin/browser` its B1 arms go red (negative control). `tests/browser_setup_stack_unit.sh` 128/128.
+
 ### Fixed — Shopify admin's product form is listed whole: the Description editor and the Status options get refs (DIVE-7007), 1.58.2
 
 On a Shopify trial store the Dropshipping Team's Clicker could not list a product: it called Title, Description and Status "fields the browser tool cannot reach" and saved nothing. Measured on the trial box's new-product page (`lib/aria.cjs`):
