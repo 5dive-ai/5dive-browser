@@ -7182,6 +7182,15 @@ _owner_ask_deliver() {  # <request-file>
   command -v "$cli" >/dev/null 2>&1 || return 0
   o=$(timeout 30 "$cli" owner-ask browser "$1" 2>/dev/null) || rc=$?
   (( rc == 0 )) && [[ -n "$o" ]] && printf '  %s\n' "$o" >&2
+  # ONE YES, NOT TWO (DIVE-7164). With no chat to the owner the ask waits on a
+  # shell command, and an owner who already said yes on the row was asked again.
+  # A gate that names this ask IS the approval: the owner's yes on it approves it.
+  if (( rc != 0 )) || [[ -z "$o" || "$o" == "not sent"* ]]; then
+    local id; id="$(basename "$1" .json)"
+    printf '  Put it on your row as ONE ask (the owner'"'"'s yes there is this approval, nothing else to run):
+    5dive task need <your row> --type=approval --browser-ask=%s --ask="<what you will pay or send, and to whom>?"
+' "$id" >&2
+  fi
   return 0
 }
 
