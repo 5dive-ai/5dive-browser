@@ -149,6 +149,53 @@ APPROVAL_TTL=1800
 
 die() { printf '%s: %s\n' "$PROG" "$2" >&2; exit "$1"; }
 
+# as_root <what needs root> — DIVE-7183 (DIVE-7172's voice fix): a box-wide
+# change is root's, and the reader of a refusal is an AGENT whose owner has no
+# terminal. "Run: sudo …" made a weak model stop and ask its owner for root. So a
+# seat whose sudo allows the exact command (asked with `sudo -n -l`, which runs
+# nothing, never prompts and mails no refusal) gets the same argv re-run through
+# `sudo -n`; already root never reaches the probe, so it cannot loop. A seat
+# without the grant is told which running admin colleague can, never to hand its
+# owner a command. Only the copy the CLI dispatched (FIVEDIVE_PLUGIN_DIR) re-runs,
+# from its top-level shell: a harness running this file directly never sudo-runs.
+BROWSER_ARGV=("$@")
+BROWSER_SUDO="${FIVEDIVE_SUDO:-sudo}"
+BROWSER_ROOT_BIN="${FIVEDIVE_BIN:-/usr/local/bin/5dive}"
+as_root() {
+  [[ $EUID -eq 0 ]] && return 0
+  local -a cmd=("$BROWSER_ROOT_BIN")
+  [[ "${FIVEDIVE_JSON_MODE:-0}" == 1 ]] && cmd+=(--json)
+  cmd+=(browser "${BROWSER_ARGV[@]}")
+  if [[ -n "${FIVEDIVE_PLUGIN_DIR:-}" && "$_SELF_DIR/" == "${FIVEDIVE_PLUGIN_DIR%/}/"* ]] && (( BASH_SUBSHELL == 0 )) \
+     && "$BROWSER_SUDO" -n -l "${cmd[@]}" >/dev/null 2>&1; then
+    exec "$BROWSER_SUDO" -n "${cmd[@]}"
+  fi
+  no_root "$1"
+}
+
+# no_root <what needs root> — who on this box can, and the message to send them.
+# Colleagues come from `agent list --json` by their MEASURED grant; `.active` is
+# the unit's systemd state as a string, so only "active" counts. The lead
+# (beyond-admin) is named first.
+no_root() {
+  local me="${USER:-$(id -un 2>/dev/null)}" list admins
+  me="${me#agent-}"
+  list=$("${FIVEDIVE_BROWSER_CLI:-5dive}" agent list --json </dev/null 2>/dev/null) || true
+  admins=$(jq -r --arg me "$me" '[(.data // [])[] | select(.name != $me and .active == "active")
+    | select(.sudo.impliedIsolation == "admin" or .sudo.impliedIsolation == "beyond-admin")]
+    | sort_by(.sudo.impliedIsolation != "beyond-admin") | map(.name) | .[:3] | join(" ")' <<<"$list" 2>/dev/null) || true
+  {
+    printf '%s: %s needs root, and this agent does not have it. Do not ask your owner to run anything: they have no terminal.\n' "$PROG" "$1"
+    if [[ -n "$admins" ]]; then
+      printf 'Ask a colleague on this box who has it (%s), for example:\n' "${admins// /, }"
+      printf '  5dive agent send %s "My owner asked for this and it needs root. Please run: sudo 5dive browser %s"\n' "${admins%% *}" "${BROWSER_ARGV[*]}"
+    else
+      printf 'No other agent on this box has it either: tell your owner this cannot be done from this agent.\n'
+    fi
+  } >&2
+  exit "$E_PERM"
+}
+
 # THE CALLING SEAT, AND IT IS THE EFFECTIVE UID (DIVE-4664 scope (e)).
 #
 # This was `${SUDO_USER:-${USER:-$(id -un)}}` — SUDO_USER unconditionally first —
@@ -1874,7 +1921,7 @@ _setup_backfill_seats() {
   (( ${#made[@]} )) && printf 'browser store made for %s seat(s) hired before the browser: %s\n' "${#made[@]}" "${made[*]}"
   local s
   for s in "${failed[@]+"${failed[@]}"}"; do
-    _stack_warn "no browser store for $s: its setup failed. Retry: sudo env FIVEDIVE_BROWSER_SEAT=$s${group:+ FIVEDIVE_BROWSER_AGENT_GROUP=$group} $SETUP_CMD"
+    _stack_warn "no browser store for $s: its setup failed. Run 5dive browser setup again to retry: it makes every store that is missing"
   done
   for s in "${sandboxed[@]+"${sandboxed[@]}"}"; do
     _stack_warn "no browser store for sandboxed $s: it cannot browse until it has one. Make it with: sudo env FIVEDIVE_BROWSER_SEAT=$s${group:+ FIVEDIVE_BROWSER_AGENT_GROUP=$group} $SETUP_CMD (this lets the box's other seats use the logins it connects)"
@@ -1899,12 +1946,12 @@ _setup_box_seat_store() {
     printf "browser store made for the owner's logins (%s)\n" "$BOX_SEAT"
     return 0
   fi
-  _stack_warn "no browser store for $BOX_SEAT, the seat that holds the owner's logins: its setup failed, so no agent's login ask can be opened. Retry: sudo env FIVEDIVE_BROWSER_SEAT=$BOX_SEAT $SETUP_CMD"
+  _stack_warn "no browser store for $BOX_SEAT, the seat that holds the owner's logins: its setup failed, so no agent's login ask can be opened. Run 5dive browser setup again to retry: every setup makes it"
   return 1
 }
 
 cmd_setup() {
-  [[ "$(id -u)" == 0 ]] || die "$E_PERM" "setup creates a root-owned store and a seat-owned subdirectory under it. Run: $SETUP_CMD"
+  as_root "setup makes a root-owned store, so it"
   # The stack first, and before the seat checks: it is box-wide. A person
   # installs it; a hire only names it (DIVE-6112, see "ONLY A PERSON INSTALLS").
   # Never fatal — see _stack_converge.
@@ -8755,7 +8802,7 @@ cmd_adblock() {
 
   [[ -n "$site" ]] || die "$E_USAGE" "$sub which site? e.g. \`sudo 5dive browser adblock $sub example.com\`"
   _valid_site "$site" || die "$E_USAGE" "'$site' is not a host — <site> IS THE HOST (example.com), the same name the profile takes"
-  [[ "$(id -u)" == 0 ]] || die "$E_PERM" "chrome policy on Linux is machine-level and root-owned — there is no per-user policy path. Run: sudo 5dive browser adblock $sub $site"
+  as_root "the ad blocker is set in the box's Chrome policy, which is root's, so changing it"
 
   local -a hosts=(); local h
   while read -r h; do [[ -n "$h" && "$h" != "$site" ]] && hosts+=("$h"); done < <(_adblock_hosts)
@@ -9891,7 +9938,7 @@ _link_status() {
 }
 
 _link_enable() {
-  [[ $EUID -eq 0 ]] || (( LINK_SEAM )) || die "$E_PERM" "login-link installs a service. Run: sudo 5dive browser login-link enable --via=ip"
+  (( LINK_SEAM )) || as_root "turning login links on installs a service, so it"
   local via="" host="" port="$LINK_PORT_DEFAULT" ip="" a
   for a in "$@"; do
     case "$a" in
@@ -10001,7 +10048,7 @@ _link_enable() {
 }
 
 _link_disable() {
-  [[ $EUID -eq 0 ]] || (( LINK_SEAM )) || die "$E_PERM" "Run: sudo 5dive browser login-link disable"
+  (( LINK_SEAM )) || as_root "turning login links off"
   if (( ! LINK_SEAM )); then
     systemctl disable --now "$LINK_TLS_UNIT" "$LINK_UNIT" >/dev/null 2>&1 || true
   fi
@@ -11551,7 +11598,7 @@ cmd_config() {
     [[ "$k" == drive ]] || die "$E_USAGE" "unknown setting '$k' — the one setting is drive=input|cdp|auto"
     case "$v" in input|cdp|auto) ;; *) die "$E_USAGE" "drive=$v: expected input, cdp or auto" ;; esac
   done
-  [[ "$(id -u)" == 0 ]] || die "$E_PERM" "the drive default is the whole box's, and root's to set. Run: sudo 5dive browser config drive=$v"
+  as_root "the drive default is the whole box's, so setting it"
   if [[ "$v" == auto ]]; then
     rm -f "$_DRIVE_DEFAULT_FILE" || die "$E_UNAVAILABLE" "cannot remove $_DRIVE_DEFAULT_FILE"
   else

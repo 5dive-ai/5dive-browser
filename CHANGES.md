@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a box-wide browser change run without sudo just works for an agent that may, or names who can (DIVE-7183), 1.63.1
+
+`adblock on|off`, `login-link enable|disable`, `config drive=` and `setup` stopped with "Run: sudo 5dive browser …". The agent reading it has an owner with no terminal, and a weaker model stopped and asked the owner for root (DIVE-7172, fixed then for voice only).
+
+- **A seat whose sudo allows the exact command gets the result:** asked with `sudo -n -l` (runs nothing, never prompts), then the same arguments re-run through `sudo -n 5dive browser …`, `--json` kept. Root never reaches the question, so it cannot loop. Only the copy the CLI dispatched re-runs, from its top-level shell.
+- **A seat without it is told who can:** up to three running admin colleagues, the lead first, with a ready `5dive agent send` line, and never to hand its owner a command.
+- The two setup-retry warnings say to run `5dive browser setup` again instead of a `sudo env …` line.
+
+`tests/browser_root_reexec_unit.sh` 16/16.
+
 ### Added — an agent signs up with the owner's Google already on the box, and the owner gets one line for each sign-in (DIVE-7168), 1.63.0
 
 Found on the Dropshipping rerun box (10-28, 1.59.0): the owner's Google sign-in sat in the box seat's browser (the Main group `asks open shopify.com` served), Clicker's own Main was empty, so cjdropshipping.com opened in Clicker's public profile and its "Continue with Google" asked for an email. The owner got a one-time link only to tap "Continue as …". lodar: *"from now all browser does any job - human not needed"*.
