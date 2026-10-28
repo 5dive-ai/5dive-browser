@@ -11,6 +11,9 @@
 #   B3 a person (SUDO_USER) running the same line back-fills too.
 #   B4 a hire (FIVEDIVE_BROWSER_SEAT, what agent create passes) never back-fills.
 #   B5 negative control: the pre-fix bin/browser (pinned commit) leaves the B1 seats storeless.
+#   B6 DIVE-7156: root, a person and a hire each also make the box seat's (claude,
+#      the owner's logins) store; one it has is untouched; no claude account, no store.
+#   B7 negative control: origin/main before DIVE-7156 leaves claude storeless.
 #
 # Driven through the real bin/browser as a subprocess, stack step off (the stack is
 # browser_setup_stack_unit.sh's), with fakes for id/chown/systemctl/visudo so no
@@ -41,6 +44,7 @@ case "$*" in
   -un) echo "${FAKE_UN:-root}"; exit 0 ;;
 esac
 u="${!#}"
+[[ -n "${FAKE_NO_CLAUDE:-}" && "$u" == claude ]] && exit 1
 [[ " ${FAKE_USERS:-} claude root " == *" $u "* ]] || exit 1
 case "$1" in
   -u)  echo 1000 ;;
@@ -79,6 +83,7 @@ go() {  # AS=root|person|hire
   esac
   env -i HOME="$TMP" PATH="$CORE" STATE_DIR="$STATE" "${who[@]}" \
     FAKE_USERS="agent-alpha agent-beta agent-gamma agent-delta ubuntu" CALL_LOG="$CALL_LOG" \
+    ${FAKE_NO_CLAUDE:+FAKE_NO_CLAUDE=1} \
     FIVEDIVE_BROWSER_STACK=off FIVEDIVE_BROWSER_PROFILE_ROOT="$PROFILES" \
     FIVEDIVE_BROWSER_SYSTEMD_DIR="$TMP/systemd" FIVEDIVE_BROWSER_SYSTEMCTL=systemctl \
     FIVEDIVE_BROWSER_SUDOERS_DIR="$TMP/sudoers" FIVEDIVE_BROWSER_VISUDO="$CORE/visudo" \
@@ -131,6 +136,26 @@ t  'B4 a hire: its own store'                                  yes "$(has agent-
 t  'B4 ...and nobody else'"'"'s'                               no "$(has agent-beta)"
 tn 'B4 ...says nothing about earlier hires'                    'hired before the browser' "$OUT"
 
+# --- B6 DIVE-7156: every setup makes the owner's (box seat's) store -------------
+# `claude` holds the owner's logins (a login link redeems as it) and is in no
+# registry, so neither the back-fill nor a hire made its store before this.
+fresh; AS=root go
+t  'B6 root setup: the box seat claude has its store'            yes "$(has claude)"
+tc 'B6 ...owned by claude'                                     "chown claude $PROFILES/claude" "$(cat "$CALL_LOG")"
+tc "B6 ...and says so"                                           "browser store made for the owner's logins (claude)" "$OUT"
+t  'B6 ...the ready line is still last'                          'browser ready: agents you hire get a browser' "$(tail -n1 <<<"$OUT")"
+fresh; AS=hire go
+t  'B6 a hire (agent create, the path every box runs): claude has its store' yes "$(has claude)"
+t  'B6 ...and its own'                                           yes "$(has agent-alpha)"
+fresh; AS=person go
+t  'B6 a person from a sudo user: claude has its store'          yes "$(has claude)"
+mkdir -p "$PROFILES/claude"; echo keep > "$PROFILES/claude/marker"; : > "$CALL_LOG"; AS=root go
+t  'B6 a store claude already has is untouched'                  keep "$(cat "$PROFILES/claude/marker")"
+tn "B6 ...and not re-made"                                       "chown claude" "$(cat "$CALL_LOG")"
+fresh; FAKE_NO_CLAUDE=1 AS=root go
+t  'B6 a box with no claude account: setup still exits 0'        0 "$RC"
+t  'B6 ...and makes no store for it'                             no "$(has claude)"
+
 # --- B5 negative control: the tree before the fix ----------------------------
 # Pinned to 1d31aad1's first parent, not origin/main: once the fix merged,
 # origin/main IS the fix and the control could not go red (DIVE-7095). A shallow
@@ -150,6 +175,22 @@ if git -C "$ROOT" cat-file -e "$B5_BASE:browser/bin/browser" 2>/dev/null; then
   t  'B5 ...it leaves agent-alpha storeless'                   no "$(has agent-alpha)"
 else
   t  "B5 the pinned pre-fix tree $B5_BASE resolves (fetch failed: control NOT run)" yes no
+fi
+
+# --- B7 negative control: the tree before DIVE-7156 ---------------------------
+B7_BASE=a64e495c99d5a2fec8f960492c0de9e2279e5f4e   # 5dive-browser main before DIVE-7156 (1.59.0)
+git -C "$ROOT" cat-file -e "$B7_BASE^{commit}" 2>/dev/null \
+  || git -C "$ROOT" fetch -q --depth=1 origin "$B7_BASE" >/dev/null 2>&1
+if git -C "$ROOT" cat-file -e "$B7_BASE:browser/bin/browser" 2>/dev/null; then
+  rm -rf "$OLD"; cp -r "$ROOT/browser" "$OLD"
+  git -C "$ROOT" show "$B7_BASE:browser/bin/browser" > "$OLD/bin/browser"; chmod +x "$OLD/bin/browser"
+  t  'B7 the pre-7156 tree has no box-seat store step (anchor)'  0 "$(grep -c '_setup_box_seat_store' "$OLD/bin/browser")"
+  fresh "$OLD"; AS=root go
+  t  'B7 pre-7156 tree: root setup leaves claude storeless'      no "$(has claude)"
+  fresh "$OLD"; AS=hire go
+  t  'B7 ...and so does a hire'                                  no "$(has claude)"
+else
+  t  "B7 the pre-7156 tree $B7_BASE resolves (fetch failed: control NOT run)" yes no
 fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
