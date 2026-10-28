@@ -8,6 +8,19 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — an agent signs up with the owner's Google already on the box, and the owner gets one line for each sign-in (DIVE-7168), 1.60.0
+
+Found on the Dropshipping rerun box (10-28, 1.59.0): the owner's Google sign-in sat in the box seat's browser (the Main group `asks open shopify.com` served), Clicker's own Main was empty, so cjdropshipping.com opened in Clicker's public profile and its "Continue with Google" asked for an email. The owner got a one-time link only to tap "Continue as Alex". lodar: *"from now all browser does any job - human not needed"*.
+
+- **A page verb on a new site joins the box's default group** when the seat's own group has nothing to share (DIVE-7076 is tried first) and the box's group holds a site the box already offers. Root links it into the box seat's store and the box offers it, so the seat acts on it through the broker, in the browser that holds the owner's Google. One line says so. Both the URL form and the named form.
+- **No new reach.** The box's group must already hold an offered site, so the seat could already act in that browser; the join adds a name, never a cookie. Only the site named on the command line joins, never one a page links to. `group default --none` or `FIVEDIVE_BROWSER_NO_BOX_JOIN=1` turns it off; an own profile of the site, an IP host and a labelled account keep today's answer.
+- **The root hop is `_join-offered`**, one site on stdin, granted by `setup` beside `_serve-offered` to the same group. It re-derives the caller, refuses the box seat, a seat with no store, a seat with its own profile of the site and a site the box already offers, then drops to the box seat (`_join-box`), which re-checks its own group. The box's audit row names the seat that asked.
+- **It is no login of its own until a person signs in to it**, as with DIVE-7076: the offer carries `joined=page`, so a brokered seat does not probe it or call it logged out.
+- **The owner's record.** Both step loops print the Google page a click or key was allowed on (the chooser, "Continue as …", a basic consent) and the account it used (lib/google-signin.cjs `stepGrant`). The act sends the owner one line, "clicker signed in to cjdropshipping.com with your Google account alex@… (name and email only)", through `agent send owner` (5dive CLI with DIVE-7164), once per site and account in 15 minutes, and keeps it in the seat's `signins.jsonl`. With no route to the owner the agent is told to put the line in its report. A password, a code, a robot check or a wider grant still stops or asks, as before.
+- The use-browser and connect-site skills say: make the account yourself, ask only at those stops, and only for a site the task names.
+
+`tests/browser_box_join_unit.sh` 39/39; its N1 arm runs origin/main's `bin/browser` and B1 renders in the public profile with nothing joined (negative control).
+
 ### Added — on a self-hosted box linked to the 5dive app, a login or check ask arrives in the agent's app chat as one Connect link (DIVE-7133), 1.59.0
 
 Found by main's easy-login count (DIVE-6822): on a fresh self-hosted box linked chat-only to the app, `connect-request` sent the ask to the box's login shell, and signing a site in took SSH. The owner already reads each agent's chat in the app.

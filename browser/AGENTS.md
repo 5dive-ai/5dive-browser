@@ -135,6 +135,15 @@ login of its own until a person signs in to it: it is not probed or reported log
 `5dive browser group move <site> --own` keeps it apart; `group default --none` turns joining off.
 `group move <site> <group>` also links a site that has no profile yet.
 
+When this seat's own group has nothing to share and the box's default group holds a site the box
+offers (the owner signed in there, often with Google), the new site joins the BOX's group instead
+(DIVE-7168): root links it in the box seat's store (`_join-offered`, granted beside
+`_serve-offered`) and the box offers it, so the seat acts on it through the broker in the owner's
+browser. No new reach: that browser was already the seat's through the offered site. Google's
+pages are still judged by lib/google-signin.cjs, and each sign-in the step loop takes there sends
+the owner one line (`agent send owner`; the seat's `signins.jsonl` keeps it).
+`FIVEDIVE_BROWSER_NO_BOX_JOIN=1` or `group default --none` turns it off.
+
 If the owner has two accounts on one site (`github.com_work`, `github.com_personal`), a URL
 alone is refused and the refusal names both. **Ask the owner which one, never guess**, then
 name it: `5dive browser act github.com_work <url> --steps=…`.

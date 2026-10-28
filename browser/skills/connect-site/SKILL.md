@@ -162,6 +162,11 @@ the account — tap it, no fresh Google login. A site that predates groups has i
 Main` (the owner's call — its old profile is kept aside, not merged). A second Google account
 belongs in a second group (`group create Work`, then `group move <site> Work`).
 
+**The box's Google counts too (DIVE-7168).** Once the owner has signed in to Google in the box's
+browser (any `asks open` or Connect link), a new site an agent opens joins that browser by itself,
+and the agent does a "Continue with Google" sign-up with no owner tap. So do not send the owner a
+link for a sign-up: send one only for a password, a code, a robot check or a wider Google grant.
+
 ## What will actually go wrong
 
 - **`serve` fails closed on a box without the stack.** Server mode needs chromium, Xvfb,

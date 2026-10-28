@@ -27,6 +27,10 @@
 // never typed and a wide grant is never clicked, whatever the steps say.
 
 const STOP_PREFIX = '5dive-google-stop: ';
+// DIVE-7168: a step the guard ALLOWED on Google's pages (the chooser, "Continue
+// as …", a basic consent) is the agent signing in with the owner's account, and
+// the owner gets one line for it. The loops print this once per act.
+const GRANT_PREFIX = '5dive-google-signin: ';
 
 const GOOGLE_HOST = /^(accounts\.google\.[a-z.]+|(?:www\.)?google\.[a-z.]+)$/i;
 
@@ -329,7 +333,32 @@ async function stepStop(page, s) {
   return v && v.verdict !== 'allow' ? { ...v, url } : null;
 }
 
-module.exports = { classify, isGooglePage, stepStop, samePage, dropDetails, visibleText, visibleMarkup, visibleInputs, attrsOf, STOP_PREFIX };
+// THE OWNER'S RECORD (DIVE-7168). A click or a key on a Google page the guard
+// allows is the sign-in itself, so the act says which account it used: the one
+// the step names, else every signed-in address on the page.
+const EMAIL = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+function pageAccounts(html, text, s) {
+  const ids = new Set();
+  const re = /\bdata-(?:identifier|email)\s*=\s*["']([^"']+@[^"']+)["']/gi; let m;
+  while ((m = re.exec(String(html || '')))) ids.add(m[1].toLowerCase());
+  for (const e of String(text || '').match(EMAIL) || []) ids.add(e.toLowerCase());
+  const named = JSON.stringify(s || {}).toLowerCase();
+  const pick = [...ids].filter((e) => named.includes(e));
+  return pick.length ? pick : [...ids];
+}
+async function stepGrant(page, s) {
+  if (!s || !['click', 'press'].includes(s.op)) return null;
+  let url = '';
+  try { url = page.url(); } catch (e) { return null; }
+  if (!isGooglePage(url)) return null;   // not Google's: nothing to record
+  let html = '';
+  try { html = await page.content(); } catch (e) { html = ''; }
+  const v = classify(url, html);
+  if (!v || v.verdict !== 'allow') return null;
+  return { kind: v.kind, accounts: pageAccounts(html, visibleText(html), s) };
+}
+
+module.exports = { classify, isGooglePage, stepStop, stepGrant, pageAccounts, samePage, dropDetails, visibleText, visibleMarkup, visibleInputs, attrsOf, STOP_PREFIX, GRANT_PREFIX };
 
 if (require.main === module) {
   // node google-signin.cjs <html-file> <url>  ->  one JSON line, or nothing when

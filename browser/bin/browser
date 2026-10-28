@@ -510,7 +510,10 @@ _rv_offer_write() {  # _rv_offer_write <seat> <site> [input]
   # drive=input (DIVE-5287) is how a brokered seat learns the box serves this
   # site in input mode: it cannot read the owner's adapters or serve record,
   # and asking the daemon would queue behind whatever the daemon is doing.
-  ( umask 037; printf 'site=%s\nowner=%s\n%s' "$2" "$1" "${3:+drive=$3$'\n'}" > "$(_rv_offer "$1" "$2")" ) 2>/dev/null || true
+  # joined=page (DIVE-7168): a site a page verb joined to the owner's group, so a
+  # brokered seat treats it as _page_joined does here (no login of its own to probe).
+  local j=""; [[ "$1" == "$(_seat)" ]] && _page_joined "$2" && j=$'joined=page\n'
+  ( umask 037; printf 'site=%s\nowner=%s\n%s%s' "$2" "$1" "${3:+drive=$3$'\n'}" "$j" > "$(_rv_offer "$1" "$2")" ) 2>/dev/null || true
 }
 
 # CAN THIS BOX NAME THE CALLER? The rendezvous socket is reachable by every agent
@@ -810,6 +813,124 @@ cmd_serve_offered() {
   _as_seat "$BOX_SEAT" env FIVEDIVE_BROWSER_SEAT="$BOX_SEAT" "$0" serve "$site"
 }
 
+# >>> DIVE-7168 A NEW SITE JOINS THE BOX'S GOOGLE SIGN-IN, NOT ONLY THE SEAT'S OWN.
+#
+# DIVE-7076 joins a page verb's new site to THIS seat's default group. On a
+# self-hosted box the owner's sign-ins are not in any agent's group: they are in
+# the box seat's ($BOX_SEAT) store, where every `asks open` and `connect-request`
+# serves them (DIVE-7156). So on the rerun box (10-28) Clicker's own Main was
+# empty, cjdropshipping.com opened in the public profile, its "Continue with
+# Google" asked for an email, and the owner was sent a link only to tap
+# "Continue as Alex".
+#
+# So when this seat's own group has nothing to share, the site joins the BOX's
+# default group instead and the box offers it: from then on it is a box login
+# this seat acts on through the broker, in the browser that holds the owner's
+# Google. lib/google-signin.cjs still judges every Google page (a password, a
+# code, a robot check or a wider grant stops or asks) and each sign-in sends the
+# owner one line (_signin_record).
+#
+# NO NEW REACH. The box's group must already hold a site the box OFFERS: this
+# seat can already act in that group's browser through it. Joining adds a name
+# to it, never a cookie. And only the site the agent named on the command line
+# is joined, never one a page linked to.
+#
+# The seat cannot write the box's 0700 store, so root does it (`_join-offered`,
+# the site on stdin, granted beside `_serve-offered`): it re-derives the caller
+# and drops to $BOX_SEAT, which re-checks the box's own state (`_join-box`).
+JOIN_PRIV=(sudo -n /usr/local/bin/5dive browser _join-offered)
+if [[ $EUID -ne 0 && -n "${FIVEDIVE_BROWSER_JOIN_PRIV:-}" ]]; then JOIN_PRIV=("$FIVEDIVE_BROWSER_JOIN_PRIV" _join-offered); fi
+
+# The caller's half. 0 and the box's group name, its other sites tab-separated,
+# on stdout when the site joined; rc 1 (silent) when it did not.
+_box_page_join() {  # <site>
+  local site="$1" me out
+  [[ -z "${FIVEDIVE_BROWSER_NO_BOX_JOIN:-}" ]] || return 1
+  me="$(_seat)"
+  [[ "$me" != "$BOX_SEAT" ]] || return 1
+  _valid_site "$site" && ! _is_public "$site" && [[ "$site" != *_* ]] || return 1
+  [[ "$site" == *.* && ! "$site" =~ ^[0-9.]+$ ]] || return 1
+  [[ -d "$(_seat_dir)" && -d "$(_rv_dir "$BOX_SEAT")" ]] || return 1
+  [[ ! -e "$PROFILE_ROOT/$me/$site" && ! -L "$PROFILE_ROOT/$me/$site" ]] || return 1
+  [[ ! -f "$(_rv_offer "$BOX_SEAT" "$site")" ]] || return 1
+  _group_default >/dev/null || return 1   # `group default --none` turns this off too
+  out=$(printf '%s\0' "$site" | "${JOIN_PRIV[@]}" 2>/dev/null) || return 1
+  [[ -f "$(_rv_offer "$BOX_SEAT" "$site")" ]] || return 1
+  printf '%s\n' "$out"
+}
+_box_page_joined_say() {  # <site> <group-name<TAB>its other sites>
+  local gname="${2%%$'\t'*}" others="${2#*$'\t'}"
+  [[ "$others" == "$2" ]] && others=""
+  printf '%s: %s joined the box'"'"'s %s (the owner'"'"'s browser), so it opens there and the owner'"'"'s sign-ins (%s) count here: its "Continue with Google" uses the owner'"'"'s Google account. Sign in yourself; the owner gets one line for it. A password, a code, a robot check or a wider grant still goes to the owner.\n' \
+    "$PROG" "$1" "$gname" "${others:-none listed}" >&2
+}
+
+# `_join-offered` — the privileged half, kept root's at the DIVE-4348 drop.
+cmd_join_offered() {
+  local -a w=(); local a caller site
+  while IFS= read -r -d '' a; do w+=("$a"); done
+  if [[ $EUID -eq 0 ]]; then caller=$(_connect_caller); else caller=$(_seat); fi
+  [[ -n "$caller" && "$caller" != root && "$caller" != "$BOX_SEAT" ]] || die "$E_PERM" "_join-offered must be reached through sudo from an agent seat"
+  (( ${#w[@]} == 1 )) || die "$E_USAGE" "_join-offered takes exactly one site, NUL-terminated on stdin"
+  site="${w[0]}"
+  _valid_site "$site" && ! _is_public "$site" && [[ "$site" != *_* && "$site" == *.* && ! "$site" =~ ^[0-9.]+$ ]] \
+    || die "$E_USAGE" "'$site' is not a site the box can join"
+  [[ -d "$PROFILE_ROOT/$caller" ]] || die "$E_PERM" "'$caller' has no browser store on this box"
+  [[ ! -e "$PROFILE_ROOT/$caller/$site" && ! -L "$PROFILE_ROOT/$caller/$site" ]] \
+    || die "$E_PERM" "'$caller' keeps its own $site profile, so the box's is not joined for it"
+  [[ ! -f "$(_rv_offer "$BOX_SEAT" "$site")" ]] || die "$E_PERM" "$site is already a box login"
+  export FIVEDIVE_BROWSER_ON_BEHALF_OF="$caller"
+  _as_seat "$BOX_SEAT" env FIVEDIVE_BROWSER_SEAT="$BOX_SEAT" FIVEDIVE_BROWSER_ON_BEHALF_OF="$caller" "$0" _join-box "$site"
+}
+
+# `_join-box` — the box seat's half: its own store, its own rules.
+cmd_join_box() {
+  local site="${1:-}" g gname s offered=0 others
+  [[ "$(_seat)" == "$BOX_SEAT" ]] || die "$E_PERM" "_join-box runs as the box seat ($BOX_SEAT) only"
+  [[ -n "${FIVEDIVE_BROWSER_ON_BEHALF_OF:-}" ]] || die "$E_USAGE" "_join-box is reached through _join-offered"
+  [[ ! -f "$(_rv_offer "$BOX_SEAT" "$site")" ]] || die "$E_PERM" "$site is already a box login"
+  g=$(_group_default) || die "$E_UNAVAILABLE" "the box has no default group"
+  for s in $(_group_sites "$g"); do [[ -f "$(_rv_offer "$BOX_SEAT" "$s")" ]] && offered=1; done
+  (( offered )) || die "$E_UNAVAILABLE" "the box's $(_group_name "$g") holds no login it offers, so it has no sign-in to share"
+  g=$(_page_join_default "$site") || die "$E_UNAVAILABLE" "$site could not join the box's $(_group_name "$g")"
+  _rv_offer_write "$BOX_SEAT" "$site"
+  [[ -f "$(_rv_offer "$BOX_SEAT" "$site")" ]] || die "$E_UNAVAILABLE" "the box could not offer $site"
+  _audit_row "$(_seat_dir)" group "page verb of $FIVEDIVE_BROWSER_ON_BEHALF_OF joined $site to $g" 2>/dev/null || true
+  gname=$(_group_name "$g")
+  others=$(_group_sites "$g" | grep -vxF -- "$site" | paste -sd, - | sed 's/,/, /g')
+  printf '%s\t%s\n' "$gname" "$others"
+}
+
+# THE OWNER'S RECORD OF EACH GOOGLE SIGN-IN (DIVE-7168): which site, which
+# account, in one line, with no tap. The step loops print what they used
+# (lib/google-signin.cjs GRANT_PREFIX); a sign-in that spans two acts (the
+# chooser, then the consent) is told once.
+SIGNIN_RECORD_TTL=900
+_signin_record() {  # <site> <errf> [<the url the act started on>]
+  local site="$1" j acct who line ad now last
+  j=$(sed -n 's/.*5dive-google-signin: //p' "$2" 2>/dev/null | tail -1)
+  [[ -n "$j" ]] || return 0
+  # The public profile is no site to name: the page the act started on is.
+  _is_public "$site" && [[ "${3:-}" =~ ^https?:// ]] && site="$(_url_site "$3")"
+  acct=$(jq -r '(.accounts // []) | join(", ")' <<<"$j" 2>/dev/null) || acct=""
+  now=$(date +%s)
+  ad="$(_approval_dir)" && mkdir -p "$ad" 2>/dev/null && chmod 700 "$ad" 2>/dev/null || ad=""
+  if [[ -n "$ad" && -f "$ad/signins.jsonl" ]]; then
+    last=$(jq -r --arg s "$site" --arg a "$acct" 'select(.site==$s and .account==$a) | .at' "$ad/signins.jsonl" 2>/dev/null | tail -1)
+    [[ "$last" =~ ^[0-9]+$ ]] && (( now - last < SIGNIN_RECORD_TTL )) && return 0
+  fi
+  [[ -n "$ad" ]] && jq -nc --argjson at "$now" --arg seat "$(_seat)" --arg s "$site" --arg a "$acct" --arg k "$(jq -r '.kind // ""' <<<"$j")" \
+    '{at:$at, seat:$seat, site:$s, account:$a, kind:$k}' >> "$ad/signins.jsonl" 2>/dev/null
+  who="$(_seat)"; who="${who#agent-}"
+  line="$who signed in to $site with your Google account${acct:+ $acct} (name and email only)."
+  if printf '%s' "$line" | timeout 20 "$SAVED_CLI" agent send owner --message-file=- >/dev/null 2>&1; then
+    printf '%s: the owner was told: %s\n' "$PROG" "$line" >&2
+  else
+    printf '%s: the owner could not be reached from here, so tell them in your report: %s\n' "$PROG" "$line" >&2
+  fi
+}
+# <<< DIVE-7168
+
 # Written by `setup` for the rendezvous group. Best-effort like the rendezvous:
 # a box where it cannot be written keeps the old "ask the owner" refusal.
 _install_wake_grant() {  # <group> -> 0 when the grant is in place
@@ -825,6 +946,9 @@ _install_wake_grant() {  # <group> -> 0 when the grant is in place
 # site travels on stdin, and the verb re-derives the caller, the offer and the
 # memory floor as root. It cannot stop, sign in, forget or create anything.
 %$g ALL=(root) NOPASSWD: /usr/local/bin/5dive browser _serve-offered
+# DIVE-7168: and joins a new site to the box's sign-in group the seat can already
+# act in. One site on stdin; the verb re-derives the caller and the box's state.
+%$g ALL=(root) NOPASSWD: /usr/local/bin/5dive browser _join-offered
 EOF
   chmod 0440 "$tmp"
   if ! "$WAKE_VISUDO" -cqf "$tmp" >/dev/null 2>&1; then rm -f "$tmp"; return 1; fi
@@ -1089,8 +1213,10 @@ _page_join_default() {  # <site>
 PAGE_JOINED_FILE=".5dive-page-joined"
 _page_joined() {  # <site>
   local p g; p="$(_own_site_dir "$1")"
-  g=$(_site_group "$p") || return 1
-  [[ -f "$(_group_dir "$g")/$PAGE_JOINED_FILE.$1" ]]
+  if g=$(_site_group "$p"); then [[ -f "$(_group_dir "$g")/$PAGE_JOINED_FILE.$1" ]]; return; fi
+  # DIVE-7168: a box login the box joined for a seat's page verb, read from its offer.
+  [[ "$(_seat)" != "$BOX_SEAT" && ! -e "$p" && ! -L "$p" ]] || return 1
+  [[ "$(_kv "$(_rv_offer "$BOX_SEAT" "$1")" joined 2>/dev/null)" == page ]]
 }
 # The site a URL's host is named by: the host, less a leading www.
 _url_site() {  # <url>
@@ -7687,6 +7813,7 @@ cmd_act() {
   # guard below gives, and the same exit, whether or not a step ran first.
   # Where the steps left this browser, before any stop below (_flow_site).
   _page_crumb "$site" "$(jq -r '.url // ""' "$stage/after.json" 2>/dev/null)"
+  _signin_record "$site" "$errf" "$url"   # DIVE-7168: before any stop, the click happened
   local gstop; gstop=$(sed -n 's/.*5dive-google-stop: //p' "$errf" 2>/dev/null | tail -1)
   if [[ -n "$gstop" ]] && (( drc == 70 )); then _google_die "$gstop"; fi
 
@@ -11087,7 +11214,7 @@ if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
     # `login-link` (DIVE-6219) installs box-wide services and writes /etc.
     # `claude enable|disable` (DIVE-6345) is the same policy file as adblock.
     # `asks` (DIVE-7078) reads root's request codes for the owner at a login shell.
-    asks|setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|claude-box|act-saved|totp|login-link|-h|--help|help|"") ;;
+    asks|setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|_join-offered|claude-box|act-saved|totp|login-link|-h|--help|help|"") ;;
     *)
       # DIVE-4813: usually the caller, and for a brokered `serve` the owner.
       _drop="$(_root_drop_target "${SUDO_USER}" "$@")"
@@ -11762,6 +11889,9 @@ case "${1:-}" in
       # DIVE-7076: a new site joins the default group when it holds a sign-in.
       if _is_public "$_r" && _s="$(_url_site "$_u")" && _g="$(_page_join_default "$_s")"; then
         _page_joined_say "$_s" "$_g"; _r="$_s"
+      # DIVE-7168: nothing to share in this seat's own group, the box's then.
+      elif _is_public "$_r" && _s="$(_url_site "$_u")" && _g="$(_box_page_join "$_s")"; then
+        _box_page_joined_say "$_s" "$_g"; _r="$_s"
       fi
       set -- "$_v" "$_r" "$_u" "$@"
     fi ;;
@@ -11797,6 +11927,9 @@ case "${1:-}" in
     if [[ -n "${2:-}" && "${2:-}" != -* && "${3:-}" =~ ^https?:// ]] && _public_for_named "$2" "$3" \
        && _g="$(_page_join_default "$2")"; then
       _page_joined_say "$2" "$_g"     # DIVE-7076: the profile is now the group's link
+    elif [[ -n "${2:-}" && "${2:-}" != -* && "${3:-}" =~ ^https?:// ]] && _public_for_named "$2" "$3" \
+       && _g="$(_box_page_join "$2")"; then
+      _box_page_joined_say "$2" "$_g"  # DIVE-7168: the box offers it now; it resolves brokered
     elif [[ -n "${2:-}" && "${2:-}" != -* && "${3:-}" =~ ^https?:// ]] && _public_for_named "$2" "$3"; then
       printf '%s: no %s login on this seat or this box, so %s opens in the public profile (not logged in). If the page needs a login: 5dive browser auth %s\n' \
         "$PROG" "$2" "$3" "$2" >&2
@@ -11882,5 +12015,9 @@ case "${1:-}" in
   # Not in usage: a brokered seat's on-demand serve, reached only as
   # `sudo -n … browser _serve-offered` with the site on stdin (DIVE-5389).
   _serve-offered) shift; cmd_serve_offered "$@" ;;
+  # Not in usage (DIVE-7168): a seat's new site joins the box's sign-in group,
+  # reached only as `sudo -n … browser _join-offered`; root drops to the box seat.
+  _join-offered) shift; cmd_join_offered "$@" ;;
+  _join-box) shift; cmd_join_box "$@" ;;
   *) die "$E_USAGE" "unknown: $PROG $1 (see: $PROG --help)" ;;
 esac

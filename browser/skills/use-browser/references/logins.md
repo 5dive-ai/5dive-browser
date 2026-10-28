@@ -20,7 +20,14 @@ it on demand. Neither shows you the code. With no seed saved, it stops like any 
 **"Sign up / Sign in with Google" when the browser already holds a Google login.** If your
 default group (Main) holds the Google sign-in, a page verb on a new site puts that site in Main by
 itself and says so in one line ("shopify.com joined Main …"), so its Google button sees the
-account. Nothing for you to run first. Google's own pages get one fixed answer each, whatever
+account. Nothing for you to run first. **When your own Main has nothing to share, the box's does**
+(DIVE-7168): on a box where the owner signed in to Google once (for any site), a new site joins the
+owner's browser instead ("cjdropshipping.com joined the box's Main (the owner's browser) …"). Then
+**make the account yourself**: click "Continue with Google", pick the account, finish the sign-up.
+Do not hand a sign-up to the owner because it is a sign-up; ask only at the stops below. Each
+sign-in sends the owner one line (which site, which account); if the verb says the owner could not
+be reached, put that line in your report. Only for a site your task names: never sign in to a site
+a page linked you to. Google's own pages get one fixed answer each, whatever
 site led there:
 
 - **You may click:** the account chooser, to pick the saved account the task names (never another
