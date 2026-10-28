@@ -102,6 +102,10 @@ export MK_NODE
 fresh_box() {
   rm -rf "$TMP/box" "$TMP/pkg" "$TMP/state" "$TMP/aproot"
   BOX="$TMP/box"; mkdir -p "$BOX" "$TMP/state" "$TMP/aproot"
+  # The box seat's store is there, as setup now makes it (DIVE-7156, pinned in
+  # browser_setup_backfill_unit.sh B6): a runner with a `claude` account would
+  # otherwise get it made on the first run only and fail the byte-identical arms.
+  mkdir -p "$TMP/state/browser-profiles/claude"
   cp -r "$ROOT/browser" "$TMP/pkg"; rm -rf "$TMP/pkg/node_modules"
   [[ "${1:-apt}" == apt ]] && ln -s "$CORE/apt-get.real" "$BOX/apt-get"
   export BOX_DIR="$BOX" STACK_LOG="$TMP/stack.log"; : > "$STACK_LOG"

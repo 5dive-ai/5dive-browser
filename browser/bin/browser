@@ -1752,6 +1752,27 @@ _setup_backfill_seats() {
   return 0
 }
 
+# DIVE-7156 — every setup also makes the box seat's store, the owner's.
+#
+# A login link redeems as $BOX_SEAT (`claude`), and `asks open` serves the site as
+# it: that seat holds the owner's logins. No setup made its store. A person's
+# setup made stores for registry seats and the person, a hire made its own, and
+# `claude` is neither, so on a fresh self-hosted box every agent's login ask died
+# at "no profile directory for seat 'claude'" and the setup that message named
+# could not fix it (the DIVE-6902 rerun). It is made the way the back-fill makes a
+# seat's: this same file run as that seat's setup. Never fatal.
+_setup_box_seat_store() {
+  [[ -d "$PROFILE_ROOT/$BOX_SEAT" ]] && return 0
+  id -u "$BOX_SEAT" >/dev/null 2>&1 || return 0
+  env FIVEDIVE_BROWSER_SEAT="$BOX_SEAT" "${CONNECT_SETUP_SELF:-$0}" setup </dev/null >/dev/null 2>&1
+  if [[ -d "$PROFILE_ROOT/$BOX_SEAT" ]]; then
+    printf "browser store made for the owner's logins (%s)\n" "$BOX_SEAT"
+    return 0
+  fi
+  _stack_warn "no browser store for $BOX_SEAT, the seat that holds the owner's logins: its setup failed, so no agent's login ask can be opened. Retry: sudo env FIVEDIVE_BROWSER_SEAT=$BOX_SEAT $SETUP_CMD"
+  return 1
+}
+
 cmd_setup() {
   [[ "$(id -u)" == 0 ]] || die "$E_PERM" "setup creates a root-owned store and a seat-owned subdirectory under it. Run: $SETUP_CMD"
   # The stack first, and before the seat checks: it is box-wide. A person
@@ -1760,10 +1781,14 @@ cmd_setup() {
   local seat hire_gap=""; seat="$(_seat)"
   if _setup_is_hire; then
     hire_gap=$(_stack_hire_check)
+    # DIVE-7156: agent create's setup is the one a self-hosted box always runs.
+    [[ "$seat" == "$BOX_SEAT" ]] || _setup_box_seat_store || true
   else
     local stack_ok=1
     _stack_converge || stack_ok=0
     # DIVE-7075: whoever ran it, the box's earlier hires get their stores now.
+    # DIVE-7156; first, or a back-filled hire makes it unannounced
+    [[ "$seat" == "$BOX_SEAT" ]] || _setup_box_seat_store || true
     _setup_backfill_seats
     # Root with no seat (no SUDO_USER: `ssh root@box`, then the README's line) is
     # the person setting up the BOX, and the stack is the whole of that job. No
@@ -9300,6 +9325,7 @@ CONNECT_PROVISIONING_ENV=/etc/5dive/provisioning.env
 CONNECT_SHELLD_URL=http://127.0.0.1:3101
 CONNECT_TG_API=https://api.telegram.org
 CONNECT_SELF="$0"
+CONNECT_SETUP_SELF="$0"      # DIVE-7156: what makes the box seat's store
 CONNECT_PRIV=(sudo -n /usr/local/bin/5dive browser _connect)
 # DIVE-7133: a self-hosted box linked to 5dive.app (the link script's marker,
 # with the API, beside the box token). An ask goes to the agent's app chat first.
@@ -9321,6 +9347,7 @@ if [[ $EUID -ne 0 ]]; then
   CONNECT_SHELLD_URL="${FIVEDIVE_SHELLD_URL:-$CONNECT_SHELLD_URL}"
   CONNECT_TG_API="${FIVEDIVE_TELEGRAM_API:-$CONNECT_TG_API}"
   CONNECT_SELF="${FIVEDIVE_BROWSER_CONNECT_SELF:-$CONNECT_SELF}"
+  CONNECT_SETUP_SELF="${FIVEDIVE_BROWSER_SETUP_SELF:-$CONNECT_SETUP_SELF}"
   CONNECT_ASKS_DIR="${FIVEDIVE_BROWSER_ASKS_DIR:-$CONNECT_ASKS_DIR}"
   CONNECT_CHATONLY_MARK="${FIVEDIVE_CHAT_ONLY_MARK:-$CONNECT_CHATONLY_MARK}"
   CONNECT_HTTPS_CADDYFILE="${FIVEDIVE_SECRET_HTTPS_CADDYFILE:-$CONNECT_HTTPS_CADDYFILE}"
@@ -10255,13 +10282,34 @@ _asks_open() {  # <site> [<seat>]
                else head="🧩 $who is stuck on a check on $site and cannot go on by itself. Clear it yourself; $who never solves these."; fi ;;
     *)         head="🔐 $who asks you to log in to $site in the browser on this box. You log in yourself; $who never sees your password." ;;
   esac
+  # DIVE-7156: the site is served as $BOX_SEAT, so its store must exist first;
+  # sending the owner to a setup command is what left the DIVE-6902 rerun stuck.
+  _setup_box_seat_store >&2 || true
+  # A FAILED OPEN LEAVES THE ASK WAITING (DIVE-7156). Opening spends the request
+  # code before the browser starts, so a failure used to close the ask, and the
+  # agent was never told. The code file is held aside and put back on a failure,
+  # while the ask is still in date; only an expired or spent ask is closed.
+  local req held exp; req=$(_connect_file "$code")
+  held=$(mktemp "${CONNECT_DIR:?}/.held.XXXXXX" 2>/dev/null) && cp -p -- "$req" "$held" 2>/dev/null \
+    || { [[ -n "$held" ]] && rm -f -- "$held"; held=""; }
   if _link_on; then ( _asks_open_link "$seat" "$site" "$code" "$kind" "$check" "$reason" "$head" ) || rc=$?
   else ( _asks_open_ssh "$seat" "$site" "$code" "$kind" "$check" "$reason" "$head" ) || rc=$?; fi
   if (( rc != 0 )); then
+    exp=$(_connect_field "$rec" expires_at)
+    if [[ -n "$held" && "$exp" =~ ^[0-9]+$ ]] && (( exp > $(date -u +%s) )); then
+      mv -f -- "$held" "$req"
+      rm -f -- "$rec.steps"
+      _connect_shell_put "$seat" "$site" "$kind" "$check" "$reason" "$exp" waiting "request=$code"
+      printf '%s: nothing was opened, and the ask still waits. When the line above is fixed, open it again: sudo 5dive browser asks open %s\n' "$PROG" "$site" >&2
+      exit "$rc"
+    fi
+    [[ -n "$held" ]] && rm -f -- "$held"
     _connect_shell_drop "$seat" "$site"
     printf '%s: that ask is closed now. Ask %s to send it again.\n' "$PROG" "$who" >&2
     exit "$rc"
   fi
+  [[ -n "$held" ]] && rm -f -- "$held"
+  return 0
 }
 
 _asks_open_link() {  # <seat> <site> <code> <kind> <check> <reason> <first line>
