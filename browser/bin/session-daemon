@@ -1705,6 +1705,24 @@ async function inputRequest(be, profile, req, send, end, behalf) {
     }
   }
 
+  // THE CLIPBOARD, FOR A KEY A SITE SHOWS ONLY AS A COPY BUTTON (DIVE-7171).
+  // Read and cleared by the X client, answered to the lease holder only, and
+  // refused while a person is in the window: then it may hold what THEY copied.
+  // bin/browser pipes the text into the secret store and never prints it.
+  if (req.op === 'clipboard') {
+    const no = inputRefusal(be, profile, req, 'clipboard');
+    if (no) { send({ t: 'err', msg: no }); return end(E_UNAVAILABLE); }
+    let got;
+    try { got = await be.x.readClipboard(); }
+    catch (e) { send({ t: 'err', msg: `could not read the ${site} window's clipboard: ${e.message}` }); return end(E_FAILED); }
+    if (got.text.length > INPUT_MAX_TEXT) {
+      send({ t: 'err', msg: `the ${site} window's clipboard held ${got.text.length} characters, more than a key (${INPUT_MAX_TEXT} at most). It was cleared; nothing was sent.` });
+      return end(E_NOTHING_RAN);
+    }
+    out({ drive: 'input', chars: got.text.length, cleared: got.cleared, text: got.text });
+    return end(0);
+  }
+
   if (req.op === 'screen') {
     try {
       if (req.url) {
