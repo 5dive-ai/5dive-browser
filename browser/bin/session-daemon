@@ -1023,7 +1023,7 @@ async function planRequest(ctx, req, send, end) {
   // that throws may already have navigated, a click may already have posted. The
   // expensive direction is claiming nothing ran when something did — that is the
   // blind retry that double-posts.
-  let stepsRun = 0, needsOwner = null, retry = null, at = -1, lastOp = null;
+  let stepsRun = 0, signedIn = false, needsOwner = null, retry = null, at = -1, lastOp = null;
   const stepMs = stepLimit(req);
   let page;
   // The act's own URL picks the window (DIVE-6392): the popup an earlier act left
@@ -1073,6 +1073,8 @@ async function planRequest(ctx, req, send, end) {
         send({ t: 'err', msg: gsignin.STOP_PREFIX.trim() + ' ' + JSON.stringify(gs) });
         throw new Error(`${where}: not run. ${gs.why}`);
       }
+      // DIVE-7168: the sign-in the guard allowed, said once per act for the owner's record.
+      if (!signedIn) { const gg = await gsignin.stepGrant(page, s); if (gg) { signedIn = true; send({ t: 'err', msg: gsignin.GRANT_PREFIX.trim() + ' ' + JSON.stringify(gg) }); } }
       const { sel, retry: r } = await aria.resolveOrRepick(page, s, i + 1, { timeoutMs: stepMs });
       if (r) assertLease(req, where);
       retry = r;

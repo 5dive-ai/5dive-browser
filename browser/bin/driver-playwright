@@ -120,6 +120,7 @@ const E_NOTHING_RAN = 70, E_FAILED = 1;
 // expensive direction of a wrong answer here is claiming nothing ran when
 // something did — that is the blind retry that double-posts.
 let stepsRun = 0;
+let signedIn = false;   // DIVE-7168: the owner's sign-in record, once per act
 const stepFailure = () => (stepsRun ? E_FAILED : E_NOTHING_RAN);
 
 // The same list bin/browser enforces. Kept here as a literal on purpose: two
@@ -738,6 +739,8 @@ async function main() {
         process.stderr.write(gsignin.STOP_PREFIX + JSON.stringify(gs) + '\n');
         throw new Error(`${where}: not run. ${gs.why}`);
       }
+      // DIVE-7168: the sign-in the guard allowed, said once per act for the owner's record.
+      if (!signedIn) { const gg = await gsignin.stepGrant(page, s); if (gg) { signedIn = true; process.stderr.write(gsignin.GRANT_PREFIX + JSON.stringify(gg) + '\n'); } }
       const { sel, retry: r } = await aria.resolveOrRepick(page, s, i + 1, { timeoutMs: stepMs });
       if (r) assertLease(where);
       retry = r;

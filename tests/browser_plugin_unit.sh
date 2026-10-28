@@ -347,7 +347,7 @@ t  'T2c6 a root caller with SUDO_USER re-executes as the seat before touching a 
 # relay seat itself, only for serve/viewer/status. Dropped to the CALLER, it
 # would be the agent registering its own bind — the one thing the owner's tap
 # exists to prevent.
-t  'T2c7 ...but asks, setup, adblock, config, the owner'"'"'s approve and the Connect relay stay root'"'"'s' 'yes' "$(grep -A20 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -q '^\s*asks|setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|claude-box|act-saved|totp|login-link|-h|--help|help|"") ;;' && echo yes || echo no)"
+t  'T2c7 ...but asks, setup, adblock, config, the owner'"'"'s approve and the Connect relay stay root'"'"'s' 'yes' "$(grep -A20 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -q '^\s*asks|setup|adblock|config|approve|approvals|adapters|_connect|_serve-offered|_join-offered|claude-box|act-saved|totp|login-link|-h|--help|help|"") ;;' && echo yes || echo no)"
 # DIVE-4997 added `adapters` (the owner's approve/reject/pending of a reflex
 # login check: root reads every seat's proposals and writes AS the seat), so six.
 # DIVE-5336 added `totp`, and only its `import` reaches the list (every other
@@ -368,7 +368,10 @@ t  'T2c7 ...but asks, setup, adblock, config, the owner'"'"'s approve and the Co
 # DIVE-7078 added `asks`: the owner at a login shell reads and claims root's
 # connect requests from seats with no Telegram owner. Thirteen. The case line
 # now sits 17 lines below the guard, so both arms read 20.
-t  'T2c8 ...and no OTHER verb joined them' '13' "$(grep -A20 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -oP '^\s+\K[a-z_|-]+(?=\|-h\|--help)' | tr '|' '\n' | grep -c .)"
+# DIVE-7168 added `_join-offered`: a seat's new site joins the box seat's sign-in
+# group, which only root can write; it re-derives the caller and drops to the box
+# seat itself. Fourteen.
+t  'T2c8 ...and no OTHER verb joined them' '14' "$(grep -A20 'if \[\[ \$EUID -eq 0 && -n "\${SUDO_USER:-}"' "$ROOT/browser/bin/browser" | grep -oP '^\s+\K[a-z_|-]+(?=\|-h\|--help)' | tr '|' '\n' | grep -c .)"
 
 # DIVE-4813 — WHICH SEAT ROOT BECOMES. An admin agent asked to open a site the
 # box had connected under `claude` and was told to run `sudo -u claude 5dive
@@ -569,8 +572,8 @@ tc 'T2c8 ...fleet does not probe in lockstep'  'RandomizedDelaySec=' "$(cat "$ST
 WGRP="$SGRP"
 t  'T2c8w setup writes the on-demand serve grant' 'yes' "$([[ -f "$SUDOD/5dive-browser" ]] && echo yes || echo no)"
 t  'T2c8w ...0440, as sudo requires of a drop-in' '440' "$(stat -c '%a' "$SUDOD/5dive-browser" 2>/dev/null)"
-t  'T2c8w ...the one rule, for the rendezvous group, exact command' \
-   "%$WGRP ALL=(root) NOPASSWD: /usr/local/bin/5dive browser _serve-offered" \
+t  'T2c8w ...the two rules (serve, join), for the rendezvous group, exact commands' \
+   "%$WGRP ALL=(root) NOPASSWD: /usr/local/bin/5dive browser _serve-offered"$'\n'"%$WGRP ALL=(root) NOPASSWD: /usr/local/bin/5dive browser _join-offered" \
    "$(grep -v '^#' "$SUDOD/5dive-browser" 2>/dev/null)"
 t  'T2c8w ...and no wildcard anywhere in it' 'no' "$(grep -v '^#' "$SUDOD/5dive-browser" | grep -q '\*' && echo yes || echo no)"
 tc 'T2c8w ...visudo checked the staged file before it went in' '-cqf' "$(cat "$VISUDO_LOG")"
@@ -595,7 +598,7 @@ elif ! id -Gn | tr ' ' '\n' | grep -qx "$(id -gn "$SEAT")"; then
   printf 'SKIP: T2c8g — this shell is not in the seat'"'"'s own group %s, so setup makes no rendezvous to grant\n' "$(id -gn "$SEAT")"
 else
   t  'T2c8g a seat'"'"'s setup grants the BOX seat'"'"'s group, not its own' \
-     "%root ALL=(root) NOPASSWD: /usr/local/bin/5dive browser _serve-offered" \
+     "%root ALL=(root) NOPASSWD: /usr/local/bin/5dive browser _serve-offered"$'\n'"%root ALL=(root) NOPASSWD: /usr/local/bin/5dive browser _join-offered" \
      "$(grep -v '^#' "$SUDOD/5dive-browser" 2>/dev/null)"
 fi
 rm -f "$SUDOD/5dive-browser"
