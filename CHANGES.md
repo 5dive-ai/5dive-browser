@@ -12,7 +12,7 @@ that file stays where it is.
 
 Found on the Dropshipping Team trial's clean rerun (DIVE-6902). The owner said yes to "fill the order to the pay button", and the browser stopped anyway on Shopify's "Secure Checkout" link, as a payment, with $2.99 off the cart as its amount. The second yes took a shell.
 
-- **Checkout is not pay.** Checkout, Check out, Proceed to checkout and Proceed to payment left the pay words. The page they open shows the total and takes nothing; the button that charges (Pay, Place order, Complete purchase, Buy, Subscribe) still stops.
+- **Checkout is not pay.** Checkout, Check out, Proceed to checkout and Proceed to payment left the pay words. The page they open shows the total and takes nothing; the button that charges (Pay, Place order, Complete purchase, Buy, Subscribe, and Complete/Confirm/Finish/Submit checkout or order) still stops.
 - **The amount is the Total.** The owner's ask read the first line with "total" in it, which on a checkout is the Subtotal. It now reads a line with the word Total.
 - **One yes.** A stop that reached no chat now names the one gate whose yes is the approval: `5dive task need <row> --type=approval --browser-ask=<id>` (5dive CLI with DIVE-7164). The use-browser skill says so.
 

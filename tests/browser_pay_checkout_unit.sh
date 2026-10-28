@@ -7,7 +7,8 @@
 # shell user could give the second yes.
 #
 #   P1-P3  Checkout, Check out, Proceed to checkout/payment and Secure Checkout
-#          are not pay; Pay now, Place order, Complete purchase, Buy still are.
+#          are not pay; Pay now, Place order, Complete purchase, Buy and the
+#          verbs that finish one (Complete/Confirm/Finish checkout) still are.
 #   P4     the same through stepRisk on a page: the click on "Secure Checkout"
 #          runs, the click on "Pay now" stops with the Total, not the Subtotal.
 #   P5     PRE-FIX: the 1.59.0 table (git show a64e495) stops "Secure Checkout".
@@ -28,8 +29,8 @@ cls() { node -e 'const a=require(process.argv[1]); console.log(process.argv.slic
 
 t 'P1 the way to the pay page is not a payment' 'null null null null null null' \
   "$(cls "$ARIA" 'Secure Checkout' 'Checkout' 'Check out' 'Proceed to checkout' 'Proceed to payment' 'Continue to payment')"
-t 'P2 the button that charges still stops' 'pay pay pay pay pay pay' \
-  "$(cls "$ARIA" 'Pay now' 'Place order' 'Place your order' 'Complete purchase' 'Buy it now' 'Pay $60.64')"
+t 'P2 the button that charges still stops' 'pay pay pay pay pay pay pay pay pay pay pay pay' \
+  "$(cls "$ARIA" 'Pay now' 'Place order' 'Place your order' 'Complete purchase' 'Buy it now' 'Pay $60.64' 'Complete checkout' 'Confirm checkout' 'Finish checkout' 'Submit order' 'Complete your checkout' 'Confirm my order')"
 t 'P3 the rest of the table is as it was' 'null publish send delete' "$(cls "$ARIA" 'Add to cart' 'Post' 'Send' 'Delete repository')"
 
 # P4: stepRisk on a page, as act calls it before a click.

@@ -847,8 +847,10 @@ async function typeKeys(page, sel, value, delayMs, { timeoutMs = 30000 } = {}) {
 // button". It is the button that charges that is the owner's: Pay, Place order,
 // Complete purchase, Buy, Subscribe. The page in between shows the total and
 // takes nothing, and the act that leaves it still stops.
+// The verbs that FINISH a checkout charge, so Complete/Confirm/Finish/Submit
+// (your) checkout stay pay; only the bare way to the page left the class.
 const RISK = [
-  ['pay', /\b(buy|buy now|purchase|place (your |my )?order|order now|confirm (order|purchase|payment)|complete (order|purchase|payment)|pay( now)?|subscribe|donate|book now|start (free )?trial|upgrade( now)?)\b/i],
+  ['pay', /\b(buy|buy now|purchase|place (your |my )?order|order now|(complete|confirm|finish|submit) (your |my )?(checkout|order|purchase|payment)|pay( now)?|subscribe|donate|book now|start (free )?trial|upgrade( now)?)\b/i],
   ['publish', /\b(post|publish|tweet|reply|repost|retweet|share|comment|submit|save and publish|go live)\b/i],
   ['send', /\b(send|send now|send message|send email)\b/i],
   ['delete', /\b(delete|remove|discard|erase|trash|destroy|deactivate|close (my )?account|unsubscribe|empty trash)\b/i],
