@@ -21,6 +21,16 @@ Found on the Dropshipping rerun box (10-28, 1.59.0): the owner's Google sign-in 
 
 `tests/browser_box_join_unit.sh` 39/39; its N1 arm runs origin/main's `bin/browser` and B1 renders in the public profile with nothing joined (negative control).
 
+### Fixed — on a self-hosted box the owner can open an agent's login ask with no hand step, and a failed open leaves the ask waiting (DIVE-7156), 1.59.1
+
+Found on the Dropshipping Team rerun (DIVE-6902): an agent asked the owner to log in to shopify.com, and `sudo 5dive browser asks open shopify.com` failed with "no profile directory for seat 'claude'", then closed the ask without telling the agent. The setup the message named could not fix it.
+
+- **Every setup makes the owner's store.** A login link redeems as the box seat (`claude`), which holds the owner's logins, and no setup made its store: a person's setup made the registry seats' and their own, a hire its own. Now a person's setup and every hire (agent create's setup, the one a self-hosted box always runs) also make `claude`'s store when the account exists and the store does not.
+- **`asks open` makes it too** if it is somehow missing, before it serves the site.
+- **A failed open leaves the ask waiting.** Opening spends the request code before the browser starts; the code is now held aside and put back on a failure while the ask is in date, and the owner is told to run the same `asks open` again. An ask past its time still closes.
+
+`tests/browser_setup_backfill_unit.sh` B6/B7 (root, a person and a hire each make `claude`'s store; 1.59.0 does not); `tests/browser_connect_shell_unit.sh` F (links on and off: a failed open keeps the same code, the next open works; an expired ask still closes), S (a missing store is made before the serve), M (1.59.0 closes the ask on the same failure).
+
 ### Added — on a self-hosted box linked to the 5dive app, a login or check ask arrives in the agent's app chat as one Connect link (DIVE-7133), 1.59.0
 
 Found by main's easy-login count (DIVE-6822): on a fresh self-hosted box linked chat-only to the app, `connect-request` sent the ask to the box's login shell, and signing a site in took SSH. The owner already reads each agent's chat in the app.
