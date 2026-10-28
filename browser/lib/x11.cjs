@@ -584,6 +584,51 @@ class X11 {
     return { served, stop: () => { this.listeners.delete(fn); } };
   }
 
+  // DIVE-7171: what is on the CLIPBOARD, read as any X client reads it, and
+  // then cleared. A site that shows a new API key masked, with only a Copy
+  // button (CJdropshipping), puts it here and nowhere else. ConvertSelection of
+  // CLIPBOARD (UTF8_STRING, then STRING) onto a window of our own, the
+  // property read and deleted; then the selection is taken by that window and
+  // the window destroyed, so nothing holds the value for the next paste.
+  // Resolves { text, cleared } — text '' when nobody holds the clipboard.
+  async readClipboard(waitMs) {
+    const win = await this.createInputWindow();
+    try {
+      const sel = await this.atom('CLIPBOARD'), into = await this.atom('_5DIVE_CLIP');
+      const time = await this.serverTime(win);
+      let text = '';
+      for (const tname of ['UTF8_STRING', 'STRING']) {
+        const target = await this.atom(tname);
+        const ev = this.events((e) => (e[0] & 0x7f) === XE.SelectionNotify && e.readUInt32LE(8) === win);
+        let e;
+        try {
+          const b = Buffer.alloc(20);
+          b.writeUInt32LE(win, 0); b.writeUInt32LE(sel, 4); b.writeUInt32LE(target, 8);
+          b.writeUInt32LE(into, 12); b.writeUInt32LE(time, 16);
+          this.req(OP.ConvertSelection, 0, b, false);
+          e = await ev.next(waitMs || 3000);
+        } finally { ev.stop(); }
+        if (!e) throw new Error('the clipboard\'s owner never answered, so nothing was read');
+        if (e.readUInt32LE(20) === 0) continue;          // property None: not held, or not in this type
+        const g = Buffer.alloc(20);
+        g.writeUInt32LE(win, 0); g.writeUInt32LE(into, 4); g.writeUInt32LE(0, 8);   // AnyPropertyType
+        g.writeUInt32LE(0, 12); g.writeUInt32LE(16384, 16);                         // up to 64 KB
+        const r = await this.req(OP.GetProperty, 1 /* delete */, g, true);
+        if (r.readUInt32LE(8) === await this.atom('INCR')) throw new Error('the clipboard holds more than this reads at once (64 KB), so nothing was read');
+        if (r[1] !== 8) continue;
+        text = r.subarray(32, 32 + r.readUInt32LE(16)).toString(tname === 'UTF8_STRING' ? 'utf8' : 'latin1');
+        break;
+      }
+      const o = Buffer.alloc(12);
+      o.writeUInt32LE(win, 0); o.writeUInt32LE(sel, 4); o.writeUInt32LE(0, 8);      // CurrentTime
+      this.req(OP.SetSelectionOwner, 0, o, false);
+      await this.sync();
+      return { text, cleared: true };
+    } finally {
+      await this.destroyWindow(win).catch(() => {});   // the selection it owns goes with it
+    }
+  }
+
   // The window at the pointer that takes drops: the outermost one with
   // XdndAware (the browser's top-level window), and the version it speaks.
   async dropTarget() {

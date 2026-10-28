@@ -12,6 +12,10 @@
 #   H  an SSH handoff with nobody to message also waits in the shell, with a Done
 #   W  criterion 2: no message on these paths, and no connect-site line for them,
 #      says "dashboard"; a hosted box keeps its words
+#   F  DIVE-7156: a failed open leaves the ask waiting, with the same code, and says
+#      how to retry; the next open works. An ask past its time is still closed.
+#   S  DIVE-7156: a missing box-seat store is made by `asks open` before it serves
+#   M  negative control: the pre-7156 tree closes the ask on the same failure
 #   N  negative control: the pre-fix tree dies on the same fixture with the
 #      dashboard words (skipped where the base commit is not in the checkout)
 # Run unprivileged: every seam is honoured only without root.
@@ -35,6 +39,10 @@ cat >"$TMP/fake-browser" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_LOG"
 case "$1" in
+  serve)
+    [[ -n "${FAKE_SERVE_FAIL:-}" && "$*" == *--login* ]] || exit 0
+    echo "5dive browser: no profile directory for seat 'claude' at /var/lib/5dive/browser-profiles/claude. Create it once: sudo 5dive browser setup" >&2
+    exit 69 ;;
   viewer)
     printf '/browser/viewer/%s/%s\n' "$2" "$(printf 'a%.0s' $(seq 64))"
     echo "one-time, expires 2099-01-01T00:00:00Z, bound to session ${3#--bind=}. Redeeming it consumes it." >&2
@@ -51,7 +59,13 @@ cat >"$TMP/fake-5dive" <<'SH'
 #!/usr/bin/env bash
 { printf 'ARGS %s\n' "$*"; cat; printf '\n'; } >>"$SENT_LOG"
 SH
-chmod +x "$TMP/fake-browser" "$TMP/fake-5dive"
+# what makes the box seat's store (DIVE-7156): `setup` run as that seat
+cat >"$TMP/fake-setup" <<'SH'
+#!/usr/bin/env bash
+printf 'setup %s as %s\n' "$*" "$FIVEDIVE_BROWSER_SEAT" >>"$FAKE_LOG"
+mkdir -p "$FIVEDIVE_BROWSER_PROFILE_ROOT/$FIVEDIVE_BROWSER_SEAT"
+SH
+chmod +x "$TMP/fake-browser" "$TMP/fake-5dive" "$TMP/fake-setup"
 
 ME=$(id -un); WHO="${ME#agent-}"
 mkdir -p "$TMP/home" "$TMP/connectors" "$TMP/req" "$TMP/profile.d" "$TMP/link"
@@ -66,6 +80,9 @@ export FIVEDIVE_BROWSER_ASKS_DIR="$TMP/asks" FIVEDIVE_BROWSER_PROFILE_D="$TMP/pr
 export FIVEDIVE_BROWSER_SAVED_CLI="$TMP/fake-5dive" FIVEDIVE_BROWSER_CONNECT_LOOK_S=20
 export FIVEDIVE_BROWSER_SSH_USER=owner FIVEDIVE_BROWSER_SSH_ADDR=203.0.113.7
 export FAKE_LOG="$TMP/fake.log" SENT_LOG="$TMP/sent.log"
+# The box seat's store exists unless an arm takes it away (DIVE-7156).
+export FIVEDIVE_BROWSER_PROFILE_ROOT="$TMP/profiles" FIVEDIVE_BROWSER_SETUP_SELF="$TMP/fake-setup"
+mkdir -p "$TMP/profiles/claude"
 export FIVEDIVE_BROWSER_LINK_CONF="$TMP/link/browser-link.env" FIVEDIVE_BROWSER_LINK_STATE="$TMP/link/state"
 export FIVEDIVE_BROWSER_LINK_LIB="$TMP/link/lib" FIVEDIVE_BROWSER_LINK_SYSTEMD_DIR="$TMP/link/systemd"
 links_on()  { printf 'LINK_MODE=ip\nLINK_HOST=192.0.2.10\nLINK_PORT=3111\n' >"$FIVEDIVE_BROWSER_LINK_CONF"; }
@@ -212,6 +229,69 @@ t  "W4 asks open with nothing waiting is a usage error" 64 "$rc"
 out=$(env -u FIVEDIVE_BROWSER_CONNECT_DIR "$BROWSER" asks open booking.com 2>&1); rc=$?
 t  "W5 asks open without root (and without the test seam) is refused" 77 "$rc"
 tc "W5 ... naming the sudo command" "sudo 5dive browser asks open booking.com" "$out"
+
+# ---- F: a failed open leaves the ask waiting (DIVE-7156) -----------------------
+held_left() { ls -A "$TMP/req" | grep -c '^\.held\.'; }
+for mode in on off; do
+  links_$mode; reset
+  "$BROWSER" connect-request shopify.com --reason="to list the products" >/dev/null 2>&1
+  CODE=$(code_of shopify.com request)
+  out=$(FAKE_SERVE_FAIL=1 "$BROWSER" asks open shopify.com 2>&1); rc=$?
+  t  "F1[$mode] a failed open exits with the failure" 69 "$rc"
+  tc "F1[$mode] ... names what failed" "no profile directory for seat 'claude'" "$out"
+  tc "F1[$mode] ... says the ask still waits" "nothing was opened, and the ask still waits" "$out"
+  tc "F1[$mode] ... and how to retry" "open it again: sudo 5dive browser asks open shopify.com" "$out"
+  tn "F1[$mode] ... never that it is closed" "closed now" "$out"
+  t  "F2[$mode] the record keeps the same request code" "$CODE" "$(code_of shopify.com request)"
+  t  "F2[$mode] ... still waiting" waiting "$(code_of shopify.com state)"
+  t  "F2[$mode] ... and the code file is live again" yes "$([[ -f "$TMP/req/$(printf '%s' "$CODE" | sha256sum | cut -d' ' -f1)" ]] && echo yes || echo no)"
+  t  "F2[$mode] ... with nothing held aside left behind" 0 "$(held_left)"
+  tc "F2[$mode] the owner's list still offers it" "Open it:  sudo 5dive browser asks open shopify.com" "$("$BROWSER" asks 2>&1)"
+  t  "F2[$mode] the agent was not told anything" "" "$(cat "$SENT_LOG")"
+  out=$("$BROWSER" asks open shopify.com 2>&1); rc=$?
+  t  "F3[$mode] once fixed, the same ask opens" 0 "$rc"
+  if [[ $mode == on ]]; then tc "F3[$mode] ... with its one-time link" "https://192.0.2.10/browser/viewer/shopify.com/" "$out"
+  else tc "F3[$mode] ... with the SSH steps" "ssh -N -L 5900:127.0.0.1:5917 owner@203.0.113.7" "$out"; fi
+  t  "F3[$mode] ... and nothing is held aside" 0 "$(held_left)"
+done
+links_on; reset
+"$BROWSER" connect-request shopify.com >/dev/null 2>&1
+sed -i 's/^expires_at=.*/expires_at=1/' "$TMP/req/shell/$ME.shopify.com"
+out=$(FAKE_SERVE_FAIL=1 "$BROWSER" asks open shopify.com 2>&1); rc=$?
+t  "F4 a failed open of an ask past its time still closes it" "yes" "$( (( rc != 0 )) && echo yes || echo no)"
+tc "F4 ... and says so" "that ask is closed now" "$out"
+t  "F4 ... nothing is left waiting or held" "0 nothing is waiting for you in the browser on this box." "$(held_left) $("$BROWSER" asks 2>&1)"
+
+# ---- S: asks open makes a missing box-seat store first (DIVE-7156) ---------------
+# The box seat is this runner's own user, the one account it surely has.
+links_on; reset
+rm -rf "$TMP/profiles/$ME"
+"$BROWSER" connect-request shopify.com >/dev/null 2>&1
+out=$(FIVEDIVE_BROWSER_BOX_SEAT="$ME" "$BROWSER" asks open shopify.com 2>&1); rc=$?
+t  "S1 with no box-seat store, asks open exits 0" 0 "$rc"
+t  "S1 ... the store was made, as the box seat" "setup setup as $ME" "$(head -1 "$FAKE_LOG")"
+t  "S1 ... before the site was served" "serve" "$(sed -n 2p "$FAKE_LOG" | cut -d' ' -f1)"
+t  "S1 ... and it exists" yes "$([[ -d "$TMP/profiles/$ME" ]] && echo yes || echo no)"
+tc "S1 ... the owner is told" "browser store made for the owner's logins ($ME)" "$out"
+tc "S1 ... and gets the link" "https://192.0.2.10/browser/viewer/shopify.com/" "$out"
+reset
+"$BROWSER" connect-request shopify.com >/dev/null 2>&1
+FIVEDIVE_BROWSER_BOX_SEAT="$ME" "$BROWSER" asks open shopify.com >/dev/null 2>&1
+t  "S2 a store that exists is not made again" 0 "$(grep -c '^setup' "$FAKE_LOG")"
+
+# ---- M: the pre-7156 tree on the same failure ------------------------------------
+BASE7156=a64e495c99d5a2fec8f960492c0de9e2279e5f4e   # 5dive-browser main before DIVE-7156
+git cat-file -e "$BASE7156^{commit}" 2>/dev/null || git fetch -q --depth=1 origin "$BASE7156" >/dev/null 2>&1
+if git cat-file -e "$BASE7156:browser/bin/browser" 2>/dev/null; then
+  OLD7156="$TMP/old-7156"; git show "$BASE7156:browser/bin/browser" >"$OLD7156"; chmod +x "$OLD7156"
+  links_on; reset
+  FIVEDIVE_BROWSER_CONNECT_PRIV="$OLD7156" "$OLD7156" connect-request shopify.com >/dev/null 2>&1
+  out=$(FAKE_SERVE_FAIL=1 FIVEDIVE_BROWSER_CONNECT_PRIV="$OLD7156" "$OLD7156" asks open shopify.com 2>&1)
+  tc "M1 negative control: the pre-7156 tree closes the ask on a failed open" "that ask is closed now" "$out"
+  t  "M1 ... and nothing is left waiting" "nothing is waiting for you in the browser on this box." "$("$OLD7156" asks 2>&1)"
+else
+  t  "M the pre-7156 tree $BASE7156 resolves (fetch failed: control NOT run)" yes no
+fi
 
 # ---- N: the pre-fix tree on the same fixture -------------------------------------
 if git cat-file -e "$BASE:browser/bin/browser" 2>/dev/null; then

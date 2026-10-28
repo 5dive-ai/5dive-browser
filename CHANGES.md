@@ -8,7 +8,7 @@ that file stays where it is.
 
 ## Unreleased
 
-### Fixed — going to the pay page is not paying, and one owner yes is enough (DIVE-7164), 1.59.2
+### Fixed — going to the pay page is not paying, and one owner yes is enough (DIVE-7164), 1.62.0
 
 Found on the Dropshipping Team trial's clean rerun (DIVE-6902). The owner said yes to "fill the order to the pay button", and the browser stopped anyway on Shopify's "Secure Checkout" link, as a payment, with $2.99 off the cart as its amount. The second yes took a shell.
 
@@ -17,6 +17,26 @@ Found on the Dropshipping Team trial's clean rerun (DIVE-6902). The owner said y
 - **One yes.** A stop that reached no chat now names the one gate whose yes is the approval: `5dive task need <row> --type=approval --browser-ask=<id>` (5dive CLI with DIVE-7164). The use-browser skill says so.
 
 `tests/browser_pay_checkout_unit.sh`, 9 arms; P5 runs the 1.59.0 table (a64e495) and it stops "Secure Checkout".
+
+### Added — a seat connects CJdropshipping with no root: the site drives in input mode by itself, and a key it only lets you copy goes straight into the secret store (DIVE-7171), 1.61.0
+
+Found on the Dropshipping Team's live CJ run (DIVE-7163): CJ's API page never took a click in the automated browser, and the new key, shown masked with only a Copy button, could only be moved into the secret store from root.
+
+- **`cjdropshipping.com` ships an adapter with `"drive": "input"`.** With input mode on, the agent made the API app and the key in under 5 minutes; before, switching took `sudo 5dive browser config drive=input` and a serve restart, which a standard seat can do neither of. Pay in this mode stops only a step the agent marks `"kind":"pay"` (the adapter says so).
+- **`5dive browser clipboard <site> --to-secret=<NAME> [--connector=tools]`.** The daemon reads the window's clipboard and clears it; the text is piped into `5dive secret write <NAME> --connector=tools` and never printed, written to a file or put in argv. Input mode only; refused while the owner has the window or a person is in the viewer, since the clipboard may then hold what they copied. A standard seat saves its own `tools` key through the seat-secret grant (5dive CLI with DIVE-7168); on an older CLI the store's refusal is passed on and nothing is saved.
+- The use-browser skill's input-mode file says how: click Copy, then `clipboard … --to-secret=`.
+
+`tests/browser_input_drive_unit.sh` RC1-RC7 (the verb against the fake daemon and a fake CLI: value on stdin byte for byte and never in the output, lease held, empty clipboard, no `--to-secret`, an automated-browser site, a bad name, a refusing store), K7 (`lib/x11.cjs` reads a clipboard another X client holds on a bare Xvfb, UTF-8 whole, and nobody owns it after), L15 (live Chrome: Ctrl+C in a textarea comes back whole, a second read finds nothing, refused during a handoff). On 1.59.1 the RC arms are red: `unknown: 5dive browser clipboard`.
+
+### Fixed — on a self-hosted box the owner can open an agent's login ask with no hand step, and a failed open leaves the ask waiting (DIVE-7156), 1.59.1
+
+Found on the Dropshipping Team rerun (DIVE-6902): an agent asked the owner to log in to shopify.com, and `sudo 5dive browser asks open shopify.com` failed with "no profile directory for seat 'claude'", then closed the ask without telling the agent. The setup the message named could not fix it.
+
+- **Every setup makes the owner's store.** A login link redeems as the box seat (`claude`), which holds the owner's logins, and no setup made its store: a person's setup made the registry seats' and their own, a hire its own. Now a person's setup and every hire (agent create's setup, the one a self-hosted box always runs) also make `claude`'s store when the account exists and the store does not.
+- **`asks open` makes it too** if it is somehow missing, before it serves the site.
+- **A failed open leaves the ask waiting.** Opening spends the request code before the browser starts; the code is now held aside and put back on a failure while the ask is in date, and the owner is told to run the same `asks open` again. An ask past its time still closes.
+
+`tests/browser_setup_backfill_unit.sh` B6/B7 (root, a person and a hire each make `claude`'s store; 1.59.0 does not); `tests/browser_connect_shell_unit.sh` F (links on and off: a failed open keeps the same code, the next open works; an expired ask still closes), S (a missing store is made before the serve), M (1.59.0 closes the ask on the same failure).
 
 ### Added — on a self-hosted box linked to the 5dive app, a login or check ask arrives in the agent's app chat as one Connect link (DIVE-7133), 1.59.0
 
