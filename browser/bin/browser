@@ -162,7 +162,9 @@ BROWSER_ARGV=("$@")
 BROWSER_SUDO="${FIVEDIVE_SUDO:-sudo}"
 BROWSER_ROOT_BIN="${FIVEDIVE_BIN:-/usr/local/bin/5dive}"
 as_root() {
-  [[ $EUID -eq 0 ]] && return 0
+  # `id -u` as well as $EUID: the sites this replaced read `id -u`, which the
+  # suite's fake `id` answers for a root run.
+  [[ $EUID -eq 0 || "$(id -u)" == 0 ]] && return 0
   local -a cmd=("$BROWSER_ROOT_BIN")
   [[ "${FIVEDIVE_JSON_MODE:-0}" == 1 ]] && cmd+=(--json)
   cmd+=(browser "${BROWSER_ARGV[@]}")

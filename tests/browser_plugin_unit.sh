@@ -756,7 +756,8 @@ run "$BROWSER" serve x --stop >/dev/null 2>&1 || true
 # hostile seat can squat.
 run "$BROWSER" setup
 t  'T2f setup as non-root is refused' 77 "$RC"
-tc 'T2f ...naming the sudo form'      'sudo 5dive browser setup' "$ERR"
+# DIVE-7183: the refusal says who can, never "Run: sudo" (tests/browser_root_reexec_unit.sh grades the re-run).
+tc 'T2f ...and never hands the owner a command' 'Do not ask your owner to run anything' "$ERR"
 
 # ================================================= T3 adapters are data, not code
 mkdriver 0
@@ -3131,7 +3132,7 @@ tc 'T90b ...and spells out that nothing is being filtered or blocked' 'nothing i
 # filtering off for a site and then be shown a page it was never meant to trust.
 adb off example.com
 t  'T91 a non-root caller is refused' '77' "$RC"
-tc 'T91b ...and is told the one command that works' 'sudo 5dive browser adblock off example.com' "$ERR"
+tc 'T91b ...and is told it needs root, never to hand the owner a command' 'needs root, and this agent does not have it. Do not ask your owner' "$ERR"
 adb_root off 'not a host/../..'
 t  'T92 a site name that is not a host is refused' '64' "$RC"
 adb_root frobnicate example.com
