@@ -8,7 +8,7 @@ that file stays where it is.
 
 ## Unreleased
 
-### Added — an agent signs up with the owner's Google already on the box, and the owner gets one line for each sign-in (DIVE-7168), 1.60.0
+### Added — an agent signs up with the owner's Google already on the box, and the owner gets one line for each sign-in (DIVE-7168), 1.63.0
 
 Found on the Dropshipping rerun box (10-28, 1.59.0): the owner's Google sign-in sat in the box seat's browser (the Main group `asks open shopify.com` served), Clicker's own Main was empty, so cjdropshipping.com opened in Clicker's public profile and its "Continue with Google" asked for an email. The owner got a one-time link only to tap "Continue as …". lodar: *"from now all browser does any job - human not needed"*.
 
@@ -20,6 +20,26 @@ Found on the Dropshipping rerun box (10-28, 1.59.0): the owner's Google sign-in 
 - The use-browser and connect-site skills say: make the account yourself, ask only at those stops, and only for a site the task names.
 
 `tests/browser_box_join_unit.sh` 39/39; its N1 arm runs origin/main's `bin/browser` and B1 renders in the public profile with nothing joined (negative control).
+
+### Fixed — going to the pay page is not paying, and one owner yes is enough (DIVE-7164), 1.62.0
+
+Found on the Dropshipping Team trial's clean rerun (DIVE-6902). The owner said yes to "fill the order to the pay button", and the browser stopped anyway on Shopify's "Secure Checkout" link, as a payment, with $2.99 off the cart as its amount. The second yes took a shell.
+
+- **Checkout is not pay.** Checkout, Check out, Proceed to checkout and Proceed to payment left the pay words. The page they open shows the total and takes nothing; the button that charges (Pay, Place order, Complete purchase, Buy, Subscribe, and Complete/Confirm/Finish/Submit checkout or order) still stops.
+- **The amount is the Total.** The owner's ask read the first line with "total" in it, which on a checkout is the Subtotal. It now reads a line with the word Total.
+- **One yes.** A stop that reached no chat now names the one gate whose yes is the approval: `5dive task need <row> --type=approval --browser-ask=<id>` (5dive CLI with DIVE-7164). The use-browser skill says so.
+
+`tests/browser_pay_checkout_unit.sh`, 9 arms; P5 runs the 1.59.0 table (a64e495) and it stops "Secure Checkout".
+
+### Added — a seat connects CJdropshipping with no root: the site drives in input mode by itself, and a key it only lets you copy goes straight into the secret store (DIVE-7171), 1.61.0
+
+Found on the Dropshipping Team's live CJ run (DIVE-7163): CJ's API page never took a click in the automated browser, and the new key, shown masked with only a Copy button, could only be moved into the secret store from root.
+
+- **`cjdropshipping.com` ships an adapter with `"drive": "input"`.** With input mode on, the agent made the API app and the key in under 5 minutes; before, switching took `sudo 5dive browser config drive=input` and a serve restart, which a standard seat can do neither of. Pay in this mode stops only a step the agent marks `"kind":"pay"` (the adapter says so).
+- **`5dive browser clipboard <site> --to-secret=<NAME> [--connector=tools]`.** The daemon reads the window's clipboard and clears it; the text is piped into `5dive secret write <NAME> --connector=tools` and never printed, written to a file or put in argv. Input mode only; refused while the owner has the window or a person is in the viewer, since the clipboard may then hold what they copied. A standard seat saves its own `tools` key through the seat-secret grant (5dive CLI with DIVE-7168); on an older CLI the store's refusal is passed on and nothing is saved.
+- The use-browser skill's input-mode file says how: click Copy, then `clipboard … --to-secret=`.
+
+`tests/browser_input_drive_unit.sh` RC1-RC7 (the verb against the fake daemon and a fake CLI: value on stdin byte for byte and never in the output, lease held, empty clipboard, no `--to-secret`, an automated-browser site, a bad name, a refusing store), K7 (`lib/x11.cjs` reads a clipboard another X client holds on a bare Xvfb, UTF-8 whole, and nobody owns it after), L15 (live Chrome: Ctrl+C in a textarea comes back whole, a second read finds nothing, refused during a handoff). On 1.59.1 the RC arms are red: `unknown: 5dive browser clipboard`.
 
 ### Fixed — on a self-hosted box the owner can open an agent's login ask with no hand step, and a failed open leaves the ask waiting (DIVE-7156), 1.59.1
 

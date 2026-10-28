@@ -60,7 +60,10 @@ The default is **standard**: post, send and delete steps run and are logged for 
 a **pay step stops**: `act` exits **73** with an ask, a screenshot and an approval id. Relay the
 ask to the owner with the screenshot, in plain words: what is bought, sent or deleted, and
 where. The owner approves, not you: their Telegram button or `sudo 5dive browser approve <id>`.
-Then re-run the same act with `--approved=<id>`. `5dive browser approvals policy` shows
+With no Telegram, put it on your row as ONE ask: `5dive task need <row> --type=approval
+--browser-ask=<id> --ask="…"`; the owner's yes there is the approval. Then re-run the same act
+with `--approved=<id>`. Going to the checkout page is not paying: only the button that charges
+(Pay, Place order, Complete purchase, Buy) stops. `5dive browser approvals policy` shows
 the policy; `approvals policy set careful` (the owner's, never yours) makes all four ask.
 **Do not rephrase the steps** to get past a stop: a renamed button is still an order placed. If
 a step will pay and `act` does not stop it, ask first anyway.
@@ -83,6 +86,7 @@ These files sit next to this one, in `references/`:
 
 - `references/lessons.md`: before a form, a sign-up, a post or an upload; downloads and popups.
 - `references/logins.md`: a sign-in stop, Google sign-up, a captcha, a blocked server IP, a proxy.
-- `references/input-mode.md`: a verb says "INPUT mode", or the site is tiktok.com.
+- `references/input-mode.md`: a verb says "INPUT mode", the site is tiktok.com or cjdropshipping.com,
+  or a new API key shows only a Copy button.
 - `references/paying.md`: the whole pay/post/send/delete rule, when an act exits 73.
 - `references/repeat.md`: a flow you will run again (`--record`, `replay`, `--delta`).
