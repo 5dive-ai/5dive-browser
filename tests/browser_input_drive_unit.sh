@@ -237,6 +237,9 @@ const srv = net.createServer((c) => {
     if (req.op === 'title') { send({ t: 'out', data: JSON.stringify({ drive: 'input', title: 'Fake Page', handoff: hand, viewer: false }) + '\n' }); return end(0); }
     if (req.op === 'hand') { if (req.act === 'open') hand = true; if (req.act === 'close') hand = false;
       send({ t: 'out', data: JSON.stringify({ open: hand, viewer: false, title: 'Fake Page' }) + '\n' }); return end(0); }
+    // DIVE-7171: the clipboard holds what \$TMP/fake.clip holds, once (a read clears it).
+    if (req.op === 'clipboard') { let t = ''; try { t = fs.readFileSync('$TMP/fake.clip', 'utf8'); fs.unlinkSync('$TMP/fake.clip'); } catch (e) {}
+      send({ t: 'out', data: JSON.stringify({ drive: 'input', chars: t.length, cleared: true, text: t }) + '\n' }); return end(rc); }
     if (req.op === 'screen' || req.op === 'input') {
       if (req.op === 'input') for (let i = 0; i < req.steps.length; i++) send({ t: 'log', line: '  step ' + (i + 1) + ' (' + req.steps[i].op + ') ok' });
       send({ t: 'out', data: JSON.stringify({ drive: 'input', title: 'Fake Page', window_title: 'Fake Page - Google Chrome', width: 1280, height: 800, png_b64: PNG, act_report: req.op === 'input' || undefined, steps_run: req.op === 'input' ? req.steps.length : undefined }) + '\n' });
@@ -668,6 +671,47 @@ arm 'R11m the mutant still says it stopped' 0 "$R11RC"
 arm 'R11m ...and the sign-in never reached disk — the lost login' '' "$(r11_cookie)"
 sleep 2
 arm 'R11m (control) ...and the commit it cut off never came' '' "$(r11_cookie)"
+# RC (DIVE-7171) — `clipboard` pipes the window's clipboard into `secret write`
+# and prints none of it. The fake CLI records its argv and what reached stdin.
+rm -f "$TMP/fake.rc"
+cat > "$TMP/fake-5dive" <<'FIVE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "${FAKE_SECRET_REC:?}.argv"; cat > "$FAKE_SECRET_REC.stdin"
+[[ -f "$FAKE_SECRET_REC.refuse" ]] && { echo 'secret write: refused for this test' >&2; exit 65; }
+echo "saved $2"
+FIVE
+chmod +x "$TMP/fake-5dive"
+export FIVEDIVE_BROWSER_SECRET_CLI="$TMP/fake-5dive" FAKE_SECRET_REC="$TMP/secret"
+CLIPV='CJ5-test-key-0123456789abcdef'
+printf '%s' "$CLIPV" > "$TMP/fake.clip"
+o=$("$BROWSER" clipboard tiktok.com --to-secret=CJ_API_KEY 2>&1); rc=$?
+arm 'RC1 clipboard saves the window clipboard through `secret write <NAME> --connector=tools`' \
+  "0 secret write CJ_API_KEY --connector=tools" "$rc $(cat "$TMP/secret.argv" 2>/dev/null)"
+arm 'RC1 ...the value reaches the CLI on stdin, byte for byte' "$CLIPV" "$(cat "$TMP/secret.stdin" 2>/dev/null)"
+arm 'RC1 ...and is never printed: the output names the key and the length, not the value' 'no yes' \
+  "$(yn grep -qF "$CLIPV" <<<"$o") $(yn grep -q 'as CJ_API_KEY (29 characters, not shown), and cleared the clipboard' <<<"$o")"
+arm 'RC1 ...and the request held the lease' true "$(jq -r '(.token // "") | length > 0' <<<"$(last clipboard)")"
+rm -f "$TMP/secret.argv"
+o=$("$BROWSER" clipboard tiktok.com --to-secret=CJ_API_KEY 2>&1); rc=$?
+arm 'RC2 an empty clipboard saves nothing and says to press the Copy button first' '69 no yes' \
+  "$rc $(yn test -e "$TMP/secret.argv") $(yn grep -q 'Press the site.s Copy button first' <<<"$o")"
+o=$("$BROWSER" clipboard tiktok.com 2>&1); rc=$?
+arm 'RC3 with no --to-secret nothing is read: the clipboard never goes to the screen' "64 $(reqs clipboard)" \
+  "$rc $(reqs clipboard)"
+o=$("$BROWSER" clipboard reddit.com --to-secret=CJ_API_KEY 2>&1); rc=$?
+arm 'RC4 a site in the automated browser is refused by name, nothing read' "69 yes $(reqs clipboard)" \
+  "$rc $(yn grep -q 'no window clipboard to read' <<<"$o") $(reqs clipboard)"
+o=$("$BROWSER" clipboard tiktok.com --to-secret='bad name' 2>&1); rc=$?
+arm 'RC5 a --to-secret that is not a variable name is refused before anything is read' "64 $(reqs clipboard)" "$rc $(reqs clipboard)"
+printf '%s' "$CLIPV" > "$TMP/fake.clip"; : > "$TMP/secret.refuse"
+o=$("$BROWSER" clipboard tiktok.com --to-secret=CJ_API_KEY 2>&1); rc=$?
+arm 'RC6 a store that refuses fails non-zero, passes its reason on, and still prints no value' '65 yes yes no' \
+  "$rc $(yn grep -q 'refused for this test' <<<"$o") $(yn grep -q 'was not saved' <<<"$o") $(yn grep -qF "$CLIPV" <<<"$o")"
+rm -f "$TMP/secret.refuse"
+unset FIVEDIVE_BROWSER_SECRET_CLI
+arm 'RC7 the shipped cjdropshipping.com adapter opts into input mode (DIVE-7171)' input \
+  "$(jq -r .drive "$ROOT/browser/adapters/cjdropshipping.com.json")"
+
 export PATH="$OLDPATH"
 cd "$ROOT"
 
@@ -715,6 +759,11 @@ else
   got=$(kdrop notbrowser)
   arm 'K5 ...and a drop target that is not the browser is sent nothing' \
     'drop=refused left=no not-the-browser' "${got%% msg=*}$( [[ "$got" == *'is not the browser'* ]] && echo ' not-the-browser')"
+  # K7 (DIVE-7171) — the clipboard, against a fake browser that owns it.
+  kclip() { DISPLAY=":$kdisp" timeout 30 node "$ROOT/tests/x11_clipboard.cjs" "$@" 2>&1; }
+  arm 'K7 a clipboard another client holds is read whole (UTF-8), then cleared: nobody owns it after' \
+    'read=CJ5ab-ü-63 cleared=true owner-after=none' "$(kclip held 'CJ5ab-ü-63')"
+  arm 'K7 ...and an empty clipboard reads as nothing, not an error' 'read= cleared=true owner-after=none' "$(kclip empty)"
   kill "$KX" 2>/dev/null; wait "$KX" 2>/dev/null
 fi
 
@@ -818,6 +867,19 @@ HTML
     lc '{"op":"hand","act":"close"}' >/dev/null 2>&1
     lc '{"op":"input","steps":[{"op":"type","value":"!"}],"settle":300}' > "$TMP/l.in2" 2>/dev/null; rc=$?
     arm 'L5 ...and closing it gives the window back' '0 yes' "$rc $(yn grep -q 'héllo ✓!' <<<"$(jq -r .title "$TMP/l.in2")")"
+    # L15 (DIVE-7171) — what Chrome put on the clipboard (Ctrl+A, Ctrl+C in the
+    # textarea), read by the daemon and cleared; refused while the owner has it.
+    lc '{"op":"input","steps":[{"op":"press","key":"ctrl+a"},{"op":"press","key":"ctrl+c"}],"settle":300}' >/dev/null 2>&1
+    lc '{"op":"hand","act":"open","reason":"test"}' >/dev/null 2>&1
+    lc '{"op":"clipboard"}' > "$TMP/l15h.out" 2>"$TMP/l15h.err"; rc=$?
+    arm 'L15 the clipboard is not read while the owner has the window (69), and nothing is sent' '69 yes 0' \
+      "$rc $(yn grep -q 'owner has this tab' "$TMP/l15h.err") $(wc -c < "$TMP/l15h.out")"
+    lc '{"op":"hand","act":"close"}' >/dev/null 2>&1
+    lc '{"op":"clipboard"}' > "$TMP/l15.out" 2>"$TMP/l15.err"; rc=$?
+    arm "L15 ...then Chrome's copied text comes back whole, non-ASCII included" '0 héllo ✓! 8' \
+      "$rc $(jq -r '"\(.text) \(.chars)"' "$TMP/l15.out" 2>/dev/null)$(why "$TMP/l15.err")"
+    lc '{"op":"clipboard"}' > "$TMP/l15b.out" 2>/dev/null; rc=$?
+    arm 'L15 ...and the read cleared it: a second read finds nothing' '0 0' "$rc $(jq -r .chars "$TMP/l15b.out" 2>/dev/null)"
     lc '{"op":"tree","url":"https://example.com/"}' >/dev/null 2>"$TMP/l.t"; rc=$?
     arm 'L6 a DOM op is refused by name (70)' '70 yes' "$rc $(yn grep -q 'INPUT mode' "$TMP/l.t")"
     # L11 (DIVE-5388) — the login check in a TAB OF ITS OWN: Ctrl+T, the probe URL

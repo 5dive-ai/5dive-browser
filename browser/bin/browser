@@ -342,6 +342,10 @@ usage() {
                                       # hand the SAME live window to the owner (Connect button);
                                       # agent input is suspended until they tap Done
   5dive browser handoff <site> --wait[=<s>] | --status | --close
+  5dive browser clipboard <site> --to-secret=<NAME> [--connector=tools]
+                                      # a key the site only lets you COPY: click its Copy
+                                      # button, then this saves the clipboard as <NAME>
+                                      # (never shown) and clears it
 
   5dive browser config                      # the box's default drive mode for logged-in sites
   sudo 5dive browser config drive=input|cdp|auto
@@ -11682,6 +11686,63 @@ _input_act() {  # <site> <url> <steps> <out> <json> <lease-wait> <settle>
 # signs in through. When they tap Done the handoff closes and the agent
 # carries on from whatever page they left.
 HANDOFF_WAIT_DEFAULT=900
+# A KEY THE SITE ONLY LETS YOU COPY, STRAIGHT INTO THE SECRET STORE (DIVE-7171).
+# CJdropshipping shows a new API key masked, with a Copy button, so it lands on
+# the window's clipboard and nowhere else. A standard seat had no way on from
+# there: no clipboard tool on the box, and root was the only reader of the
+# display. The daemon reads the clipboard and clears it; this pipes the text
+# into `5dive secret write`, the same verb a person runs (a standard seat crosses
+# through its own seat-secret grant), and never prints it, writes it to a file
+# or puts it in argv. There is no way to read the clipboard any other way.
+# Input mode only: the automated browser's window is not the one the site's
+# Copy button writes to in a way this can read.
+CLIP_SECRET_CLI=/usr/local/bin/5dive
+# TEST SEAM, honoured only WITHOUT root: the CLI the value is piped to.
+[[ $EUID -ne 0 && -n "${FIVEDIVE_BROWSER_SECRET_CLI:-}" ]] && CLIP_SECRET_CLI="$FIVEDIVE_BROWSER_SECRET_CLI"
+cmd_clipboard() {
+  local site="" name="" conn=tools wait=no
+  while (($#)); do
+    case "$1" in
+      --to-secret=*) name="${1#*=}" ;;
+      --connector=*) conn="${1#*=}" ;;
+      --wait)        wait="$LEASE_WAIT_DEFAULT" ;;
+      --wait=*|--lease-wait=*) wait="${1#*=}" ;;
+      -h|--help)
+        printf '%s clipboard <site> --to-secret=<NAME> [--connector=tools]   # the window'"'"'s clipboard into the secret store, never shown\n' "$PROG"
+        printf '  for a key the site only lets you copy: click its Copy button (act), then run this. The clipboard is cleared after.\n'
+        return 0 ;;
+      -*) die "$E_USAGE" "unknown flag: $1" ;;
+      *) [[ -z "$site" ]] || die "$E_USAGE" "one site at a time"; site="$1" ;;
+    esac; shift
+  done
+  [[ -n "$site" ]] || die "$E_USAGE" "usage: 5dive browser clipboard <site> --to-secret=<NAME> [--connector=tools]"
+  [[ -n "$name" ]] || die "$E_USAGE" "the clipboard goes only into the secret store, never to the screen or a file: 5dive browser clipboard $site --to-secret=<NAME>"
+  [[ "$name" =~ ^[A-Z_][A-Z0-9_]{0,63}$ ]] || die "$E_USAGE" "--to-secret takes a variable name, e.g. CJ_API_KEY; got: $name"
+  [[ "$conn" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || die "$E_USAGE" "--connector takes a connector name, e.g. tools; got: $conn"
+  [[ "$wait" == no || "$wait" =~ ^[0-9]{1,5}$ ]] || die "$E_USAGE" "the lease wait takes seconds; got: $wait"
+  _valid_site "$site" && ! _is_public "$site" || die "$E_USAGE" "'$site' is not a site with a window of its own"
+  _site_is_input "$site" || die "$E_UNAVAILABLE" "$site is served as the automated browser, so there is no window clipboard to read. This works on a site in input mode (its adapter says \"drive\": \"input\"). Nothing was saved."
+  [[ -x "$CLIP_SECRET_CLI" ]] || die "$E_UNAVAILABLE" "no 5dive CLI at $CLIP_SECRET_CLI to save the key with. Nothing was read."
+  _input_open "$site" "input:clipboard" "$wait"
+  local ans rc=0; ans=$(_daemon_call "$_SITE_DIR" "$(_input_req "$site" '{"op":"clipboard"}')") || rc=$?
+  _lease_release; trap - EXIT
+  (( rc == 0 )) || { ans=""; _input_rc "$rc" "$site"; }
+  local n; n=$(jq -r '.chars // 0' <<<"$ans" 2>/dev/null)
+  if [[ ! "$n" =~ ^[0-9]+$ ]] || (( n == 0 )); then
+    ans=""
+    die "$E_UNAVAILABLE" "the $site window's clipboard is empty. Press the site's Copy button first (an act click on it, then a shot to see it took), and run this again. Nothing was saved."
+  fi
+  local said src=0
+  said=$(jq -j '.text' <<<"$ans" | "$CLIP_SECRET_CLI" secret write "$name" --connector="$conn" 2>&1) || src=$?
+  ans=""
+  if (( src != 0 )); then
+    printf '%s\n' "$said" >&2
+    die "$src" "the clipboard was read and cleared, but the secret store refused it (above), so $name was not saved. Press the site's Copy button again before you retry."
+  fi
+  [[ -n "$said" ]] && printf '%s\n' "$said"
+  printf 'saved the %s window'"'"'s clipboard as %s (%s characters, not shown), and cleared the clipboard.\n' "$site" "$name" "$n"
+}
+
 cmd_handoff() {
   local site="" reason="" act=open wait="" ask=1
   while (($#)); do
@@ -11925,6 +11986,7 @@ case "${1:-}" in
   login-link) shift; cmd_login_link "$@" ;;
   asks) shift; cmd_asks "$@" ;;
   handoff) shift; cmd_handoff "$@" ;;
+  clipboard) shift; cmd_clipboard "$@" ;;
   # Not in usage: the privileged half, reached only as `sudo -n … browser _connect`.
   _connect) shift; cmd_connect_priv "$@" ;;
   # Not in usage: a brokered seat's on-demand serve, reached only as

@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — a seat connects CJdropshipping with no root: the site drives in input mode by itself, and a key it only lets you copy goes straight into the secret store (DIVE-7171), 1.61.0
+
+Found on the Dropshipping Team's live CJ run (DIVE-7163): CJ's API page never took a click in the automated browser, and the new key, shown masked with only a Copy button, could only be moved into the secret store from root.
+
+- **`cjdropshipping.com` ships an adapter with `"drive": "input"`.** With input mode on, the agent made the API app and the key in under 5 minutes; before, switching took `sudo 5dive browser config drive=input` and a serve restart, which a standard seat can do neither of. Pay in this mode stops only a step the agent marks `"kind":"pay"` (the adapter says so).
+- **`5dive browser clipboard <site> --to-secret=<NAME> [--connector=tools]`.** The daemon reads the window's clipboard and clears it; the text is piped into `5dive secret write <NAME> --connector=tools` and never printed, written to a file or put in argv. Input mode only; refused while the owner has the window or a person is in the viewer, since the clipboard may then hold what they copied. A standard seat saves its own `tools` key through the seat-secret grant (5dive CLI with DIVE-7168); on an older CLI the store's refusal is passed on and nothing is saved.
+- The use-browser skill's input-mode file says how: click Copy, then `clipboard … --to-secret=`.
+
+`tests/browser_input_drive_unit.sh` RC1-RC7 (the verb against the fake daemon and a fake CLI: value on stdin byte for byte and never in the output, lease held, empty clipboard, no `--to-secret`, an automated-browser site, a bad name, a refusing store), K7 (`lib/x11.cjs` reads a clipboard another X client holds on a bare Xvfb, UTF-8 whole, and nobody owns it after), L15 (live Chrome: Ctrl+C in a textarea comes back whole, a second read finds nothing, refused during a handoff). On 1.59.1 the RC arms are red: `unknown: 5dive browser clipboard`.
+
 ### Fixed — on a self-hosted box the owner can open an agent's login ask with no hand step, and a failed open leaves the ask waiting (DIVE-7156), 1.59.1
 
 Found on the Dropshipping Team rerun (DIVE-6902): an agent asked the owner to log in to shopify.com, and `sudo 5dive browser asks open shopify.com` failed with "no profile directory for seat 'claude'", then closed the ask without telling the agent. The setup the message named could not fix it.

@@ -53,6 +53,19 @@ when they tap Done you carry on from the page they left. Take a `shot` before yo
 A challenge whose title says so stops an act by itself (exit 75). TikTok's puzzle does not change
 the title, so when you see one in a screenshot, hand the window over. Never try to solve it.
 
+## A key the site only lets you copy
+
+Some sites show a new API key masked, with only a Copy button (cjdropshipping.com). Click Copy
+with an `act`, take a `shot` to see it took, then:
+
+```bash
+5dive browser clipboard cjdropshipping.com --to-secret=CJ_API_KEY      # saved, never shown
+```
+
+It saves the window's clipboard in the box's secret store under that name and clears the
+clipboard. It never prints the key: never read the key off the screen, type it into chat or a
+file, or use any other way to get it out. Empty clipboard: press Copy again.
+
 ## From real jobs in input mode
 
 - **Input mode: Chrome's "Restore pages?" bubble can cover the header's sign-in link or avatar.** Close it and take a new `shot` before you judge signed in or out, and check the URL bar in the screenshot shows the page you meant.

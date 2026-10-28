@@ -83,6 +83,7 @@ These files sit next to this one, in `references/`:
 
 - `references/lessons.md`: before a form, a sign-up, a post or an upload; downloads and popups.
 - `references/logins.md`: a sign-in stop, Google sign-up, a captcha, a blocked server IP, a proxy.
-- `references/input-mode.md`: a verb says "INPUT mode", or the site is tiktok.com.
+- `references/input-mode.md`: a verb says "INPUT mode", the site is tiktok.com or cjdropshipping.com,
+  or a new API key shows only a Copy button.
 - `references/paying.md`: the whole pay/post/send/delete rule, when an act exits 73.
 - `references/repeat.md`: a flow you will run again (`--record`, `replay`, `--delta`).
