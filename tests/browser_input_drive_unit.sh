@@ -869,7 +869,9 @@ HTML
     arm 'L5 ...and closing it gives the window back' '0 yes' "$rc $(yn grep -q 'héllo ✓!' <<<"$(jq -r .title "$TMP/l.in2")")"
     # L15 (DIVE-7171) — what Chrome put on the clipboard (Ctrl+A, Ctrl+C in the
     # textarea), read by the daemon and cleared; refused while the owner has it.
-    lc '{"op":"input","steps":[{"op":"press","key":"ctrl+a"},{"op":"press","key":"ctrl+c"}],"settle":300}' >/dev/null 2>&1
+    # Ctrl+End drops the selection (the copy is already on the clipboard), so
+    # L9's 'Q' adds to 'héllo ✓!' instead of replacing it.
+    lc '{"op":"input","steps":[{"op":"press","key":"ctrl+a"},{"op":"press","key":"ctrl+c"},{"op":"press","key":"ctrl+end"}],"settle":300}' >/dev/null 2>&1
     lc '{"op":"hand","act":"open","reason":"test"}' >/dev/null 2>&1
     lc '{"op":"clipboard"}' > "$TMP/l15h.out" 2>"$TMP/l15h.err"; rc=$?
     arm 'L15 the clipboard is not read while the owner has the window (69), and nothing is sent' '69 yes 0' \
