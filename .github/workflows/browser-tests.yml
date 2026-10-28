@@ -182,6 +182,10 @@ jobs:
       # Chrome against a local server that counts the pages it holds at once.
       - name: read many harness
         run: bash tests/browser_read_many_unit.sh
+      # DIVE-7183: a box-wide change run without sudo re-runs through sudo -n when the
+      # seat may, else names the admin colleague who can. Fake sudo, no root needed.
+      - name: root re-run harness
+        run: bash tests/browser_root_reexec_unit.sh
       # A manifest or marketplace file that does not parse breaks `5dive plugin
       # add` at install time, where nobody is watching. Cheap, so it is its own
       # named check rather than an assertion buried in the suite.
