@@ -821,7 +821,7 @@ cmd_serve_offered() {
 # serves them (DIVE-7156). So on the rerun box (10-28) Clicker's own Main was
 # empty, cjdropshipping.com opened in the public profile, its "Continue with
 # Google" asked for an email, and the owner was sent a link only to tap
-# "Continue as Alex".
+# "Continue as …".
 #
 # So when this seat's own group has nothing to share, the site joins the BOX's
 # default group instead and the box offers it: from then on it is a box login
