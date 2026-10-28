@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — going to the pay page is not paying, and one owner yes is enough (DIVE-7164), 1.59.2
+
+Found on the Dropshipping Team trial's clean rerun (DIVE-6902). The owner said yes to "fill the order to the pay button", and the browser stopped anyway on Shopify's "Secure Checkout" link, as a payment, with $2.99 off the cart as its amount. The second yes took a shell.
+
+- **Checkout is not pay.** Checkout, Check out, Proceed to checkout and Proceed to payment left the pay words. The page they open shows the total and takes nothing; the button that charges (Pay, Place order, Complete purchase, Buy, Subscribe) still stops.
+- **The amount is the Total.** The owner's ask read the first line with "total" in it, which on a checkout is the Subtotal. It now reads a line with the word Total.
+- **One yes.** A stop that reached no chat now names the one gate whose yes is the approval: `5dive task need <row> --type=approval --browser-ask=<id>` (5dive CLI with DIVE-7164). The use-browser skill says so.
+
+`tests/browser_pay_checkout_unit.sh`, 9 arms; P5 runs the 1.59.0 table (a64e495) and it stops "Secure Checkout".
+
 ### Added — on a self-hosted box linked to the 5dive app, a login or check ask arrives in the agent's app chat as one Connect link (DIVE-7133), 1.59.0
 
 Found by main's easy-login count (DIVE-6822): on a fresh self-hosted box linked chat-only to the app, `connect-request` sent the ask to the box's login shell, and signing a site in took SSH. The owner already reads each agent's chat in the app.

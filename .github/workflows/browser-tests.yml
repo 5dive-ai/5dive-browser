@@ -69,6 +69,9 @@ jobs:
         run: bash tests/browser_connect_shell_unit.sh
       - name: connect-in-the-app-chat harness
         run: bash tests/browser_connect_app_unit.sh
+      # DIVE-7164: the way to the pay page is not a payment; one owner yes.
+      - name: pay-check harness
+        run: bash tests/browser_pay_checkout_unit.sh
       # DIVE-4997: reflex drafts a login check, the owner approves it, drift.
       # A fake reflex CLI whose candidates really match the fixtures.
       - name: reflex propose harness

@@ -839,8 +839,16 @@ async function typeKeys(page, sel, value, delayMs, { timeoutMs = 30000 } = {}) {
 // IT IS A GUARD, NOT A CLASSIFIER OF INTENT. It catches the literal buttons. An
 // agent that submits an order through a button labelled "Continue" is not caught
 // here, and saying so is better than a pattern list that pretends otherwise.
+//
+// GOING TO THE PAY PAGE IS NOT PAYING (DIVE-7164). `pay` named Checkout, Check out
+// and Proceed to checkout/payment too, so Shopify's "Secure Checkout" — a link to
+// the page with the card form — stopped as a payment, with a $2.99 off the cart
+// as its amount, after the owner had already said yes to "fill it to the pay
+// button". It is the button that charges that is the owner's: Pay, Place order,
+// Complete purchase, Buy, Subscribe. The page in between shows the total and
+// takes nothing, and the act that leaves it still stops.
 const RISK = [
-  ['pay', /\b(buy|buy now|purchase|place (your |my )?order|order now|confirm (order|purchase|payment)|complete (order|purchase|payment)|pay( now)?|checkout|check out|proceed to (checkout|payment)|subscribe|donate|book now|start (free )?trial|upgrade( now)?)\b/i],
+  ['pay', /\b(buy|buy now|purchase|place (your |my )?order|order now|confirm (order|purchase|payment)|complete (order|purchase|payment)|pay( now)?|subscribe|donate|book now|start (free )?trial|upgrade( now)?)\b/i],
   ['publish', /\b(post|publish|tweet|reply|repost|retweet|share|comment|submit|save and publish|go live)\b/i],
   ['send', /\b(send|send now|send message|send email)\b/i],
   ['delete', /\b(delete|remove|discard|erase|trash|destroy|deactivate|close (my )?account|unsubscribe|empty trash)\b/i],
@@ -888,7 +896,7 @@ function _composerIn(arg) {
 //            chip on the page, chips and input values only), subject,
 //            first_line of the body
 //   pay      payee (a field that names one, else the site), amount (a price on
-//            the button, else on a "total" line, else the first on the page)
+//            the button, else on a "Total" line (not "Subtotal", DIVE-7164), else the first on the page)
 //   publish  text, the first 280 characters of the composer
 //   delete   item: the row, list item or dialog heading the button belongs to
 // It is a READ of well-known shapes, not an understanding of the page: a field it
@@ -929,7 +937,7 @@ function _payloadIn(arg) {
     var money = /(?:[$€£¥₽₹]|\b(?:USD|EUR|GBP|RUB|INR|JPY|CAD|AUD)\b)\s?\d(?:[\d.,]*\d)?|\d(?:[\d.,]*\d)?\s?(?:[$€£¥₽₹]|\b(?:USD|EUR|GBP|RUB|INR|JPY|CAD|AUD)\b)/;
     var m = text(el).match(money);
     if (!m) { var lines = String((root.innerText || root.textContent || '')).split(/\r?\n/);
-      for (var j = 0; j < lines.length && !m; j++) if (/total/i.test(lines[j])) m = lines[j].match(money);
+      for (var j = 0; j < lines.length && !m; j++) if (/\btotal\b/i.test(lines[j])) m = lines[j].match(money);
       if (!m) m = String(root.innerText || root.textContent || '').match(money); }
     if (m) out.amount = norm(m[0]);
     var payee = first('[aria-label*="payee" i],[data-payee],[name=payee]');

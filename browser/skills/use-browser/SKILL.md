@@ -60,7 +60,10 @@ The default is **standard**: post, send and delete steps run and are logged for 
 a **pay step stops**: `act` exits **73** with an ask, a screenshot and an approval id. Relay the
 ask to the owner with the screenshot, in plain words: what is bought, sent or deleted, and
 where. The owner approves, not you: their Telegram button or `sudo 5dive browser approve <id>`.
-Then re-run the same act with `--approved=<id>`. `5dive browser approvals policy` shows
+With no Telegram, put it on your row as ONE ask: `5dive task need <row> --type=approval
+--browser-ask=<id> --ask="…"`; the owner's yes there is the approval. Then re-run the same act
+with `--approved=<id>`. Going to the checkout page is not paying: only the button that charges
+(Pay, Place order, Complete purchase, Buy) stops. `5dive browser approvals policy` shows
 the policy; `approvals policy set careful` (the owner's, never yours) makes all four ask.
 **Do not rephrase the steps** to get past a stop: a renamed button is still an order placed. If
 a step will pay and `act` does not stop it, ask first anyway.
