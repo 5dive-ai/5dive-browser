@@ -5768,8 +5768,10 @@ t  'T32e the session daemon checks the same guard' yes \
    "$(grep -q 'aria.stepRisk(page, s, sel)' "$ROOT/browser/bin/session-daemon" && echo yes || echo no)"
 
 # --- T32f act's own refusals ---------------------------------------------------
-run actenv "$BROWSER" act "https://public-web.test/" --steps='[{"op":"upload","selector":"#f","path":"/etc/passwd"}]'
-t  'T32f upload is not an act step' 64 "$RC"
+# DIVE-7237 (GAP-11): upload IS an act step now, on input mode's terms: an absolute
+# path to a regular file the caller can read. A path that is not one is refused.
+run actenv "$BROWSER" act "https://public-web.test/" --steps='[{"op":"upload","selector":"#f","path":"etc/passwd"}]'
+t  'T32f an upload step with a relative path is refused' 64 "$RC"
 run actenv "$BROWSER" act noadapter.test "https://noadapter.test/" --steps='[{"op":"goto","url":"https://evil.test/"}]'
 t  'T32f a goto cannot walk a login to another host' 64 "$RC"
 run actenv "$BROWSER" act "https://public-web.test/" --steps='not json'

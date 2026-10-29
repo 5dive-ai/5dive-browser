@@ -81,6 +81,8 @@
 #           upload whose chooser will not take the path drops it instead (the
 #           chill-gorge chooser, made here with a dead Open key); a drop on a
 #           spot that takes no file is said by name, not called attached
+#        L15 (DIVE-7237) a paste step puts a line of code into the page whole,
+#           through Chrome's own ctrl+v (typed key by key, an editor rewrote it)
 #        L10 a FRESH page driven the instant its title appears still gets the
 #           text: the daemon holds input until the page is quiet (the CI race)
 set -uo pipefail
@@ -955,6 +957,17 @@ HTML
     got="$rc $(yn grep -qF "Q$CJK:" <<<"$t")"
     [[ "$got" == '0 yes' ]] || got+=" title=$t$(why "$TMP/l.cjkerr")"
     arm "L12 a Chinese sentence of $distinct distinct characters on $spare spare keys reaches the page whole" '0 yes' "$got"
+    # L15 (DIVE-7237, GAP-17) — a paste step: a line of pixel code, quotes and
+    # commas and all, arrives whole through Chrome's own ctrl+v, as one input.
+    PASTE_CODE="fbq('track', \"Purchase\", {value: 1.5, currency: 'USD'});"
+    lc "$(jq -nc --arg v "$PASTE_CODE" '{op:"input", steps:[{op:"paste", value:$v}], settle:300}')" > "$TMP/l.paste" 2>"$TMP/l.pasteerr"; rc=$?
+    t=""; for i in $(seq 1 50); do
+      t=$("$REAL_DAEMON" call "$LP/s.sock" <<<'{"op":"title"}' 2>/dev/null | jq -r .title)
+      [[ "$t" == *"$PASTE_CODE"* ]] && break; sleep 0.2
+    done
+    got="$rc $(yn grep -qF "$PASTE_CODE" <<<"$t")"
+    [[ "$got" == '0 yes' ]] || got+=" title=$t$(why "$TMP/l.pasteerr")"
+    arm 'L15 a paste step puts a line of code into the page whole (quotes, commas), through ctrl+v' '0 yes' "$got"
     lc '{"op":"shutdown"}' >/dev/null 2>&1
     for i in $(seq 1 100); do kill -0 "$LD" 2>/dev/null || break; sleep 0.05; done
     chrome_up() { pgrep -f -- "--user-data-dir=$LP" >/dev/null; }

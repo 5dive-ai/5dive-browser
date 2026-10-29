@@ -56,6 +56,9 @@ const XE = { PropertyNotify: 28, SelectionRequest: 30, SelectionNotify: 31, Clie
 const EV = { KeyPress: 2, KeyRelease: 3, ButtonPress: 4, ButtonRelease: 5, Motion: 6 };
 
 const pad4 = (n) => (4 - (n % 4)) % 4;
+// One ChangeProperty without BIG-REQUESTS is at most 262140 bytes; a paste stays
+// well under it rather than speak INCR.
+const PASTE_MAX = 200000;
 
 function displaySocket(display) {
   const m = String(display || '').match(/^:?(\d+)(?:\.\d+)?$/);
@@ -582,6 +585,37 @@ class X11 {
     this.req(OP.SetSelectionOwner, 0, b, false);
     await this.sync();
     return { served, stop: () => { this.listeners.delete(fn); } };
+  }
+
+  // DIVE-7237 (GAP-17): <text> into the focused field as ONE paste, not as
+  // keystrokes. A code editor answers each typed key (closes a quote, commits an
+  // autocomplete on "," or ".", re-indents a new line), so a pixel code typed key
+  // by key came out with characters changed and dropped (Shopify's custom pixel,
+  // DIVE-6902). A paste is inserted as it is. The text is offered on CLIPBOARD
+  // from a window of our own, ctrl+v is pressed, and the window is destroyed
+  // once the browser has read it, so nothing holds the text for a later paste.
+  // Resolves { served } — false when nothing asked for it (no text field had
+  // the focus). One property request: at most PASTE_MAX bytes.
+  async paste(text, waitMs) {
+    const data = Buffer.from(String(text), 'utf8');
+    if (!data.length) throw new Error('nothing to paste');
+    if (data.length > PASTE_MAX) throw new Error(`${data.length} bytes is more than one paste carries (${PASTE_MAX}); split it`);
+    const win = await this.createInputWindow();
+    let own = null;
+    try {
+      const time = await this.serverTime(win);
+      own = await this.ownSelection('CLIPBOARD', win, time,
+        { UTF8_STRING: data, 'text/plain;charset=utf-8': data, TEXT: data });
+      const before = await this.atom('UTF8_STRING');
+      await this.press('ctrl+v');
+      const until = Date.now() + (waitMs || 3000);
+      while (Date.now() < until && !own.served.length) await sleep(30);
+      if (own.served.length) await sleep(150);   // a second target (TARGETS first) arrives right after
+      return { served: own.served.length > 0, utf8: own.served.includes(before) };
+    } finally {
+      if (own) own.stop();
+      await this.destroyWindow(win).catch(() => {});   // the selection goes with the window
+    }
   }
 
   // DIVE-7171: what is on the CLIPBOARD, read as any X client reads it, and

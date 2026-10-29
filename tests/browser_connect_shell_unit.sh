@@ -7,7 +7,9 @@
 #      link (its bind registered with the box's own login-link server); `asks done`
 #      is the Done, and the agent is told. The agent never sees the link or the code.
 #   K  the code cannot be claimed any other way: not by a button tap, not by the
-#      agent's own _connect, not twice
+#      agent's own _connect, not twice. DIVE-7237: a second open while a person is
+#      in the window is refused with no link; otherwise it mints a NEW link (the
+#      old view revoked) under the same Done
 #   O  login links OFF: the same ask opens as the SSH steps to the window
 #   H  an SSH handoff with nobody to message also waits in the shell, with a Done
 #   W  criterion 2: no message on these paths, and no connect-site line for them,
@@ -145,9 +147,32 @@ tc "L4 ... and the Done command" "sudo 5dive browser asks done booking.com" "$ou
 tc "L4 the box browser was served for a person" "serve booking.com --login" "$(cat "$FAKE_LOG")"
 t  "L4 the bind went to the login-link server" yes "$([[ -s "$TMP/link/state/binds/booking.com" ]] && echo yes || echo no)"
 t  "L4 the request code is spent" "" "$(code_of booking.com request)"
+# DIVE-7237 (GAP-13): a second open of an ask whose link was never used, or ran
+# out, mints a NEW link to the same window (the old view revoked first) under the
+# same Done. It is refused, with no link, only while a person is in the window.
+D7237="$TMP/profiles/claude/booking.com"; mkdir -p "$D7237"
+sleep 60 & VNC7237=$!
+printf 'vnc_pid=%s\n' "$VNC7237" > "$D7237/.5dive-viewer"
+printf 'admitted_at=%s\n' "$(( $(date -u +%s) + 1 ))" > "$D7237/.5dive-viewer.admitted"
+DONE0=$(code_of booking.com done)
+: >"$FAKE_LOG"
 out=$("$BROWSER" asks open booking.com 2>&1); rc=$?
-t  "K3 a second open is refused" 77 "$rc"
+t  "K3 a second open while a person is in the window is refused" 77 "$rc"
 tn "K3 ... and shows no link again" "https://" "$out"
+tc "K3 ... saying why" "you are in this window through its link right now" "$out"
+t  "K3 ... and touches nothing" "" "$(cat "$FAKE_LOG")"
+kill "$VNC7237" 2>/dev/null; wait "$VNC7237" 2>/dev/null; rm -f "$D7237/.5dive-viewer" "$D7237/.5dive-viewer.admitted"
+: >"$FAKE_LOG"
+out=$(keep "$("$BROWSER" asks open booking.com 2>&1)"); rc=$?
+t  "K4 a second open of an unused or expired link mints a new one" 0 "$rc"
+tc "K4 ... a fresh one-time link on the box's own host" "https://192.0.2.10/browser/viewer/booking.com/" "$out"
+tc "K4 ... said to be new" "A new one-time link to the same window" "$out"
+t  "K4 ... the old view revoked before the new one is made" "viewer-revoke booking.com|serve booking.com --login|viewer booking.com" \
+   "$(tr '\n' '|' <"$FAKE_LOG" | sed 's/|$//' | sed 's/ --bind=[^|]*//')"
+t  "K4 ... under the same Done code" "$DONE0" "$(code_of booking.com done)"
+t  "K4 ... and the ask is still open" open "$(sed -n 's/^state=//p' "$TMP/req/shell/$ME.booking.com")"
+out=$(keep "$("$BROWSER" asks 2>&1)")
+tc "K4 ... and the owner's list says how to get a new link" "Its link ran out, or you never opened it? A new one:  sudo 5dive browser asks open booking.com" "$out"
 out=$(keep "$("$BROWSER" asks 2>&1)")
 tc "L5 an open ask's notice names the Done" "When you are finished:  sudo 5dive browser asks done booking.com" "$out"
 

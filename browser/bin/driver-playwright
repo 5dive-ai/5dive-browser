@@ -651,6 +651,8 @@ async function main() {
     const out = { op: s.op };
     // DIVE-6844: the site a saved login is for (bin/browser sets it, never a page).
     if ((s.op === 'fill' || s.op === 'type') && typeof s.host === 'string' && s.host) out.host = s.host;
+    // DIVE-7237: an act's upload carries the file's bytes, read by the calling seat.
+    if (s.op === 'upload' && s.file && typeof s.file === 'object' && typeof s.file.b64 === 'string') out.file = s.file;
     for (const field of spec) {
       if (typeof s[field] !== 'string' || !s[field]) {
         die(E_NOTHING_RAN, `step ${i + 1} (${s.op}) is missing '${field}'`);
@@ -779,6 +781,11 @@ async function main() {
       // no other (the page may have moved since the act began). Checked here,
       // not on the case lines, which older harnesses match byte for byte.
       if (s.op === 'fill' || s.op === 'type') savedHostCheck(page, s);
+      // DIVE-7237: an act's upload carries the file's bytes, read by the caller
+      // (who may hold files this browser's seat cannot open); an adapter's names a path.
+      if (s.op === 'upload' && s.file && typeof s.file.b64 === 'string') {
+        s.path = { name: String(s.file.name || 'upload'), mimeType: String(s.file.mimeType || 'application/octet-stream'), buffer: Buffer.from(s.file.b64, 'base64') };
+      }
       switch (s.op) {
         case 'goto': {
           await page.goto(s.url, { waitUntil: 'domcontentloaded' });

@@ -122,6 +122,16 @@ jobs:
         run: bash tests/browser_input_drive_unit.sh
         env:
           INPUT_HARNESS_ARTIFACTS: ${{ runner.temp }}/input-harness
+      # DIVE-7237: the box's logins share one Chrome. A page verb re-serves it the
+      # way its site needs, a brokered seat restarts it itself, status never moves
+      # it (fake daemon); act's DOM upload (playwright stub + live Chrome); input
+      # mode's paste (bare Xvfb + fake daemon; its live arm is L15 above).
+      - name: group window harness
+        run: bash tests/browser_group_window_unit.sh
+      - name: act upload harness
+        run: bash tests/browser_act_upload_unit.sh
+      - name: input paste harness
+        run: bash tests/browser_input_paste_unit.sh
       - name: keep the input harness screens of a failed run
         if: failure()
         uses: actions/upload-artifact@v4
