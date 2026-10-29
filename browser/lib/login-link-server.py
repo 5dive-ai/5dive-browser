@@ -55,7 +55,7 @@ NONCE = r"[0-9a-f]{64}"
 RE_PAGE = re.compile(rf"^/browser/viewer/({SITE})/({NONCE})/?$")
 RE_REDEEM = re.compile(rf"^/browser/viewer/({SITE})/({NONCE})/redeem$")
 RE_WS = re.compile(rf"^/browser/viewer/({SITE})/({NONCE})/ws/([0-9a-f]{{64}})$")
-RE_ASSET = re.compile(r"^/browser/viewer/assets/(page\.js|novnc/[A-Za-z0-9._/-]{1,200})$")
+RE_ASSET = re.compile(r"^/browser/viewer/assets/(page\.js|viewer-ui\.js|novnc/[A-Za-z0-9._/-]{1,200})$")
 # Debian's novnc package links its vendored libraries out to these.
 ALLOWED_ASSET_ROOTS = ("/usr/share/novnc", "/usr/share/javascript", "/usr/share/nodejs")
 TYPES = {".js": "text/javascript", ".mjs": "text/javascript", ".html": "text/html; charset=utf-8",
@@ -66,21 +66,43 @@ TYPES = {".js": "text/javascript", ".mjs": "text/javascript", ".html": "text/htm
 _tokens = {}            # token -> (site, nonce, "127.0.0.1", port, expires_at)
 _lock = threading.Lock()
 
+# The same layout as the hosted viewer (shelld's viewerPage, DIVE-7223): a 44-px
+# bar with the site, one line of help, Type and Paste; the box's screen under it.
+# page.js labels the bar in the viewer's language and wires it (viewer-ui.js).
+# {site} is RE_PAGE's match, so it holds no markup.
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>Log in on your box</title>
+<link rel="icon" href="data:,">
+<title>{site}</title>
 <style>
- html,body{margin:0;height:100%;background:#111;color:#eee;font:16px system-ui,sans-serif}
- #msg{padding:16px}
- #screen{position:fixed;inset:0}
- #kbd{position:fixed;right:12px;bottom:12px;z-index:2;display:none;padding:10px 14px;border:0;border-radius:8px;background:#2d6cdf;color:#fff;font-size:15px}
- #kin{position:fixed;left:-100px;top:0;width:1px;height:1px;opacity:0}
+ html,body{margin:0;height:100%;background:#0b0d10;color:#e6e8eb;
+  font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overscroll-behavior:none}
+ #bar{padding:10px 14px;border-bottom:1px solid #232830;display:flex;gap:10px;align-items:center;
+  height:23px;white-space:nowrap}
+ #bar b{font-weight:600;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+ #note{color:#9aa4b2;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+ #pastebox{flex:1 0 150px;display:flex;gap:6px}
+ #pastebox[hidden],#note[hidden]{display:none}
+ /* With the field open, Type has done its job: its room keeps Paste on a phone-wide bar. */
+ #pastebox:not([hidden])~#type{display:none}
+ #pastein{flex:1;min-width:0;background:#15191f;color:inherit;border:1px solid #2e3540;border-radius:6px;
+  padding:1px 8px;font:inherit;line-height:19px}
+ #bar button{background:#1f2630;color:inherit;border:1px solid #2e3540;border-radius:6px;padding:1px 12px;
+  font:inherit;line-height:19px;cursor:pointer}
+ #bar button:disabled{opacity:.45;cursor:default}
+ #screen{position:absolute;inset:44px 0 0 0;background:#000}
+ #msg{position:absolute;inset:44px 0 0 0;display:grid;place-content:center;text-align:center;padding:24px}
 </style></head>
-<body><div id="msg">Opening the login screen…</div><div id="screen"></div>
-<input id="kin" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false">
-<button id="kbd" type="button">Keyboard</button>
+<body><div id="bar"><b id="site">{site}</b>
+ <span id="note"></span>
+ <form id="pastebox" hidden><input id="pastein" type="text" autocomplete="off" autocapitalize="off"
+  autocorrect="off" spellcheck="false"><button type="submit"></button></form>
+ <button id="type" type="button" disabled></button>
+ <button id="paste" type="button" disabled></button></div>
+<div id="screen"></div>
+<div id="msg">…</div>
 <script type="module" src="/browser/viewer/assets/page.js"></script>
 </body></html>
 """
@@ -157,8 +179,9 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path_only()
-        if RE_PAGE.match(p):
-            return self.send(200, PAGE, "text/html; charset=utf-8", {
+        m = RE_PAGE.match(p)
+        if m:
+            return self.send(200, PAGE.replace("{site}", m.group(1)), "text/html; charset=utf-8", {
                 "content-security-policy": "default-src 'none'; script-src 'self'; connect-src 'self'; "
                                            "style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; "
                                            "form-action 'none'; frame-ancestors 'none'"})
@@ -211,8 +234,8 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send(200, json.dumps(out), "application/json")
 
     def asset(self, rel):
-        if rel == "page.js":
-            path, roots = os.path.join(PAGE_DIR, "page.js"), (os.path.realpath(PAGE_DIR),)
+        if rel in ("page.js", "viewer-ui.js"):
+            path, roots = os.path.join(PAGE_DIR, rel), (os.path.realpath(PAGE_DIR),)
         else:
             path = os.path.join(NOVNC_DIR, rel[len("novnc/"):])
             roots = tuple(os.path.realpath(r) for r in (NOVNC_DIR,) + ALLOWED_ASSET_ROOTS)
