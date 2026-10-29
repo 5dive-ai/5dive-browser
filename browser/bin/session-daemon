@@ -61,6 +61,7 @@ function savedHostCheck(page, s) {
 const downloads = require(path.join(__dirname, '..', 'lib', 'downloads.cjs'));
 const gsignin = require(path.join(__dirname, '..', 'lib', 'google-signin.cjs'));
 const popup = require(path.join(__dirname, '..', 'lib', 'popup.cjs'));
+const frontTab = require(path.join(__dirname, '..', 'lib', 'front-tab.cjs'));
 const cleanExit = require(path.join(__dirname, '..', 'lib', 'clean-exit.cjs'));
 // What each tab looked like when the agent last saw it, so an act can answer with
 // what changed instead of the whole page (DIVE-6795, lib/look.cjs).
@@ -504,6 +505,15 @@ async function serveMode(profile, sock, broker, input) {
         return;
       }
 
+      // THE SITE'S TAB IN FRONT, AT ONCE (DIVE-7257). A person is being shown
+      // this window for one site; the viewer must not queue behind a run, and
+      // bringing a tab forward reads and loads nothing the lease protects.
+      if (req.op === 'front') {
+        try { await frontRequest(ctx, input, req, send, end); }
+        catch (e) { send({ t: 'err', msg: e && e.message ? e.message : String(e) }); end(E_FAILED); }
+        return;
+      }
+
       // ONE REQUEST AT A TIME — AND A SHORT WAIT, THEN A REFUSAL (DIVE-4927).
       // This used to refuse on the spot, on the theory that the lease already
       // serialises callers so a second request mid-run must be one that skipped
@@ -566,10 +576,47 @@ async function serveMode(profile, sock, broker, input) {
   }
 }
 
+// THE TAB AGENTS DRIVE is the first one, until a person is shown another tab of
+// this window for its site (DIVE-7257, frontRequest): from then on it is that
+// one, so the person watches the tab the agent's next step acts in. It goes back
+// to the first tab when that one closes.
+let driven = null;
 async function pageOf(ctx) {
-  const p = ctx.pages()[0] || await ctx.newPage();
+  if (driven && (driven.isClosed() || !ctx.pages().includes(driven))) driven = null;
+  const p = driven || ctx.pages()[0] || await ctx.newPage();
   p.setDefaultTimeout(STEP_TIMEOUT);
   return p;
+}
+
+// A SITE OF A GROUP SHOWS ITS OWN TAB (DIVE-7257). The sites of a sign-in group
+// share this one window, so the viewer for bing.com showed the Google Play tab
+// that was in front. Before the window is handed to a person: a tab on the
+// site comes to the front (lib/front-tab.cjs picks it), or a new tab opens on the
+// site's URL when none is on it. No other tab is navigated or closed.
+//
+// INPUT MODE says why it did nothing: there is no automation channel to list the
+// tabs, and a key press per viewer would open a tab every time.
+async function frontRequest(ctx, input, req, send, end) {
+  const url = String(req.url || '');
+  if (!/^https?:\/\/[^\s]+$/i.test(url) || url.length > 2000) {
+    send({ t: 'err', msg: 'front needs the site\'s http(s) url' }); return end(E_NOTHING_RAN);
+  }
+  const host = frontTab.hostOf(url);
+  const out = (o) => send({ t: 'out', data: JSON.stringify(o) + '\n' });
+  if (input) { out({ host, moved: false, why: 'input mode: no automation channel to list the tabs' }); return end(0); }
+  let page = frontTab.pick(ctx.pages(), host, driven || ctx.pages()[0]);
+  const opened = !page;
+  if (opened) {
+    page = await ctx.newPage();
+    // Not awaited, as the start URL is not: the person must not wait on a slow
+    // site, and a tab they can see loading beats a viewer that never opens.
+    page.goto(url, { waitUntil: 'domcontentloaded' })
+      .catch((e) => process.stderr.write(`${PROG}: NOTE — could not open ${url}: ${String(e && e.message).split('\n')[0]}\n`));
+  }
+  await page.bringToFront();
+  driven = page;
+  out({ host, moved: true, opened, tab: ctx.pages().indexOf(page) });
+  return end(0);
 }
 
 // THE POPUP AN EARLIER ACT LEFT IN VIEW (DIVE-6392). This browser outlives each

@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — the sign-in link for a site shows that site, not another site of its group (DIVE-7257), 1.64.1
+
+lodar, 10-29: the bing.com link showed the Google Play console. Sites of a sign-in group share one Chrome, and the window was shown with whichever tab was last in front.
+
+- **The site's tab comes to the front** when its viewer link is opened (and when the SSH view of `asks open` is made): a tab already on the site, or a new tab on the site's address when none is. No other tab is moved, navigated or closed. A site with its own profile works as before.
+- **That tab is the one agents drive from then on**, so the owner watches the tab the agent's next step acts in (it goes back to the first tab if that one is closed).
+- Input mode (plain Chrome, no automation channel) cannot list its tabs, so nothing moves there; it says so.
+
 ### Fixed — one window for the box's logins, a seat restarts it itself, upload on a normal page, paste in input mode, a new take-over link (DIVE-7237), 1.64.0
 
 The dropshipping team run on 10-29 (DIVE-6902) needed 6 root steps, all from these.

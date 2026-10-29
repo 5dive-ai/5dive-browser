@@ -5079,6 +5079,8 @@ VIEWER_TTL_MIN=60
 # How long a mint waits for the display server and the bridge to be accepting
 # before it refuses. Starting them is not the same moment as them listening.
 VIEWER_BRIDGE_WAIT_S=10
+# How long the viewer waits for the site's tab to come forward (DIVE-7257).
+VIEWER_FRONT_S="${FIVEDIVE_BROWSER_VIEWER_FRONT_S:-5}"
 
 _serve_pidfile()  { echo "$1/.5dive-serve"; }
 # ---- the session daemon (DIVE-4621) ----------------------------------------
@@ -5940,6 +5942,8 @@ cmd_viewer() {
   # password is. The password's PATH, never its value: whoever reads this line
   # (a log, a chat) learns a file only root and this seat can open.
   if [[ "$bind" == local ]]; then
+    # Reached over SSH, never redeemed: the site's tab comes forward here.
+    _viewer_front "$dir" "$site"
     printf 'local view: VNC on 127.0.0.1:%s of this box only, one connection; its one-time password: sudo cat %s\n' \
       "$vncport" "$pwfile" >&2
   fi
@@ -6052,9 +6056,25 @@ cmd_viewer_redeem() {
       _viewer_unfit "$dir"
     fi
   fi
+  _viewer_front "$dir" "$site"
   printf 'target=127.0.0.1:%s\npassword=%s\n' "$port" "$vncpw"
   [[ -n "$fitout" ]] && printf '%s\n' "$fitout"
   return 0
+}
+
+# THE SITE'S OWN TAB, BEFORE THE WINDOW IS SHOWN (DIVE-7257). The sites of a
+# sign-in group share one Chrome, so the viewer for bing.com showed the Google
+# Play tab that happened to be in front (lodar, 10-29, chill-gorge). The daemon
+# brings a tab on <site> to the front, or opens one on the site's URL; no other
+# tab is touched, and that tab is the one agents drive from then on. A site with
+# its own profile is one tab already and reads unchanged. Best-effort and
+# silent: the relay reads this verb's stdout, and a window that did not move is
+# still a window the person can use.
+_viewer_front() {  # <profile-dir> <site>
+  local dir="$1" site="$2" bin; bin="$(_daemon_bin)"
+  _daemon_live "$dir" || return 0
+  jq -nc --arg u "$(_site_url "$site")" '{op:"front", url:$u}' \
+    | timeout "$VIEWER_FRONT_S" "$bin" call "$(_daemon_sock "$dir")" >/dev/null 2>&1 || true
 }
 
 _viewer_revoke_file() {
