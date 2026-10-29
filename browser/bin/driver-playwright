@@ -61,6 +61,7 @@ function savedHostCheck(page, s) {
 const downloads = require(path.join(__dirname, '..', 'lib', 'downloads.cjs'));
 const gsignin = require(path.join(__dirname, '..', 'lib', 'google-signin.cjs'));
 const popup = require(path.join(__dirname, '..', 'lib', 'popup.cjs'));
+const cleanExit = require(path.join(__dirname, '..', 'lib', 'clean-exit.cjs'));
 
 // DO NOT DELETE THIS. It is not dead code — it is the fix for DIVE-4587, and the
 // full mechanism is written out at the top of bin/browser. In one paragraph:
@@ -252,7 +253,9 @@ function interp(s, args, where, enc) {
 // reintroduced by an env var or a later edit without this failing loudly.
 function launchArgs() {
   const extra = (process.env.FIVEDIVE_BROWSER_CHROME_ARGS || '').split(/\s+/).filter(Boolean);
-  const args = ['--no-sandbox', '--disable-gpu', '--hide-scrollbars', ...aria.unmarkedArgs(extra), ...extra];
+  // DIVE-7204: a kept profile, headed when there is a display, so no "Restore pages?" bubble.
+  const args = ['--no-sandbox', '--disable-gpu', '--hide-scrollbars', '--hide-crash-restore-bubble',
+    ...aria.unmarkedArgs(extra), ...extra];
   const bad = args.filter(a => /^--remote-debugging/.test(a));
   if (bad.length) {
     die(E_NOTHING_RAN, `refusing to launch with ${bad.join(' ')}. CDP here goes over --remote-debugging-pipe ` +
@@ -375,6 +378,7 @@ async function openProfile(profile) {
       `Cloudflare challenge a headless browser that a headed one passes, so a "Just a moment..." here may ` +
       `not be what the owner's browser sees.\n`);
   }
+  cleanExit.markCleanExit(profile);   // DIVE-7204, as the session daemon
   try {
     return await chromium.launchPersistentContext(profile, {
       headless: !shown.display,

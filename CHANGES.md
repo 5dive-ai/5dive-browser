@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — no "Restore pages?" bubble after a served browser restarts (DIVE-7204), 1.63.2
+
+A served Chrome is stopped, never closed (a serve restart, a reboot, a drive-mode switch), so the next start drew Chrome's "Restore pages? Chrome didn't shut down correctly" bubble at the top right. The owner saw it in every viewer link, and in input mode a real-mouse click could land on it.
+
+- Every kept-profile launch passes `--hide-crash-restore-bubble`: the session daemon (both modes), the driver, `serve`'s plain Chrome and `auth` with a display.
+- Before each of those launches the profile is marked as cleanly exited (`lib/clean-exit.cjs`), in case a Chrome version drops the switch. Old tabs are not restored; nothing else in the profile changes.
+
+`tests/browser_restore_bubble_unit.sh` 23/23 here (9 red on 1.63.1); its live arms run on CI's Xvfb + Chrome with a kill -9 control.
+
 ### Fixed — a box-wide browser change run without sudo just works for an agent that may, or names who can (DIVE-7183), 1.63.1
 
 `adblock on|off`, `login-link enable|disable`, `config drive=` and `setup` stopped with "Run: sudo 5dive browser …". The agent reading it has an owner with no terminal, and a weaker model stopped and asked the owner for root (DIVE-7172, fixed then for voice only).
