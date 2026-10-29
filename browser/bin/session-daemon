@@ -1000,6 +1000,8 @@ async function planRequest(ctx, req, send, end) {
       const out = { op: s.op };
       // DIVE-6844: the site a saved login is for (bin/browser sets it, never a page).
       if ((s.op === 'fill' || s.op === 'type') && typeof s.host === 'string' && s.host) out.host = s.host;
+      // DIVE-7237: an act's upload carries the file's bytes, read by the calling seat.
+      if (s.op === 'upload' && s.file && typeof s.file === 'object' && typeof s.file.b64 === 'string') out.file = s.file;
       for (const field of spec) {
         if (typeof s[field] !== 'string' || !s[field]) {
           const e = new Error(`step ${i + 1} (${s.op}) is missing '${field}'`); e.nothingRan = true; throw e;
@@ -1108,6 +1110,11 @@ async function planRequest(ctx, req, send, end) {
       // no other (the page may have moved since the act began). Checked here,
       // not on the case lines, which older harnesses match byte for byte.
       if (s.op === 'fill' || s.op === 'type') savedHostCheck(page, s);
+      // DIVE-7237: an act's upload carries the file's bytes, read by the caller
+      // (who may hold files this browser's seat cannot open); an adapter's names a path.
+      if (s.op === 'upload' && s.file && typeof s.file.b64 === 'string') {
+        s.path = { name: String(s.file.name || 'upload'), mimeType: String(s.file.mimeType || 'application/octet-stream'), buffer: Buffer.from(s.file.b64, 'base64') };
+      }
       switch (s.op) {
         case 'goto': {
           // THE ACT'S OWN URL DOES NOT RELOAD THE PAGE IT IS ALREADY ON (DIVE-5817).
@@ -1630,6 +1637,7 @@ const INPUT_STEPS = {
                  && (s.count === undefined || [1, 2, 3].includes(s.count)),
   move:   (s) => num(s.x) && num(s.y),
   type:   (s) => typeof s.value === 'string' && s.value.length > 0 && s.value.length <= INPUT_MAX_TEXT,
+  paste:  (s) => typeof s.value === 'string' && s.value.length > 0 && Buffer.byteLength(s.value) <= 200000,
   press:  (s) => typeof s.key === 'string' && /^[A-Za-z0-9+_ -]{1,40}$|^.$/u.test(s.key),
   scroll: (s) => (s.dy === undefined || (Number.isInteger(s.dy) && Math.abs(s.dy) <= 50))
                  && (s.dx === undefined || (Number.isInteger(s.dx) && Math.abs(s.dx) <= 50))
@@ -1640,7 +1648,7 @@ const INPUT_STEPS = {
   drop:   (s) => num(s.x) && num(s.y) && typeof s.path === 'string' && /^\/[^\n\r\0]{1,4095}$/.test(s.path),
 };
 function num(v) { return Number.isInteger(v) && v >= 0 && v < 10000; }
-const INPUT_VOCAB = 'click{x,y[,button,count]} move{x,y} type{value} press{key} scroll{dy[,dx,x,y]} goto{url} wait{ms} upload{x,y,path} drop{x,y,path}';
+const INPUT_VOCAB = 'click{x,y[,button,count]} move{x,y} type{value} paste{value} press{key} scroll{dy[,dx,x,y]} goto{url} wait{ms} upload{x,y,path} drop{x,y,path}';
 
 async function inputRequest(be, profile, req, send, end, behalf) {
   const site = path.basename(profile);
@@ -1794,6 +1802,13 @@ async function inputRequest(be, profile, req, send, end, behalf) {
             case 'drop': send({ t: 'log', line: `  ${where}: the file ${await dropOnPage(be, s)}` }); break;
             case 'move': await be.x.move(s.x, s.y); break;
             case 'type': await keysReachBrowser(be); await be.x.type(s.value); break;
+            // DIVE-7237: code, or any long text, goes in whole (a code editor rewrites typed keys).
+            case 'paste': {
+              await keysReachBrowser(be);
+              const r = await be.x.paste(s.value);
+              if (!r.served) throw new Error('ctrl+v was pressed but the browser never read the clipboard: click into the text field first. Nothing was pasted');
+              break;
+            }
             case 'press': await keysReachBrowser(be); await be.x.press(s.key); break;
             case 'scroll':
               if (s.x !== undefined) await be.x.move(s.x, s.y);

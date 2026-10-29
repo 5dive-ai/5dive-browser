@@ -8,6 +8,19 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — one window for the box's logins, a seat restarts it itself, upload on a normal page, paste in input mode, a new take-over link (DIVE-7237), 1.64.0
+
+The dropshipping team run on 10-29 (DIVE-6902) needed 6 root steps, all from these.
+
+- **CJ's window no longer blocks Shopify.** A group's logins share one Chrome. While one site held it in input mode, every other site of the group was refused ("served in INPUT mode… cannot run"). Now a page verb re-serves that browser the way its own site needs: Shopify's verbs switch it to the normal browser, CJ's back to input mode. Never while a person is in the window, a handoff is open, or another call holds it; the refusal says which.
+- **`status` never moves the window** (a status loop used to bring CJ back in input mode and block the rest). It says the check was not done now and why.
+- **A seat restarts the box window itself:** `5dive browser serve <site> --restart`, and its own verbs switch it, through the grant it already has (`_serve-offered`, the mode on stdin; no new sudoers line). A stop stays the owner's and now names `--restart`. Also fixed: the on-demand start leaked its lock into the browser it started, so every later start sat out a 90 s wait.
+- **`act` takes an `upload` step** on a normal page: `{"op":"upload","selector":"ref=…","path":"/abs/file"}`. The file is read by the calling seat and sent as bytes (the browser may run as another seat), absolute path, regular file, capped at 16 MB, audited, not recordable. A Meta ad picture no longer needs input mode.
+- **Input mode takes a `paste{value|path}` step:** the text goes in through the clipboard and ctrl+v, then the clipboard is emptied. Typed key by key, a code editor rewrote the Shopify pixel code (it closes quotes and commits an autocomplete on "," and "."); a paste goes in as it is.
+- **An expired or unused take-over link gets a new one:** `sudo 5dive browser asks open <site>` again revokes the old view and mints a new link under the same Done. Refused only while a person is in the window. `asks` lists the command.
+
+`tests/browser_group_window_unit.sh` 18/18 (control: the pre-fix tree refuses the Shopify verb), `tests/browser_act_upload_unit.sh` 13/13 + live arm on CI, `tests/browser_input_paste_unit.sh` 9/9 (bare Xvfb; live arm L15 in the input harness), `tests/browser_connect_shell_unit.sh` 133/133.
+
 ### Fixed — the self-hosted login page types on a phone, and looks like the 5dive.ai one (DIVE-7223), 1.63.3
 
 lodar on a self-hosted box, 10-29: the Keyboard button did nothing, and the page did not look like the 5dive.ai hosted viewer.

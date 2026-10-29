@@ -634,6 +634,7 @@ _open_site() {  # _open_site <site> [--no-broker <verb> <why> | --may-create]
     fi
     [[ "$mode" != --no-broker ]] || die "$E_PERM" "$site is the box's login, owned by the '$_SITE_OWNER' seat, and $why Run it as the owner:  sudo -u $_SITE_OWNER 5dive browser $verb $site"
     _broker_ready "$site" "$_SITE_DIR"
+    _drive_fit "$site"
   else
     # --may-create is `serve`'s and `auth`'s: they are the two verbs allowed to
     # be the FIRST thing that touches a site, so "there is no directory yet" is
@@ -642,6 +643,7 @@ _open_site() {  # _open_site <site> [--no-broker <verb> <why> | --may-create]
     [[ "$mode" == --may-create || -d "$_SITE_DIR" ]] \
       || die "$E_UNAVAILABLE" "no profile for $site — 5dive browser auth $site"
     [[ -d "$_SITE_DIR" ]] && _audit "$_SITE_DIR" 700
+    [[ "$mode" == --no-broker || "$mode" == --may-create ]] || _drive_fit "$site"
   fi
 }
 
@@ -810,12 +812,18 @@ _serve_floor_refusal() {
 
 # The caller's half: ask root to start <site> as its owner. 0 when it did; the
 # reason on stdout when it did not.
-_broker_wake() {  # <site>
+_broker_wake() {  # <site> [start|switch|restart]
   if [[ -n "${FIVEDIVE_BROWSER_NO_WAKE:-}" ]]; then
     echo "on-demand serving is turned off for this seat (FIVEDIVE_BROWSER_NO_WAKE)."; return 1
   fi
   local err rc=0
-  err=$(printf '%s\0' "$1" | "${WAKE_PRIV[@]}" 2>&1 >/dev/null) || rc=$?
+  # The mode rides stdin after the site (DIVE-7237), so the one exact sudoers
+  # line every box already has covers it: no new grant to install.
+  if [[ "${2:-start}" == start ]]; then
+    err=$(printf '%s\0' "$1" | "${WAKE_PRIV[@]}" 2>&1 >/dev/null) || rc=$?
+  else
+    err=$(printf '%s\0%s\0' "$1" "$2" | "${WAKE_PRIV[@]}" 2>&1 >/dev/null) || rc=$?
+  fi
   (( rc == 0 )) && return 0
   if [[ "${WAKE_PRIV[0]}" == sudo ]] && ! sudo -n -l /usr/local/bin/5dive browser _serve-offered >/dev/null 2>&1; then
     echo "this seat has no grant to start the box's browsers. The owner installs it once with:  $SETUP_CMD"
@@ -837,8 +845,10 @@ cmd_serve_offered() {
   local caller
   if [[ $EUID -eq 0 ]]; then caller=$(_connect_caller); else caller=$(_seat); fi
   [[ -n "$caller" ]] || die "$E_PERM" "_serve-offered must be reached through sudo from an agent seat"
-  (( ${#w[@]} == 1 )) || die "$E_USAGE" "_serve-offered takes exactly one site, NUL-terminated on stdin"
-  local site="${w[0]}"
+  (( ${#w[@]} == 1 || ${#w[@]} == 2 )) || die "$E_USAGE" "_serve-offered takes one site and an optional mode (switch or restart), each NUL-terminated on stdin"
+  local site="${w[0]}" mode="${w[1]:-start}"
+  [[ "$mode" == start || "$mode" == switch || "$mode" == restart ]] \
+    || die "$E_USAGE" "_serve-offered: the mode is switch or restart, not '$mode'"
   _valid_site "$site" && ! _is_public "$site" || die "$E_USAGE" "'$site' is not a login this box can offer"
   [[ "$caller" != "$BOX_SEAT" && "$(_root_drop_target "$caller" serve "$site")" == "$BOX_SEAT" ]] \
     || die "$E_PERM" "$site is not a box login offered to '$caller' (the box has not connected it, or '$caller' is its owner or keeps its own login for it), so there is nothing to start for it"
@@ -849,8 +859,17 @@ cmd_serve_offered() {
   # (The braces matter: a bare `exec 9>>f 2>/dev/null` makes BOTH redirections
   # permanent, and every refusal below would leave this process silently.)
   if command -v flock >/dev/null 2>&1 && { exec 9>>"$lk"; } 2>/dev/null; then flock -w 90 9 || true; fi
-  if _daemon_live "$_SITE_DIR"; then printf '%s is already being served\n' "$site"; return 0; fi
-  local why; why=$(_serve_floor_refusal) || die "$E_UNAVAILABLE" "$why"
+  # DIVE-7237: `switch` and `restart` REPLACE the browser that is there, so only
+  # a start with nothing serving adds one and meets the memory floor. A start
+  # never moves a browser another site of the group is using (--no-switch); the
+  # owner-side serve refuses a switch or restart under a person or another call.
+  local -a how=(--no-switch)
+  case "$mode" in switch) how=(--switch) ;; restart) how=(--restart) ;; esac
+  if ! _daemon_live "$_SITE_DIR"; then
+    local why; why=$(_serve_floor_refusal) || die "$E_UNAVAILABLE" "$why"
+  elif [[ "$mode" == start ]]; then
+    printf '%s is already being served\n' "$site"; return 0
+  fi
   export FIVEDIVE_BROWSER_ON_BEHALF_OF="$caller"
   # ITS OWN SCOPE, NOT THE CALLER'S UNIT. Started from inside the calling seat's
   # service, the browser would be in that seat's cgroup: a restart of the agent
@@ -860,10 +879,13 @@ cmd_serve_offered() {
   # shape on chill-gorge's hand route).
   if [[ $EUID -eq 0 && -d /run/systemd/system ]] && command -v systemd-run >/dev/null 2>&1; then
     systemd-run --scope --quiet --collect --unit="5dive-browser-serve-${site//[^a-zA-Z0-9]/-}-$$" -- \
-      runuser -u "$BOX_SEAT" -- env FIVEDIVE_BROWSER_SEAT="$BOX_SEAT" "$0" serve "$site"
+      runuser -u "$BOX_SEAT" -- env FIVEDIVE_BROWSER_SEAT="$BOX_SEAT" "$0" serve "$site" "${how[@]}" 9>&-
     return $?
   fi
-  _as_seat "$BOX_SEAT" env FIVEDIVE_BROWSER_SEAT="$BOX_SEAT" "$0" serve "$site"
+  # 9>&- (DIVE-7237): the lock above is this command's, not the browser's. The
+  # daemon it starts lives for hours, and an inherited fd 9 held the lock with
+  # it, so every later on-demand start or switch sat out the 90 s wait.
+  _as_seat "$BOX_SEAT" env FIVEDIVE_BROWSER_SEAT="$BOX_SEAT" "$0" serve "$site" "${how[@]}" 9>&-
 }
 
 # >>> DIVE-7168 A NEW SITE JOINS THE BOX'S GOOGLE SIGN-IN, NOT ONLY THE SEAT'S OWN.
@@ -1331,6 +1353,74 @@ _group_in_use() {  # <profile-dir> -> the reason on stdout, rc 0 when busy
   if _lease_live "$d"; then _lease_describe "$d" | tr -d '\n'; echo; return 0; fi
   return 1
 }
+
+# >>> DIVE-7237 ONE CHROME PER GROUP, SERVED THE WAY THE SITE IN HAND NEEDS
+#
+# A group's logins share one profile and Chrome holds a profile once, so the
+# box's Shopify, CJ and Facebook logins are ONE browser. While CJ held it in
+# input mode (plain Chrome, no automation channel), every Shopify read was
+# refused by name, and only root could stop CJ's window: 6 root steps in one
+# dropshipping run (DIVE-6902, 10-29). Now a page verb re-serves the group's
+# browser the way ITS site needs — CJ's verbs switch it to input, Shopify's back
+# to the automated browser — and a brokered seat has that done as the owner
+# through the grant it already holds. A switch is refused, by name, while a
+# person is in the window, a handoff is open, or another call holds the lease;
+# `status` and an on-demand start never switch (GAP-6b: a status loop used to
+# re-serve CJ in input mode and re-block the rest).
+
+# Somebody using the served browser: the reason, rc 0. Owner side.
+_serve_busy() {  # <profile-dir>
+  _group_in_use "$1" && return 0
+  if [[ "$(_kv "$(_serve_pidfile "$1")" drive)" == input ]] && _daemon_live "$1" \
+     && [[ "$(_daemon_call "$1" '{"op":"title"}' 2>/dev/null | jq -r '.handoff // false' 2>/dev/null)" == true ]]; then
+    echo "the owner has the window: a handoff is open"; return 0
+  fi
+  return 1
+}
+
+# How the box browser behind <site>'s socket is served right now, input or cdp,
+# from the rendezvous alone (no daemon call, so no queue and no audit row):
+# <site>.sock is the served site's own socket or a link to it (_rv_alias), and
+# that site's .offered marker says how it was served.
+_rv_served_drive() {  # <owner> <site>
+  local s t; s=$(_rv_sock "$1" "$2"); t="$2"
+  [[ -S "$s" ]] || return 1
+  if [[ -L "$s" ]]; then t=$(readlink -- "$s") || return 1; t="${t##*/}"; t="${t%.sock}"; fi
+  _valid_site "$t" || return 1
+  if [[ "$(_kv "$(_rv_offer "$1" "$t")" drive)" == input ]]; then echo input; else echo cdp; fi
+}
+
+# A page verb's site, in the browser mode it needs. Set by the dispatcher for the
+# page verbs only (_DRIVE_FIT=1); `status`, `ls`, `lease` never move a browser.
+_DRIVE_FIT=0
+_drive_fit() {  # <site>  (after _open_site resolved it)
+  (( _DRIVE_FIT )) || return 0
+  local site="$1" need have why
+  _is_public "$site" && return 0
+  if (( _SITE_BROKERED )); then
+    need=$(_kv "$(_rv_offer "$_SITE_OWNER" "$site")" drive); [[ "$need" == input ]] || need=cdp
+    have=$(_rv_served_drive "$_SITE_OWNER" "$site") || return 0
+    [[ "$need" == "$have" ]] && return 0
+    if why=$(_broker_wake "$site" switch) && _daemon_live "$_SITE_DIR"; then
+      printf '%s: the box browser %s shares with its group was serving another site %s; re-served it for %s.\n' \
+        "$PROG" "$site" "$([[ $have == input ]] && echo 'in input mode' || echo 'as the automated browser')" "$site" >&2
+      return 0
+    fi
+    die "$E_UNAVAILABLE" "$site shares the box browser with another site of its group, which has it $([[ $have == input ]] && echo 'in input mode' || echo 'as the automated browser') right now, and it could not be switched for $site: ${why:-no browser answered after the switch}"
+  fi
+  [[ -d "$_SITE_DIR" ]] && _daemon_live "$_SITE_DIR" || return 0
+  need=$(_site_drive "$site")
+  have=$(_kv "$(_serve_pidfile "$_SITE_DIR")" drive); [[ "$have" == input ]] || have=cdp
+  [[ "$need" == "$have" ]] && return 0
+  why=$( ( cmd_serve "$site" --switch >/dev/null ) 2>&1 ) || true
+  if _daemon_live "$_SITE_DIR" && [[ "$(_kv "$(_serve_pidfile "$_SITE_DIR")" drive)" == "${need/cdp/}" ]]; then
+    printf '%s\n' "$why" | grep -v '^$' >&2 || true
+    return 0
+  fi
+  why="$(printf '%s\n' "$why" | grep -v '^$' | tail -n1 | sed "s/^$PROG: //")"
+  die "$E_UNAVAILABLE" "${why:-$site shares its browser with another site of its group, and it could not be switched for $site.}"
+}
+# <<< DIVE-7237
 
 cmd_group() {
   local sub="${1:-ls}"; shift || true
@@ -2590,6 +2680,13 @@ _input_probe() {  # <site> <dir>
   local site="$1" dir="$2" t title why="" looked=0
   if ! _daemon_live "$dir" || ! t=$(_daemon_call "$dir" '{"op":"title"}' 2>/dev/null) \
      || [[ "$(jq -r '.drive // empty' <<<"$t" 2>/dev/null)" != input ]]; then
+    # DIVE-7237 (GAP-6b): the group's browser is up as the automated one for
+    # another site. A status check does not take it from them; a page verb does.
+    if _daemon_live "$dir"; then
+      local last=""; (( _SITE_BROKERED )) || last=$(_signed_in_last "$dir" 2>/dev/null) || last=""
+      echo "unconfirmed (input mode: not checked now — the browser $site shares with its group is serving another site as the automated browser, and a status check does not switch it${last:+; last seen signed in $last}. A page verb on $site switches it: 5dive browser shot $site)"
+      return 0
+    fi
     echo "UNKNOWN (input mode, and no input-mode browser is serving $site — nothing loads a page to check it; 5dive browser serve $site)"
     return 0
   fi
@@ -5226,10 +5323,13 @@ _serve_running() {  # _serve_running <dir> -> echoes display, 0 if live
 _kv() { [[ -f "$1" ]] && sed -n "s/^$2=//p" "$1" | head -1; }
 
 cmd_serve() {
-  local site="" stop=0 login=0 start_url="" private=0
+  local site="" stop=0 login=0 start_url="" private=0 switch=0 restart=0 noswitch=0
   while (($#)); do
     case "$1" in
       --stop) stop=1 ;;
+      --restart) restart=1 ;;  # DIVE-7237: stop it, then serve it the way this site needs
+      --switch) switch=1 ;;    # DIVE-7237: a page verb's re-serve, when the group's browser is served the other way
+      --no-switch) noswitch=1 ;;  # DIVE-7237: an on-demand start never moves a browser another site is using
       --login) login=1 ;;
       --private) private=1 ;;  # an act's own kept browser (DIVE-6334): see _act_keep_page
       --url=*) start_url="${1#*=}" ;;
@@ -5251,6 +5351,21 @@ cmd_serve() {
   # SERVING IS THE OWNER'S ACT. A brokered seat asking to serve is asking to
   # open a profile directory it cannot read; saying so beats an EACCES from
   # somewhere deep inside Chrome.
+  # DIVE-7237: A SEAT THAT USES THE BOX LOGIN STARTS OR RESTARTS IT ITSELF, through
+  # the one grant it already has (_serve-offered), with the same limits: never
+  # under a person or another seat's call, never a stop it does not follow with a
+  # start. Stopping stays the owner's (see _root_drop_target).
+  if (( ! stop && ! login && ! private )) && [[ -z "$start_url" || "$start_url" == "$(_site_url "$site")" ]] \
+     && ! _is_public "$site" && [[ -d "$PROFILE_ROOT" ]] && _resolve_site "$site" >/dev/null && (( _SITE_BROKERED )); then
+    local wmode=start why; (( restart )) && wmode=restart; (( switch )) && wmode=switch
+    why=$(_broker_wake "$site" "$wmode") || die "$E_UNAVAILABLE" "$site was not $([[ $wmode == start ]] && echo started || echo restarted) for '$(_seat)': $why"
+    printf '%s %s as %s, the box login%s\n' "$([[ $wmode == start ]] && echo serving || echo restarted)" "$site" "$_SITE_OWNER" \
+      "$([[ "$(_kv "$(_rv_offer "$_SITE_OWNER" "$site")" drive)" == input ]] && echo ' (input mode)')"
+    return 0
+  fi
+  if (( stop )) && ! _is_public "$site" && [[ -d "$PROFILE_ROOT" ]] && _resolve_site "$site" >/dev/null && (( _SITE_BROKERED )); then
+    die "$E_PERM" "$site is the box's login, owned by the '$_SITE_OWNER' seat, and a stop on another seat's behalf is the owner's. To get its browser back the way you need it:  5dive browser serve $site --restart"
+  fi
   _open_site "$site" --no-broker serve "serve HOLDS that browser open, which only the seat that can read the profile can do."
   local dir="$_SITE_DIR"
   # `serve` may be the first thing that ever touches this site (that is how a
@@ -5344,6 +5459,17 @@ cmd_serve() {
     return 0
   fi
 
+  # DIVE-7237: --restart is a stop and a start, refused while anybody is using it.
+  if (( restart )) && _serve_running "$dir" >/dev/null; then
+    local rbusy; if rbusy=$(_serve_busy "$dir"); then
+      die "$E_UNAVAILABLE" "the $site browser is in use ($rbusy), so it was not restarted. Try again when it is free."
+    fi
+    ( cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
+    ! _serve_running "$dir" >/dev/null \
+      || die "$E_UNAVAILABLE" "the $site browser did not stop, so it was not restarted. Try again, or: 5dive browser serve $site --stop"
+    printf '%s: stopped the %s browser; starting it again.\n' "$PROG" "$site" >&2
+  fi
+
   # ONE START AT A TIME PER SITE (DIVE-5528). Two serves of one site used to run
   # side by side: a partner cabinet retried a Connect the API's proxy had cut at
   # 30 s while the first was still starting. Both read "not running", both
@@ -5421,12 +5547,23 @@ cmd_serve() {
   if disp=$(_serve_running "$dir"); then
     if (( input )) && [[ "$(_kv "$(_serve_pidfile "$dir")" drive)" == input ]]; then
       _rv_alias "$site" "$dir"
+      (( private )) || _rv_offer_write "$(_seat)" "$site" input
       printf 'already serving %s on :%s (input mode)\n' "$site" "$disp"; return 0
+    elif (( input && noswitch )); then
+      # DIVE-7237: an on-demand start (a status loop, a brokered seat's first
+      # touch) finds the group's browser serving another site the automated way.
+      # It is left alone: only a page verb that needs this site moves it.
+      _rv_alias "$site" "$dir"
+      (( private )) || _rv_offer_write "$(_seat)" "$site" input
+      printf 'already serving %s on :%s (as the automated browser for another site of its group; a page verb on %s switches it)\n' "$site" "$disp" "$site"; return 0
     elif (( input )); then
       # Served the other way (a warm session from before the adapter said
       # input, or a login view). Switch it — never with a person inside.
       ! _viewer_live "$dir" \
         || die "$E_UNAVAILABLE" "$site is set to input mode but is being viewed by a person in the other browser right now; not switching it under them. Try again when they are done."
+      local ibusy; if ibusy=$(_serve_busy "$dir"); then
+        die "$E_UNAVAILABLE" "$site needs its browser in input mode, and the browser it shares with its group is in use ($ibusy); not switching it under them. Try again when it is free (--wait queues for an agent)."
+      fi
       ( cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
       ! _serve_running "$dir" >/dev/null \
         || die "$E_UNAVAILABLE" "$site is served in the automated browser and it did not stop, so it cannot be re-served in input mode. Try again, or: 5dive browser serve $site --stop"
@@ -5459,9 +5596,25 @@ cmd_serve() {
       ! _serve_running "$dir" >/dev/null \
         || die "$E_UNAVAILABLE" "$site is served as plain Chrome for a login and it did not stop, so the warm session cannot start. Try again, or: 5dive browser serve $site --stop"
       printf '%s: the login view of %s has ended; re-serving it as the warm session.\n' "$PROG" "$site" >&2
+    elif (( switch && ! input && ! plain && ! private && ! login )) \
+         && [[ "$(_kv "$(_serve_pidfile "$dir")" drive)" == input ]]; then
+      # DIVE-7237 (GAP-6): THE GROUP'S ONE CHROME IS IN INPUT MODE FOR ANOTHER
+      # SITE (CJ, Facebook), and a page verb needs THIS one through the automated
+      # browser. All of a group's logins share one profile, and Chrome holds a
+      # profile once, so the browser is re-served the way this site needs —
+      # never under a person, a handoff, or another call that holds it. The
+      # input site switches it back the same way on its next page verb.
+      local cbusy; if cbusy=$(_serve_busy "$dir"); then
+        die "$E_UNAVAILABLE" "$site shares its browser with another site of its group, which is using it in input mode right now ($cbusy); not switching it under them. Try again when it is free."
+      fi
+      ( cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
+      ! _serve_running "$dir" >/dev/null \
+        || die "$E_UNAVAILABLE" "the browser $site shares is in input mode and did not stop, so it cannot be re-served for $site. Try again, or: 5dive browser serve $site --stop"
+      printf '%s: the browser %s shares with its group was in input mode for another site; re-serving it as the automated browser for %s.\n' "$PROG" "$site" "$site" >&2
     else
       [[ -n "$_lnote" ]] && _daemon_live "$dir" && printf '%s\n' "$_lnote" >&2
       _rv_alias "$site" "$dir"
+      (( private || login )) || _rv_offer_write "$(_seat)" "$site"
       printf 'already serving %s on :%s\n' "$site" "$disp"; return 0
     fi
   fi
@@ -7213,7 +7366,11 @@ _inline_page() { # _inline_page <artifact dir> [<refs cap>]
 # a served (warm) browser the tab also survives between calls, so `act` with no
 # URL continues on the page the last call left; without one, the next call starts
 # from a fresh load.
-ACT_VOCAB='goto fill type click wait_for select press'
+ACT_VOCAB='goto fill type click wait_for select press upload'
+# DIVE-7237 (GAP-11): the most a DOM upload step carries. The file travels
+# inside the request to the browser (it reads as the caller, not as the browser's
+# seat), so it is capped; a Meta ad image is a few hundred KB.
+ACT_UPLOAD_MAX_BYTES="${FIVEDIVE_BROWSER_UPLOAD_MAX_BYTES:-16777216}"
 ACT_MAX_STEPS=40
 # How long --expect is re-read after the last step before NOT VERIFIED
 # (DIVE-4983): a toast lands a second or two after the click that caused it.
@@ -7706,6 +7863,24 @@ for (const f of ["page.html", "after.json", "tree.json", "exec.err", "page.md", 
 }' "$1"
 }
 
+# DIVE-7237: each upload step's file, read HERE as the caller, rides in the
+# staged steps as {name, mimeType, b64}; the executor hands Playwright the bytes.
+# The path stays beside it for the log line, and the audit row names it.
+_act_upload_stage() {  # <steps-file> <stage>
+  local f="$1" st="$2" i up mime
+  jq -e 'any(.[]; .op=="upload")' "$f" >/dev/null 2>&1 || return 0
+  for i in $(jq -r 'to_entries[] | select(.value.op=="upload") | .key' "$f"); do
+    up=$(jq -r --argjson i "$i" '.[$i].path' "$f")
+    mime=$(file -b --mime-type -- "$up" 2>/dev/null || true); [[ "$mime" =~ ^[a-z]+/[A-Za-z0-9.+-]+$ ]] || mime=application/octet-stream
+    ( umask 077; base64 -w0 -- "$up" > "$st/up.b64" ) || return 1
+    ( umask 077; jq -c --argjson i "$i" --rawfile b "$st/up.b64" --arg n "$(basename -- "$up")" --arg m "$mime" \
+        '.[$i].file = {name:$n, mimeType:$m, b64:$b}' "$f" > "$f.new" && mv -f "$f.new" "$f" ) || return 1
+    rm -f -- "$st/up.b64"
+  done
+  _audit_row "$_SITE_DIR" "act-upload" "$(jq -c '[.[] | select(.op=="upload") | .path]' "$f" | cut -c1-300)" 2>/dev/null || true
+  return 0
+}
+
 cmd_act() {
   local site="" url="" steps="" expect="" approved="" out="" json=0 wait="no" settle="" shot=1
   local wait_for="" interactive=0 expect_wait="${FIVEDIVE_BROWSER_EXPECT_WAIT_MS:-$ACT_EXPECT_WAIT_DEFAULT}" record=""
@@ -7758,15 +7933,33 @@ cmd_act() {
   [[ -n "$expect" ]] || expect_wait=0
   command -v jq >/dev/null 2>&1 || die "$E_UNAVAILABLE" "jq is required to read the steps"
 
-  # THE STEPS, VALIDATED HERE AND AGAIN BY THE EXECUTOR. `upload` is not in the
-  # vocabulary for `act`: it takes a path on this box, and an agent choosing which
-  # of the box's files leave it for a site is not a click.
+  # THE STEPS, VALIDATED HERE AND AGAIN BY THE EXECUTOR. `upload` (DIVE-7237,
+  # GAP-11) sets a page's file input to a file on this box. It was left out
+  # because which of the box's files leave it for a site is not a click; input
+  # mode has had it since DIVE-5740 on the same terms, kept here: a file the
+  # CALLER can read (checked as the caller, and read by the caller, so the
+  # browser's seat never opens a path for it), named by absolute path, capped,
+  # and written to the audit log. Without it a Meta ad's picture needed a
+  # root step to put facebook.com into input mode (DIVE-6902, 10-29).
   jq -e 'type=="array" and length>0' <<<"$steps" >/dev/null 2>&1 \
     || die "$E_USAGE" "--steps is a JSON array of steps, e.g. [{\"op\":\"click\",\"selector\":\"ref=button/Star\"}]"
   local n; n=$(jq 'length' <<<"$steps")
   (( n <= ACT_MAX_STEPS )) || die "$E_USAGE" "$n steps is more than one act ($ACT_MAX_STEPS). Split it: a long script run blind is the shape that ends up somewhere nobody looked."
   local bad; bad=$(jq -r --arg v " $ACT_VOCAB " '[.[] | (.op // "") as $o | select(($v|contains(" "+$o+" "))|not) | $o] | first // empty' <<<"$steps")
   [[ -z "$bad" ]] || die "$E_USAGE" "'$bad' is not an act step. The vocabulary is: $ACT_VOCAB"
+  local up upsz
+  while IFS= read -r up; do
+    [[ "$up" == /* ]] || die "$E_USAGE" "an upload step is {\"op\":\"upload\",\"selector\":\"ref=…\",\"path\":\"/absolute/path\"}; got the path: ${up:-none}. Nothing ran."
+    [[ -f "$up" && -r "$up" ]] || die "$E_USAGE" "an upload step's file must be a regular file this seat can read; $up is not. Nothing ran."
+    upsz=$(stat -c %s -- "$up" 2>/dev/null || echo 0)
+    (( upsz <= ACT_UPLOAD_MAX_BYTES )) || die "$E_USAGE" "$up is $upsz bytes, over the $ACT_UPLOAD_MAX_BYTES an upload step carries. Nothing ran."
+  done < <(jq -r '.[] | select(.op=="upload") | .path // ""' <<<"$steps")
+  if jq -e 'any(.[]; .op=="upload" and ((.selector // "") == ""))' <<<"$steps" >/dev/null 2>&1; then
+    die "$E_USAGE" "an upload step names the file input it sets: {\"op\":\"upload\",\"selector\":\"ref=…\",\"path\":\"/absolute/path\"} (the page map lists file inputs as button refs; the Upload button's ref works). Nothing ran."
+  fi
+  if [[ -n "$record" ]] && jq -e 'any(.[]; .op=="upload")' <<<"$steps" >/dev/null 2>&1; then
+    die "$E_USAGE" "an act that uploads a file is not recorded as a routine (the file is this run's); run it without --record"
+  fi
   # DIVE-6844: a SAVED login or detail, typed in by name. Checked before anything
   # opens: this seat cannot read the saved store, so the act goes once through
   # root (_act_saved_escalate), which hands the values back on a private fd.
@@ -7848,6 +8041,7 @@ cmd_act() {
       jq -c --slurpfile v <(printf '%s' "$saved_json") \
         'map(if has("saved") then (.value = $v[0][.saved].value) | (.host = ($v[0][.saved].host // "")) | del(.saved) else . end)' <<<"$steps"
     else printf '%s' "$steps"; fi > "$steps_file" ) || die "$E_UNAVAILABLE" "cannot stage the act's steps"
+  _act_upload_stage "$steps_file" "$stage" || die "$E_UNAVAILABLE" "cannot stage the act's upload"
   # The kinds the owner lets through without asking, read once, before a step.
   allow_kinds="$(_policy_allowed)"
   # WHAT THE RE-READ AFTER THE LAST STEP WAITS FOR (DIVE-4983), the same for both
@@ -10467,6 +10661,7 @@ _asks_list() {
     [[ -n "$reason" ]] && out+=$(printf '\n  Why: %s' "$reason")
     if [[ "$state" == open && "$kind" != handoff ]]; then
       out+=$(printf '\n  When you are finished:  sudo 5dive browser asks done %s' "$site")
+      _link_on && out+=$(printf '\n  Its link ran out, or you never opened it? A new one:  sudo 5dive browser asks open %s' "$site")
     else
       out+=$(printf '\n  Open it:  sudo 5dive browser asks open %s' "$site")
     fi
@@ -10487,7 +10682,7 @@ _asks_open() {  # <site> [<seat>]
   who="${seat#agent-}"
   if [[ "$(_connect_field "$rec" state)" == open ]]; then
     [[ -f "$rec.steps" ]] && { cat "$rec.steps"; return 0; }
-    die "$E_PERM" "this one is already open, and its one-time link is shown only once. When you are finished: sudo 5dive browser asks done $site"
+    _asks_reopen "$site" "$seat" "$rec"; return $?
   fi
   code=$(_connect_field "$rec" request)
   [[ "$code" =~ ^[0-9a-f]{48}$ ]] || die "$E_PERM" "this ask carries no usable code; ask $who to send it again"
@@ -10526,6 +10721,38 @@ _asks_open() {  # <site> [<seat>]
   return 0
 }
 
+# DIVE-7237 (GAP-13): AN OPEN ASK WHOSE LINK RAN OUT, OR WAS NEVER USED, GETS A
+# NEW ONE. The one-time link is still shown once and never again: the old view
+# is revoked and a fresh link to the same window is minted, under the same Done.
+# Before, the owner whose link expired unused (05:40Z on the 10-29 run) could
+# only `asks done` — which told the agent "carrying on" when nothing was done —
+# and the agent had to ask all over again. Refused only while a person is in
+# the window through the link now.
+_asks_reopen() {  # <site> <seat> <rec>
+  local site="$1" seat="$2" rec="$3" kind check reason code d at lat now df
+  kind=$(_connect_field "$rec" kind) check=$(_connect_field "$rec" check) reason=$(_connect_field "$rec" reason)
+  code=$(_connect_field "$rec" done) lat=$(_connect_field "$rec" link_at)
+  _link_on || die "$E_PERM" "this one is already open, and its one-time link is shown only once. When you are finished: sudo 5dive browser asks done $site"
+  [[ "$code" =~ ^[0-9a-f]{48}$ ]] || die "$E_PERM" "this ask carries no usable code; ask ${seat#agent-} to send it again"
+  d="$PROFILE_ROOT/$BOX_SEAT/$site"
+  at=$(_kv "$(_viewer_admitted_file "$d")" admitted_at)
+  if _viewer_live "$d" && [[ "$at" =~ ^[0-9]+$ ]] && { [[ ! "$lat" =~ ^[0-9]+$ ]] || (( at >= lat )); }; then
+    die "$E_PERM" "you are in this window through its link right now, so no new link was made. When you are finished: sudo 5dive browser asks done $site"
+  fi
+  _connect_as_box viewer-revoke "$site" >/dev/null 2>&1 || true
+  local -a at_url=(); local url; url=$(_connect_field "$(_connect_file "$code")" url)
+  [[ "$kind" == challenge ]] && _connect_page_ok "$site" "$url" && at_url=("--url=$url")
+  ( _connect_view_link "$site" "${at_url[@]}"
+    now=$(date -u +%s)
+    # The Done keeps its code and gets its full time again, from this link.
+    df=$(_connect_file "$code")
+    [[ -f "$df" ]] && { ( umask 077; sed "s/^expires_at=.*/expires_at=$(( now + CONNECT_DONE_TTL ))/" "$df" > "$df.$$" && mv -f "$df.$$" "$df" ) || true; }
+    _connect_shell_put "$seat" "$site" "$kind" "$check" "$reason" "$(( now + CONNECT_DONE_TTL ))" open "done=$code"$'\n'"link_at=$now"
+    printf 'A new one-time link to the same window (the last one is closed). It works once and expires %s. Do not paste it anywhere else:\n\n  https://%s%s\n\n' \
+      "$(date -u -d "@$CONNECT_LINK_EXP" +%Y-%m-%dT%H:%M:%SZ)" "$CONNECT_LINK_HOST" "$CONNECT_LINK_PATH"
+    printf 'When you are finished, close the tab, then run:\n\n  sudo 5dive browser asks done %s\n' "$site" )
+}
+
 _asks_open_link() {  # <seat> <site> <code> <kind> <check> <reason> <first line>
   local seat="$1" site="$2" out url done exp
   out=$(_connect_tap "$seat" "$3" shell) || exit $?
@@ -10533,7 +10760,7 @@ _asks_open_link() {  # <seat> <site> <code> <kind> <check> <reason> <first line>
   exp=$(sed -n 's/^expires=//p' <<<"$out" | head -1)
   [[ "$url" =~ ^https://[A-Za-z0-9.-]+/browser/viewer/ && "$done" =~ ^[0-9a-f]{48}$ ]] \
     || die "$E_UNAVAILABLE" "the box returned an unusable login link"
-  _connect_shell_put "$seat" "$site" "$4" "$5" "$6" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" open "done=$done"
+  _connect_shell_put "$seat" "$site" "$4" "$5" "$6" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" open "done=$done"$'\n'"link_at=$(date -u +%s)"
   printf '%s\n' "$7"
   [[ -n "$6" ]] && printf 'Why: %s\n' "$6"
   printf '\nOpen this one-time link in your own browser. It works once and expires %s. Do not paste it anywhere else:\n\n  %s\n\n' "$exp" "$url"
@@ -11075,19 +11302,13 @@ _connect_serve_person() {  # <site> [--url=<page>]
   (( rc == 0 )) || die "$E_UNAVAILABLE" "the browser for $site did not start: $why"
 }
 
-_connect_tap() {  # <caller> <code> <sender>
-  local caller="$1" code="$2" sender="$3" site out err rc path exp bind token host done_code f
-  _connect_claim "$caller" "$code" request "$sender"
-  site="$CONNECT_SITE"
-  _valid_site "$site" || die "$E_PERM" "the request names no usable site"
-  local kind="$CONNECT_KIND"; local -a at=()
-  if [[ "$kind" == challenge ]]; then
-    _connect_page_ok "$site" "$CONNECT_URL" || die "$E_PERM" "the request names no usable page"
-    at=("--url=$CONNECT_URL")
-  fi
-
+# The person's window and a one-time link to it (DIVE-7237: lifted out of
+# _connect_tap so `asks open` can mint a fresh link for an ask whose link ran out
+# unused). Sets CONNECT_LINK_PATH, CONNECT_LINK_EXP (epoch), CONNECT_LINK_HOST.
+_connect_view_link() {  # <site> [--url=<page>]
+  local site="$1" err rc out path exp bind token host; shift
   err=$(mktemp); trap 'rm -f "$err"' EXIT
-  _connect_serve_person "$site" "${at[@]}"
+  _connect_serve_person "$site" "$@"
 
   bind=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
   rc=0; out=$(_connect_as_box viewer "$site" "--bind=$bind" "--ttl=$CONNECT_VIEW_TTL" 2>"$err") || rc=$?
@@ -11128,6 +11349,22 @@ _connect_tap() {  # <caller> <code> <sender>
     _connect_has_front || die "$E_UNAVAILABLE" "the box's relay did not accept the login link; nothing was sent. This self-hosted box has login links off; its owner can turn them on: sudo 5dive browser login-link"
     die "$E_UNAVAILABLE" "the box's relay did not accept the login link; nothing was sent"
   fi
+  CONNECT_LINK_PATH="$path" CONNECT_LINK_EXP="$exp" CONNECT_LINK_HOST="$host"
+}
+
+_connect_tap() {  # <caller> <code> <sender>
+  local caller="$1" code="$2" sender="$3" site out err rc path exp bind token host done_code f
+  _connect_claim "$caller" "$code" request "$sender"
+  site="$CONNECT_SITE"
+  _valid_site "$site" || die "$E_PERM" "the request names no usable site"
+  local kind="$CONNECT_KIND"; local -a at=()
+  if [[ "$kind" == challenge ]]; then
+    _connect_page_ok "$site" "$CONNECT_URL" || die "$E_PERM" "the request names no usable page"
+    at=("--url=$CONNECT_URL")
+  fi
+
+  _connect_view_link "$site" "${at[@]}"
+  path="$CONNECT_LINK_PATH" exp="$CONNECT_LINK_EXP" host="$CONNECT_LINK_HOST"
 
   done_code=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
   f=$(_connect_file "$done_code")
@@ -11658,8 +11895,10 @@ _site_is_input() {  # _site_is_input <site>
   fi
   # The box default (DIVE-5338), for a site this seat owns: `_input_open` serves
   # it as input, or switches a warm session over, on the first verb.
-  [[ "$(_site_drive "$site")" == input ]] && return 0
-  [[ "$(_kv "$(_serve_pidfile "$_SITE_DIR")" drive)" == input ]] && _serve_running "$_SITE_DIR" >/dev/null
+  # DIVE-7237: and ONLY that. How the browser happens to be served is not this
+  # site's mode: a group's one Chrome in input mode for CJ made every Shopify
+  # verb an input verb typing into CJ's window. _drive_fit switches it instead.
+  [[ "$(_site_drive "$site")" == input ]]
 }
 
 # The title markers of a security check, for a page with no DOM to grep. An
@@ -11689,7 +11928,12 @@ _input_open() {  # _input_open <site> <purpose> <lease-wait|no>
   local t; t=$(_daemon_call "$dir" '{"op":"title"}' 2>/dev/null | jq -r '.drive // empty' 2>/dev/null)
   if [[ "$t" != input ]]; then
     if (( _SITE_BROKERED )); then
-      die "$E_UNAVAILABLE" "$site is set to input mode, but the browser the '$_SITE_OWNER' seat is serving for it is the automated one, which this site refuses. Restart it so it comes back in input mode:  sudo -u $_SITE_OWNER 5dive browser serve $site --stop && sudo 5dive browser serve $site"
+      # DIVE-7237 (GAP-10): the seat has it switched as the owner, itself.
+      local bwhy
+      bwhy=$(_broker_wake "$site" switch) \
+        || die "$E_UNAVAILABLE" "$site is set to input mode, but the browser the '$_SITE_OWNER' seat is serving for it is the automated one, and it could not be switched: $bwhy"
+      t=$(_daemon_call "$dir" '{"op":"title"}' 2>/dev/null | jq -r '.drive // empty' 2>/dev/null)
+      [[ "$t" == input ]] || die "$E_UNAVAILABLE" "the $site browser was re-served but is not answering in input mode. Nothing ran."
     fi
     ( cmd_serve "$site" >/dev/null ) || die "$E_UNAVAILABLE" "the $site browser could not be re-served in input mode; its reason is above."
     t=$(_daemon_call "$dir" '{"op":"title"}' 2>/dev/null | jq -r '.drive // empty' 2>/dev/null)
@@ -11761,7 +12005,8 @@ cmd_input_verb() {  # <verb> <site> [<url>] [flags]
       --record=*) die "$E_USAGE" "a routine replays DOM steps by ref, and an input-mode site has no DOM: there is nothing to record. Act on the screen each time." ;;
       -h|--help)
         printf '%s %s <site> [<url>] — input mode: the screen of the live window, and real keyboard/mouse input.\n' "$PROG" "$verb"
-        printf '  act steps: click{x,y[,button,count]} move{x,y} type{value} press{key} scroll{dy[,dx,x,y]} goto{url} wait{ms} upload{x,y,path} drop{x,y,path}\n'
+        printf '  act steps: click{x,y[,button,count]} move{x,y} type{value} paste{value|path} press{key} scroll{dy[,dx,x,y]} goto{url} wait{ms} upload{x,y,path} drop{x,y,path}\n'
+        printf '  paste puts code or any long text in whole, through the clipboard: a code editor changes text typed key by key.\n'
         printf '  a step that pays, publishes, sends or deletes says so with "kind", and the owner'"'"'s policy applies.\n'
         return 0 ;;
       -*) die "$E_USAGE" "unknown flag: $1" ;;
@@ -11846,6 +12091,16 @@ _input_act() {  # <site> <url> <steps> <out> <json> <lease-wait> <settle>
     [[ "$up" == /* ]] || die "$E_USAGE" "an upload or drop step takes the file's absolute path; got: $up. Nothing ran."
     [[ -f "$up" && -r "$up" ]] || die "$E_USAGE" "an upload or drop step's file must be a regular file this seat can read; $up is not. Nothing ran."
   done < <(jq -r '.[] | select(.op=="upload" or .op=="drop") | .path // ""' <<<"$steps")
+
+  # DIVE-7237 (GAP-17): paste{path} pastes a file's text, read HERE as the caller
+  # (the same rule as an upload's file); paste{value} carries it inline.
+  local pi pp
+  for pi in $(jq -r 'to_entries[] | select(.value.op=="paste" and (.value.path != null)) | .key' <<<"$steps"); do
+    pp=$(jq -r --argjson i "$pi" '.[$i].path' <<<"$steps")
+    [[ "$pp" == /* && -f "$pp" && -r "$pp" ]] || die "$E_USAGE" "a paste step's path must be an absolute path to a file this seat can read; $pp is not. Nothing ran."
+    (( $(stat -c %s -- "$pp") <= 200000 )) || die "$E_USAGE" "$pp is over the 200000 bytes one paste carries; split it. Nothing ran."
+    steps=$(jq -c --argjson i "$pi" --rawfile v "$pp" '.[$i] |= (del(.path) | .value = $v)' <<<"$steps")
+  done
 
   # THE OWNER'S POLICY, ON WHAT THE AGENT DECLARES. The DOM path classifies a
   # click by reading the button it lands on; here there is no button to read,
@@ -12140,6 +12395,12 @@ case "${1:-}" in
       _v="$1"; shift 2
       set -- "$_v" "$_r" "$@"
     fi ;;
+esac
+
+# DIVE-7237: the page verbs, and only they, re-serve a group's browser the way
+# their site needs (_drive_fit).
+case "${1:-}" in
+  shot|snapshot|act|tree|read|links|run|capture|replay|handoff) _DRIVE_FIT=1 ;;
 esac
 
 # INPUT MODE TAKES THE PAGE VERBS (DIVE-5287). After the URL routing above, so

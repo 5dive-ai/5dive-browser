@@ -23,6 +23,8 @@ site is in input mode: `read`, `tree` or `run` refused "INPUT mode" means use th
    which page you are on.
 2. **Act in small steps**: `click{x,y[,button,count]}`, `move{x,y}`, `type{value}` (into
    whatever has focus), `press{key}` (`Enter`, `Tab`, `Escape`, `PageDown`, `ctrl+l`, …),
+   `paste{value}` or `paste{path}` (puts text in whole, through the clipboard: use it for code,
+   a long text or anything with quotes, because a code editor changes text typed key by key),
    `scroll{dy}` (wheel notches, + is down), `goto{url}` (typed into the address bar),
    `wait{ms}`, `upload{x,y,path}` (clicks the upload control at x,y, types the file's absolute
    path into the browser's file chooser and checks it closed; if the chooser will not take it,
@@ -52,6 +54,20 @@ They open the **same window** you were driving. Your input is refused while they
 when they tap Done you carry on from the page they left. Take a `shot` before your next act.
 A challenge whose title says so stops an act by itself (exit 75). TikTok's puzzle does not change
 the title, so when you see one in a screenshot, hand the window over. Never try to solve it.
+
+## One window for the box's logins
+
+The box's logins share one browser (Shopify, CJ, Facebook…). When you use a site, that browser
+switches to the way the site needs: input mode for CJ, the normal browser for Shopify. A verb
+that says it re-served the browser did that; carry on. It will not switch while the owner is in
+the window or another agent is mid-step: wait and try again, with `--wait` on an input verb.
+`status` never switches it. If the window is stuck or in the wrong mode, restart it yourself:
+
+```bash
+5dive browser serve cjdropshipping.com --restart
+```
+
+Never ask the owner to stop or restart a window.
 
 ## A key the site only lets you copy
 
