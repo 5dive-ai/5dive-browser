@@ -68,6 +68,10 @@ jobs:
       # handler is the control. Pure node.
       - name: viewer keyboard harness
         run: bash tests/browser_viewer_keyboard_unit.sh
+      # DIVE-7257: the viewer for one site of a sign-in group shows that site's tab
+      # (the real daemon on a several-tab stub; the pre-fix tree is the control).
+      - name: viewer site tab harness
+        run: bash tests/browser_viewer_front_unit.sh
       # DIVE-7078: no Telegram on a self-hosted box: the ask waits in the owner's login
       # shell, `asks open` is the tap and `asks done` the Done. A fake relay-seat browser.
       - name: connect-in-the-login-shell harness
