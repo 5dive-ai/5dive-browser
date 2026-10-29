@@ -61,6 +61,7 @@ function savedHostCheck(page, s) {
 const downloads = require(path.join(__dirname, '..', 'lib', 'downloads.cjs'));
 const gsignin = require(path.join(__dirname, '..', 'lib', 'google-signin.cjs'));
 const popup = require(path.join(__dirname, '..', 'lib', 'popup.cjs'));
+const cleanExit = require(path.join(__dirname, '..', 'lib', 'clean-exit.cjs'));
 // What each tab looked like when the agent last saw it, so an act can answer with
 // what changed instead of the whole page (DIVE-6795, lib/look.cjs).
 const look = require(path.join(__dirname, '..', 'lib', 'look.cjs'));
@@ -259,7 +260,9 @@ function sandboxWanted() {
 // place is a claim one edit can remove from both callers at once.
 function launchArgs(sandbox) {
   const extra = (process.env.FIVEDIVE_BROWSER_CHROME_ARGS || '').split(/\s+/).filter(Boolean);
-  const args = [...(sandbox ? [] : ['--no-sandbox']), '--disable-gpu', ...aria.unmarkedArgs(extra), ...extra];
+  // DIVE-7204: no "Restore pages?" bubble after a serve that was stopped, not closed.
+  const args = [...(sandbox ? [] : ['--no-sandbox']), '--disable-gpu', '--hide-crash-restore-bubble',
+    ...aria.unmarkedArgs(extra), ...extra];
   const bad = args.filter(a => /^--remote-debugging/.test(a));
   if (bad.length) {
     die(E_NOTHING_RAN, `refusing to launch with ${bad.join(' ')}. The daemon holds CDP over the child's ` +
@@ -353,6 +356,9 @@ async function serveMode(profile, sock, broker, input) {
   if (!chrome) die(E_UNAVAILABLE, 'no chrome named for this daemon — a session must be held in the same ' +
     'browser the profile was logged in with, so the executable is passed in rather than guessed here.');
 
+  // DIVE-7204: the last serve was stopped, not closed; say it closed cleanly so
+  // the window opens with no "Restore pages?" bubble (lib/clean-exit.cjs).
+  cleanExit.markCleanExit(profile);
   // INPUT MODE (DIVE-5287): plain Chrome, driven through the X display. No
   // Playwright, no CDP pipe, nothing on the page to detect. See inputLaunch.
   let ctx;
@@ -1303,6 +1309,8 @@ function plainArgs(profile, sandbox) {
     // launch gets the same three from Playwright's defaults already.
     '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows',
+    // DIVE-7204: the "Restore pages?" bubble sits where a real click can land.
+    '--hide-crash-restore-bubble',
     ...(sandbox ? [] : ['--no-sandbox']), ...extra];
   const bad = args.filter(a => /^--(remote-debugging|enable-automation|headless)/.test(a));
   if (bad.length) {

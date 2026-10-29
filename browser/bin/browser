@@ -2257,7 +2257,9 @@ cmd_auth() {
     printf '\nNow ask for a viewer link (the dashboard does this for you):\n  5dive browser viewer %s --bind=<your dashboard session>\n' "$site" >&2
     return 0
   fi
-  "$chrome" --user-data-dir="$dir" --no-first-run --no-default-browser-check "$(_site_url "$site")"
+  _mark_clean_exit "$dir"
+  "$chrome" --user-data-dir="$dir" --no-first-run --no-default-browser-check \
+      --hide-crash-restore-bubble "$(_site_url "$site")"
 }
 
 # Where a profile is PROBED. Not a curated platform list — a site is whatever the
@@ -5582,8 +5584,9 @@ cmd_serve() {
   # profile, like everything else here.
   local errlog; errlog="$dir/.5dive-serve.err"
   ( umask 077; : > "$errlog" ) 2>/dev/null || true
+  _mark_clean_exit "$dir"
   DISPLAY=":$disp" _tmp_exec "$chrome" --user-data-dir="$dir" --no-first-run \
-      --no-default-browser-check --window-size=1280,800 \
+      --no-default-browser-check --window-size=1280,800 --hide-crash-restore-bubble \
       --disable-features=TranslateUI "$start_url" >/dev/null 2>"$errlog" &
   local cpid=$!
 
@@ -5649,6 +5652,10 @@ _viewer_stop() {
 # -once), and this gives it back when the view is stopped (Done, revoke, a new
 # viewer, serve --stop). The state file is claimed by rename, so one of them acts.
 _viewer_fit_lib() { echo "$_SELF_DIR/../lib/viewer-fit.cjs"; }
+# DIVE-7204: a served Chrome is stopped, never closed, so its profile says it
+# crashed and the next window opens under a "Restore pages?" bubble. Mark it
+# cleanly exited first (lib/clean-exit.cjs); never a reason to fail the launch.
+_mark_clean_exit() { node "$_SELF_DIR/../lib/clean-exit.cjs" "$1" >/dev/null 2>&1 || true; }
 _viewer_unfit() {
   local dir="$1" ff; ff="$(_viewer_fit_file "$dir")"
   [[ -f "$ff" ]] || return 0
