@@ -258,6 +258,12 @@ reset
 out=$(FIVEDIVE_BROWSER_CONNECT_HOME="$TMP/nohome" priv handoff tiktok.com "sign in" 2>&1); rc=$?
 t  "N4c ... but a seat with no paired owner still gets the SSH steps, printed" "0 0" "$rc $(grep -c sendMessage "$TMP/stub.log")"
 tc "N4c ... (the steps)" "ssh -N -L 5900:127.0.0.1:5917" "$out"
+# DIVE-7223: an upgrade never refreshed the copy \`enable\` made; the tap does.
+L="$TMP/link/lib"
+t  "N4d enable copies the server, the page and its bar" "ok ok ok" "$(for f in login-link-server.py login-link/page.js login-link/viewer-ui.js; do cmp -s "browser/lib/$f" "$L/$f" && printf 'ok '; done | sed 's/ $//')"
+echo '// 1.63.1 page' >"$L/login-link/page.js"; rm -f "$L/login-link/viewer-ui.js"; echo '# 1.63.1 server' >"$L/login-link-server.py"
+out=$(tap_once); rc=$?
+t  "N4d a tap after an upgrade brings all three up to the plugin's" "0 ok ok ok" "$rc $(for f in login-link-server.py login-link/page.js login-link/viewer-ui.js; do cmp -s "browser/lib/$f" "$L/$f" && printf 'ok '; done | sed 's/ $//')"
 out=$("$BROWSER" login-link status 2>&1)
 tc "N5 status says on, and where" "login links: on, via ip — https://192.0.2.10/browser/viewer/" "$out"
 # Hosted wins, even over a live opt-in: the same box with a FIVE_DOMAIN.
@@ -380,6 +386,7 @@ tn "S10 ... and no password" "password" "$(head -1 <<<"$j")"
 t  "S11 the box's noVNC files are served" "200 export default class RFB {}" "$(code "$B/browser/viewer/assets/novnc/core/rfb.js") $(curl -s "$B/browser/viewer/assets/novnc/core/rfb.js")"
 tc "S11 ... as javascript" "text/javascript" "$(curl -s -D - -o /dev/null "$B/browser/viewer/assets/novnc/core/rfb.js")"
 t  "S11 the page script is served" 200 "$(code "$B/browser/viewer/assets/page.js")"
+t  "S11 ... and the bar it imports (DIVE-7223)" 200 "$(code "$B/browser/viewer/assets/viewer-ui.js")"
 tn "S12 THE NONCE IS NEVER LOGGED" "$NONCE" "$(cat "$TMP/srv.err")"
 tn "S12 ... nor the password" "pw-123" "$(cat "$TMP/srv.err")"
 listen=$(ss -Hltn 2>/dev/null | awk '{print $4}' | grep ":$SP\$")
@@ -402,9 +409,15 @@ rm -f "$TMP/redeem.fit"
 j=$(redeem -H 'content-type: application/json' --data '{"w":1440,"h":900}')
 t  "P4 no fit from the box (a desktop): the answer carries none" "null null pw-123" "$(jq -r '"\(.fit) \(.screen) \(.password)"' <<<"$j")"
 pj="$ROOT/browser/lib/login-link/page.js"
-tc "P5 the page sends its own size with the redeem" "body: JSON.stringify({ w: Math.round(innerWidth), h: Math.round(innerHeight) })" "$(cat "$pj")"
-tc "P5 ... and still raises the soft keyboard" "kbd.addEventListener('click', () => kin.focus())" "$(cat "$pj")"
-tc "P5 ... and the page still has both" '<input id="kin"' "$(cat "$TMP/page.html")"
+tc "P5 the page sends the size under its bar with the redeem" "body: JSON.stringify({ w: Math.round(innerWidth), h: Math.round(innerHeight - BAR) })" "$(cat "$pj")"
+tc "P5 ... and wires the bar's Type and Paste (tests/browser_viewer_keyboard_unit.sh)" "const bar = wireBar(document, rfb, t, navigator.clipboard);" "$(cat "$pj")"
+# DIVE-7223: the hosted viewer's layout — a bar with the site, Type, Paste and a
+# visible field — and no off-page input (the Keyboard button that did nothing).
+for id in 'id="bar"' '<b id="site">booking.com</b>' 'id="type"' 'id="paste"' '<form id="pastebox" hidden>' '<input id="pastein"' '#screen{position:absolute;inset:44px 0 0 0'; do
+  tc "P6 the page has the hosted viewer's bar: $id" "$id" "$(cat "$TMP/page.html")"
+done
+tn "P6 ... and no input off the page" "left:-100px" "$(cat "$TMP/page.html")"
+tn "P6 ... nor the old Keyboard button" 'id="kbd"' "$(cat "$TMP/page.html")"
 
 # ---- G: the seams are not a door under root --------------------------------------
 blk=$(awk '/^if \[\[ \$EUID -ne 0 && -n "\$\{FIVEDIVE_BROWSER_LINK_CONF:-\}" \]\]; then$/{p=1} p{print} p&&/^fi$/{p=0}' "$BROWSER")

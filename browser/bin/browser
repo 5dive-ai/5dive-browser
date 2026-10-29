@@ -9783,6 +9783,23 @@ _link_register_bind() {  # <site> <bind> <expires epoch>
   mv -f "$f.$$" "$f"
 }
 
+# DIVE-7223: `enable` copies the server and its page into $LINK_LIB, and a plugin
+# upgrade never touched that copy, so an upgraded box kept serving the old page.
+# The tap brings the copy up to the plugin's own before the link goes out. The
+# server holds the page's markup, so a changed server is restarted (root only;
+# the test seam copies and starts nothing).
+_link_refresh_copy() {
+  [[ -f "$LINK_LIB/login-link-server.py" ]] || return 0
+  local self_lib f
+  self_lib="$(cd "$(dirname "$(readlink -f "$0")")/../lib" && pwd)" || return 1
+  for f in login-link/page.js login-link/viewer-ui.js; do
+    cmp -s "$self_lib/$f" "$LINK_LIB/$f" || install -m 0644 "$self_lib/$f" "$LINK_LIB/$f" || return 1
+  done
+  cmp -s "$self_lib/login-link-server.py" "$LINK_LIB/login-link-server.py" && return 0
+  install -m 0644 "$self_lib/login-link-server.py" "$LINK_LIB/login-link-server.py" || return 1
+  if [[ $EUID -eq 0 ]]; then systemctl try-restart "$LINK_UNIT" >/dev/null 2>&1 || return 1; fi
+}
+
 # The box's public IPv4, from its own interfaces — the same filter the SSH
 # handoff uses. Empty behind NAT, which is the answer: no IP option works there.
 _link_public_ipv4() {
@@ -10010,6 +10027,7 @@ _link_enable() {
   # plugin's directory, and a unit pointing into it would die with it.
   install -m 0644 "$self_lib/login-link-server.py" "$LINK_LIB/login-link-server.py" \
     && install -m 0644 "$self_lib/login-link/page.js" "$LINK_LIB/login-link/page.js" \
+    && install -m 0644 "$self_lib/login-link/viewer-ui.js" "$LINK_LIB/login-link/viewer-ui.js" \
     || die "$E_UNAVAILABLE" "could not copy the login-link server into $LINK_LIB"
   ( umask 022; printf '# Written by `5dive browser login-link enable` (DIVE-6219).\nLINK_MODE=%s\nLINK_HOST=%s\nLINK_PORT=%s\n' "$via" "$host" "$port" > "$LINK_CONF" )
   _link_units server "$port" > "$LINK_SYSTEMD_DIR/$LINK_UNIT.service"
@@ -11094,6 +11112,7 @@ _connect_tap() {  # <caller> <code> <sender>
     # is the relay, and the bind goes to it as a root-written file instead of to
     # shelld. A box with FIVE_DOMAIN never reaches this branch.
     host=$(_link_host)
+    _link_refresh_copy || printf 'browser: could not update the login page this box serves (it keeps the old one)\n' >&2
     if ! _link_register_bind "$site" "$bind" "$exp"; then
       _connect_as_box viewer-revoke "$site" >/dev/null 2>&1 || true
       die "$E_UNAVAILABLE" "the box's login-link server could not take the login link; nothing was sent"

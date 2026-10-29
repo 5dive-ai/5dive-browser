@@ -63,6 +63,11 @@ jobs:
       # The real login-link server on loopback, a fake viewer-redeem and bridge.
       - name: login-link harness
         run: bash tests/browser_login_link_unit.sh
+      # DIVE-7223: typing on a phone in that page: Gboard-style key sequences into the
+      # bar's field, what reaches the box read off a fake noVNC; the old hidden-input
+      # handler is the control. Pure node.
+      - name: viewer keyboard harness
+        run: bash tests/browser_viewer_keyboard_unit.sh
       # DIVE-7078: no Telegram on a self-hosted box: the ask waits in the owner's login
       # shell, `asks open` is the tap and `asks done` the Done. A fake relay-seat browser.
       - name: connect-in-the-login-shell harness

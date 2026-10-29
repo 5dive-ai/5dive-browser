@@ -8,6 +8,18 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — the self-hosted login page types on a phone, and looks like the 5dive.ai one (DIVE-7223), 1.63.3
+
+lodar on a self-hosted box, 10-29: the Keyboard button did nothing, and the page did not look like the 5dive.ai hosted viewer.
+
+- **Same layout as the hosted viewer** (shelld's `viewerPage`): a bar on top with the site, one line of help, **Type** and **Paste**, the box's screen under it. Russian when the phone asks for it. The phone fit (DIVE-6646) now sizes the window to the area under the bar.
+- **Type opens a visible field in the bar; Send delivers what was typed**, the way the hosted page does it. The old button focused a 1x1 input off the page and forwarded each keystroke: Gboard's word composition came out doubled ("hhehelhellhello"), its Backspace never arrived, and some phones never raised the keyboard for it. Latin-1 text goes by the box clipboard and Ctrl+V, emptied after 2 s; other text as Unicode keys.
+- **Paste** sends the phone's clipboard at once, or opens the field when the phone will not share it.
+- With the field open, Type hides so Paste still fits a phone-wide bar (the hosted page cuts it off; same fix owed there).
+- **An upgraded box serves the new page.** `login-link enable` copied the page once and an upgrade never refreshed it; the owner's tap now brings the copy up to the plugin's and restarts the server if it changed.
+
+`tests/browser_viewer_keyboard_unit.sh` 28/28 (each phone sequence wrong on the old handler, copied verbatim as the control); `tests/browser_login_link_unit.sh` 159/159.
+
 ### Fixed — no "Restore pages?" bubble after a served browser restarts (DIVE-7204), 1.63.2
 
 A served Chrome is stopped, never closed (a serve restart, a reboot, a drive-mode switch), so the next start drew Chrome's "Restore pages? Chrome didn't shut down correctly" bubble at the top right. The owner saw it in every viewer link, and in input mode a real-mouse click could land on it.
