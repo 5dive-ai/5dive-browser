@@ -13,9 +13,11 @@
 #   L  LIVE, when this machine has Xvfb and Chrome (GitHub's ubuntu runner does):
 #      the real session daemon serves a page in input mode, Chrome is killed
 #      with -9, and then (control) plain Chrome with the old flags on a copy of
-#      that profile shows a second window, the bubble, while (fix) the daemon
-#      serving it again shows the browser window alone. RESTORE_BUBBLE_ARTIFACTS
-#      keeps both screens.
+#      that profile draws the bubble in the top-right corner of the page, while
+#      (fix) the daemon serving it again leaves that corner plain page. Chrome
+#      153 draws the bubble INSIDE the browser window (no window of its own),
+#      so the arms read the corner's pixels, not a window count.
+#      RESTORE_BUBBLE_ARTIFACTS keeps both screens.
 set -uo pipefail
 printf 'grading tree: %s @ %s\n' "$PWD" "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" >&2
 cd "$(dirname "$0")/.."
@@ -144,13 +146,20 @@ if [[ -z "$REAL_XVFB" || -z "$REAL_CHROME" ]]; then
   SKIP=1; printf 'SKIP: L live arms — this machine has no Xvfb (%s) or no Chrome (%s)\n' "${REAL_XVFB:-none}" "${REAL_CHROME:-none}"
 else
   unset FIVEDIVE_BROWSER_CHROME_ARGS
+  unset FIVEDIVE_BROWSER_X11_DIR      # B4 points it at a fake display dir; Xvfb uses /tmp/.X11-unix
   X11LIB="$ROOT/browser/lib/x11.cjs"
   disp=""
   for n in $(seq 770 820); do [[ -e "/tmp/.X11-unix/X$n" ]] || { disp=$n; break; }; done
   "$REAL_XVFB" ":$disp" -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 & _KILL+=("$!")
   for i in $(seq 1 100); do [[ -e "/tmp/.X11-unix/X$disp" ]] && break; sleep 0.05; done
-  PAGE="$TMP/page.html"
-  printf '<!doctype html><title>restore-check</title><body style="margin:0;background:#fff">page</body>\n' > "$PAGE"
+  # Over http, because the daemon opens only an http(s) start URL: both runs
+  # then show the same white page and only the bubble can put ink in the corner.
+  node -e 'const s = require("http").createServer((q, r) => { r.setHeader("content-type", "text/html");
+    r.end("<!doctype html><title>restore-check</title><body style=\"margin:0;background:#fff\">page</body>"); });
+    s.listen(0, "127.0.0.1", () => require("fs").writeFileSync(process.argv[1], String(s.address().port)));' "$TMP/port" &
+  _KILL+=("$!")
+  for i in $(seq 1 100); do [[ -s "$TMP/port" ]] && break; sleep 0.05; done
+  PAGE="http://127.0.0.1:$(cat "$TMP/port")/"
   # wins <pid> — the viewable top-level windows that pid owns (_NET_WM_PID).
   wins() { DISPLAY=":$disp" node -e '
     require(process.argv[1]).open(process.env.DISPLAY).then(async (x) => {
@@ -161,11 +170,22 @@ else
       console.log(n); x.close(); })' "$X11LIB" "$1" 2>/dev/null || echo 0; }
   # settle <pid> — wait for the browser window (20s), then 5s for a bubble to draw.
   settle() { local i; for i in $(seq 1 100); do [[ "$(wins "$1")" -ge 1 ]] && break; sleep 0.2; done; sleep 5; }
+  # ink — the non-white pixels in the corner the bubble covers (x 960-1269,
+  # y 150-339: below the toolbar and any infobar, over the page).
+  ink() { DISPLAY=":$disp" node -e '
+    require(process.argv[1]).open(process.env.DISPLAY).then(async (x) => {
+      const X = 960, Y = 150, W = 310, H = 190, b = Buffer.alloc(16);
+      b.writeUInt32LE(x.root, 0); b.writeInt16LE(X, 4); b.writeInt16LE(Y, 6);
+      b.writeUInt16LE(W, 8); b.writeUInt16LE(H, 10); b.writeUInt32LE(0xffffffff, 12);
+      const d = (await x.req(73, 2, b, true)).subarray(32);       // GetImage, ZPixmap, 32 bpp
+      let n = 0;
+      for (let i = 0; i < W * H * 4; i += 4) if (d[i] < 200 || d[i + 1] < 200 || d[i + 2] < 200) n++;
+      console.log(n); x.close(); })' "$X11LIB" 2>/dev/null || echo -1; }
   shot() { [[ -n "$ART" ]] || return 0; node -e '
     require(process.argv[1]).open(process.argv[2]).then(async (x) => { require("fs").writeFileSync(process.argv[3], await x.screenshotPNG()); x.close(); })' \
     "$X11LIB" ":$disp" "$ART/$1.png" 2>/dev/null; }
   serve() {  # serve <profile> — the real daemon, input mode; prints its Chrome's pid
-    DISPLAY=":$disp" FIVEDIVE_BROWSER_CHROME="$REAL_CHROME" FIVEDIVE_BROWSER_START_URL="file://$PAGE" \
+    DISPLAY=":$disp" FIVEDIVE_BROWSER_CHROME="$REAL_CHROME" FIVEDIVE_BROWSER_START_URL="$PAGE" \
       "$D" serve "$1" "$1/s.sock" --input > "$TMP/ready" 2> "$TMP/serve.err" &
     _KILL+=("$!")
     for i in $(seq 1 600); do grep -q '^ready' "$TMP/ready" 2>/dev/null && break; sleep 0.05; done
@@ -187,19 +207,19 @@ else
   CP="$TMP/control"; cp -a "$LP" "$CP"
   old=$(argsof "$D" plainArgs "plainArgs(\"$CP\", false)" | tr ' ' '\n' | grep -vx -- "$FLAG")
   # shellcheck disable=SC2086
-  DISPLAY=":$disp" "$REAL_CHROME" $old "file://$PAGE" >/dev/null 2>&1 & ccpid=$!; _KILL+=("$ccpid")
-  settle "$ccpid"; control=$(wins "$ccpid"); shot control-restore-bubble
+  DISPLAY=":$disp" "$REAL_CHROME" $old "$PAGE" >/dev/null 2>&1 & ccpid=$!; _KILL+=("$ccpid")
+  settle "$ccpid"; control=$(ink); shot control-restore-bubble
   DISPLAY=":$disp" node "$ROOT/tests/x11_stack.cjs" control 1200 80 "$ccpid" | sed 's/^/   /'
-  arm 'L control: 1.63.1 flags on a killed profile show a second window (the bubble)' yes "$(yn test "$control" -ge 2)"
+  arm 'L control: 1.63.1 flags on a killed profile draw the bubble over the page corner' yes "$(yn test "$control" -ge 2000)"
   kill -9 "$ccpid" 2>/dev/null
 
   # FIX: the daemon serves the killed profile again.
   fpid=$(serve "$LP")
-  settle "$fpid"; fixed=$(wins "$fpid"); shot fixed-no-bubble
+  settle "$fpid"; fixed=$(ink); shot fixed-no-bubble
   DISPLAY=":$disp" node "$ROOT/tests/x11_stack.cjs" fix 1200 80 "$fpid" | sed 's/^/   /'
-  arm 'L fix: the daemon reopens the killed profile with the browser window alone' 1 "$fixed"
+  arm 'L fix: the daemon reopens the killed profile with that corner plain page' 0 "$fixed"
   arm 'L ...the daemon reported nothing wrong' '' "$(grep -v '^$' "$TMP/serve.err" | grep -iv 'dbus' | head -2)"
-  printf '   windows: control=%s fix=%s (Chrome %s)\n' "$control" "$fixed" "$("$REAL_CHROME" --version 2>/dev/null)"
+  printf '   corner ink: control=%s fix=%s (Chrome %s)\n' "$control" "$fixed" "$("$REAL_CHROME" --version 2>/dev/null)"
 fi
 
 printf '\n%d pass, %d fail, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
