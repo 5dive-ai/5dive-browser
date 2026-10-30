@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a site that joined the Google group keeps its page between acts (DIVE-7316), 1.64.2
+
+On a seat whose sign-in group holds a Google login, every new site an agent opens joins that group (DIVE-7076). Those sites never kept a browser between calls: each act and snapshot started a new Chrome, about 40% slower per step, and nothing said so.
+
+- **The first act on such a site now keeps a private served browser,** as it already did for a site's own login and for the public profile. The next act carries on where the last one stopped. A second site of the same group uses that same browser, not a new one.
+- **A snapshot of a joined site is warm too,** like the public profile's (DIVE-6778).
+- **Not for a group this seat offers to the box's other seats** (the box's own logins): only a deliberate `serve` holds that browser. The act now says so instead of returning in silence.
+
 ### Fixed — the sign-in link for a site shows that site, not another site of its group (DIVE-7257), 1.64.1
 
 lodar, 10-29: the bing.com link showed the Google Play console. Sites of a sign-in group share one Chrome, and the window was shown with whichever tab was last in front.
