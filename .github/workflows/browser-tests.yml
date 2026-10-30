@@ -43,6 +43,10 @@ jobs:
       # gets 1.5 s. Fake pages, pure node, real timers.
       - name: settle harness
         run: bash tests/browser_settle_unit.sh
+      # DIVE-7303: `session-daemon call` reads a multi-MB reply in linear time and
+      # never cuts a character split across chunks. A fake daemon, pure node.
+      - name: call stream harness
+        run: bash tests/browser_call_stream_unit.sh
       # DIVE-6089: setup installs a missing box stack. apt, npm, curl, gpg faked on
       # a sandbox PATH, so the runner's own chrome, Xvfb and node are invisible.
       - name: setup stack harness

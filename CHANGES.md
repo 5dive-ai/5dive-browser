@@ -8,6 +8,19 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — quicker steps: no 90 s wait on a security check, no 30 s wait on a missed `--wait-for`, a 2 s `--expect`, and a big page no longer takes minutes (DIVE-7303), 1.65.0
+
+lodar, 10-30: can our browser be as quick per step as Claude in Chrome? On the fresh-100 bench our snapshot averaged 12.4 s against a 5.9 s median: the time was in a long tail, and the tail had four causes, each fixed here.
+
+- **A page with 1,000 options no longer holds a snapshot for minutes.** OhioMeansJobs wraps its job list in a `<label>`, so every option took the label's whole text as its name: 1,211 refs made a 66 MB tree.json, and the client that reads the daemon's answer searched that growing answer from its start on every chunk. Measured on the bench rig, that page: 179 s, 153 s, 152 s before; 8.2 s, 4.4 s, 4.0 s after (tree.json 194 KB). An option is named by its own text, a name stops at 200 characters, and `session-daemon call` reads its answer in time linear in its size (also: a character split across two chunks is no longer cut).
+- **"Just a moment…" is watched for 20 s, not 90 s** (`FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS`). On the bench none of ten checks cleared in 90 s, and those ten waits were a fifth of all snapshot time. One that clears by itself does in 5-15 s.
+- **`snapshot --wait-for` gives up after 10 s**, as an act's `wait_for` does (`FIVEDIVE_BROWSER_ACT_STEP_MS`), not 30 s.
+- **`act --expect` is re-read for 2 s, not 5** (`FIVEDIVE_BROWSER_EXPECT_WAIT_MS`); 147 of 446 bench acts missed and paid the whole window. A reviewed `run` recipe's verify keeps 5 s. The use-browser skill asks for `--expect` only on the act that does the job, not on every click.
+- **The first snapshot of the public profile no longer fails** with `net::ERR_ABORTED` (8 bench jobs opened with that exit 69): a load Chrome dropped because the served browser was still loading the same site is that load. One that never left its page (a download) is still the error.
+- **A snapshot says when the page was still loading** at the settle bound ("still loading when read"), instead of waiting for a network that never goes quiet.
+
+`tests/browser_call_stream_unit.sh` 3/3 (new; the old client fails 2), `tests/browser_act_look_unit.sh` 64/64 (N2/N3 abort, W1/W2 wait-for bound), `tests/browser_interstitial_unit.sh` 16/16, `tests/browser_plugin_unit.sh` 2023/2023 (T23a2 names).
+
 ### Fixed — the sign-in link for a site shows that site, not another site of its group (DIVE-7257), 1.64.1
 
 lodar, 10-29: the bing.com link showed the Google Play console. Sites of a sign-in group share one Chrome, and the window was shown with whichever tab was last in front.

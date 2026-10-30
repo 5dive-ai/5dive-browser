@@ -188,6 +188,43 @@ OUT=$(node "$DAEMON" call "$SOCK2" <<<"$(jq -nc --arg u "https://redirects.test/
 t  'N1 a snapshot whose goto the site'"'"'s redirect interrupted waits for that load, and answers' '0 https://warm.test/check' "$RC $(jq -r .url <<<"$OUT" 2>/dev/null | tail -1)"
 t  'N1 ...it waited for the load that won' yes "$(grep -q '"call":"waitForLoadState"' "$TMP/rec2.jsonl" && echo yes || echo no)"
 
+# DIVE-7303: a goto Chrome aborted (net::ERR_ABORTED) is the load when the tab is
+# on the site it was sent to, and an error when it never left its page.
+fresh() {  # <name> <VAR=value>... -> starts one more stub daemon at $TMP/<name>.sock
+  local n="$1"; shift; local prof="$TMP/$n"; mkdir -p "$prof"; chmod 700 "$prof"
+  env NODE_PATH="$DSTUB/node_modules" PWREC="$TMP/rec-$n.jsonl" DPWDOM="$TMP/dom.html" DPWSNAP="$TMP/snap.json" \
+      DPWREFS="$TMP/refs.json" DPWTEXT='Checker' "$@" FIVEDIVE_BROWSER_CHROME="$FAKEBIN/google-chrome" \
+      FIVEDIVE_BROWSER_HEADLESS=1 FIVEDIVE_BROWSER_RUN_SETTLE_MS=0 FIVEDIVE_BROWSER_TREE_SETTLE_MS=0 FIVEDIVE_BROWSER_POPUP_WAIT_MS=0 \
+      node "$DAEMON" serve "$prof" "$TMP/$n.sock" > "$prof.ready" 2> "$prof.err" &
+  _KILL+=($!)
+  for _ in $(seq 50); do grep -q '^ready' "$prof.ready" 2>/dev/null && break; sleep 0.1; done
+}
+abortd() {  # <mode> <url> -> rc, then the url answered or the error
+  fresh "a-$1" DPWGOTO_ABORT="$1"
+  local o rc; o=$(node "$DAEMON" call "$TMP/a-$1.sock" <<<"$(jq -nc --arg u "$2" '{op:"snapshot", url:$u, inline:true}')" 2>&1); rc=$?
+  printf '%s %s' "$rc" "$( (( rc )) && grep -o 'net::ERR_ABORTED' <<<"$o" | head -1 || jq -r '.url // empty' <<<"$o" 2>/dev/null | tail -1)"
+}
+t  'N2 an aborted load whose tab is on that site anyway answers (the snapshot of it)' '0 https://warm.test/check' \
+   "$(abortd land https://warm.test/landed)"
+t  'N2 ...after waiting for that load' yes "$(grep -q '"call":"waitForLoadState"' "$TMP/rec-a-land.jsonl" && echo yes || echo no)"
+t  'N3 NEGATIVE: an aborted load that never left its page is still that error, not that page read as new' \
+   '70 net::ERR_ABORTED' "$(abortd stay https://warm.test/file.pdf)"
+
+# DIVE-7303: snapshot --wait-for gives up at the act step bound (step_ms), not 30 s.
+fresh never DPWLATE_MS=99999999
+call3() { node "$DAEMON" call "$TMP/never.sock" <<<"$1"; }
+run call3 "$(jq -nc --arg u "https://warm.test/other" '{op:"snapshot", url:$u, inline:true, wait_for:"text=Nowhere at all", step_ms:10000}')"
+t  'W1 a --wait-for that never shows waits step_ms (10 s), then answers' 'false 10000' \
+   "$(jq -r '"\(.wait_for.met) \(.wait_for.waited_ms)"' <<<"$OUT" 2>/dev/null | tail -1)"
+run call3 "$(jq -nc --arg u "https://warm.test/third" '{op:"snapshot", url:$u, inline:true, wait_for:"text=Nowhere at all"}')"
+t  'W2 a caller that sends no step_ms keeps the 30 s bound' 'false 30000' \
+   "$(jq -r '"\(.wait_for.met) \(.wait_for.waited_ms)"' <<<"$OUT" 2>/dev/null | tail -1)"
+tc 'W3 bin/browser sends step_ms with every snapshot, warm and cold' 'step_ms:$sm,' \
+   "$(sed -n '/^cmd_snapshot() {/,/^}/p' "$BROWSER")"
+t  'W3 ...on both paths' 2 "$(sed -n '/^cmd_snapshot() {/,/^}/p' "$BROWSER" | grep -c 'step_ms:\$sm')"
+tc 'L1 a page read at the settle bound says it was still loading' 'still loading when read' \
+   "$(sed -n '/^cmd_snapshot() {/,/^}/p' "$BROWSER")"
+
 # ============================================================= C  bin/browser's half
 # The two functions under test, from the shipped file; the daemon call is canned.
 eval "$(awk '/^_act_session\(\) \{/{f=1} /^_act_look_say\(\) \{/{f=1} f{print} f&&/^}/{f=0}' "$BROWSER")"

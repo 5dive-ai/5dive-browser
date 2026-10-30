@@ -254,7 +254,7 @@ usage() {
                                       # one tab under one lease. `type` goes key by key,
                                       # for a box whose suggestions open on keystrokes.
                                       # --expect=<regex> grades the page the steps left,
-                                      # re-read for up to --expect-wait ms (5000) so a
+                                      # re-read for up to --expect-wait ms (2000) so a
                                       # toast counts. It leaves page.md and tree.json
                                       # like a snapshot.
                                       # Posting, sending and deleting run and are
@@ -3978,7 +3978,7 @@ _run_verify() {  # _run_verify <adapter-file> <action> <args-json> <executor-rc>
 _run_verify_in_session() {  # <adapter-file> <action> <profile-dir> <url> <expect> -> what was read, on stdout
   local f="$1" action="$2" dir="$3" vurl="$4" vexpect="$5" st="${_READ_STAGE:?}" report steps
   report=$(jq -c --arg a "$action" --arg e "$vexpect" \
-      --argjson ew "${FIVEDIVE_BROWSER_EXPECT_WAIT_MS:-$ACT_EXPECT_WAIT_DEFAULT}" '
+      --argjson ew "${FIVEDIVE_BROWSER_EXPECT_WAIT_MS:-$RUN_EXPECT_WAIT_DEFAULT}" '
       .actions[$a].verify as $v | {expect:$e, expect_doc:true, expect_wait_ms:$ew, shot:false, tree:false}
       + (if $v.wait_for then {wait_for:$v.wait_for} else {} end)
       + (if $v.scope then {scope:$v.scope} else {} end)' "$f")
@@ -7212,7 +7212,8 @@ cmd_snapshot() {
     plan=$(jq -nc --arg u "$url" --arg h "$stage/page.html" --arg s "$png" \
         --argjson i "$interactive" --argjson f "$full" --argjson l "$(_daemon_lease_json)" \
         --argjson n "$inline" --argjson st "$(_settle_json "$settle")" --arg wf "$wait_for" --arg xs "$(_extract_sha)" \
-        '{op:"snapshot", url:$u, extract:$xs, look:true,
+        --argjson sm "$ACT_STEP_MS" \
+        '{op:"snapshot", url:$u, extract:$xs, look:true, step_ms:$sm,
           html:(if $n==1 then null else $h end),
           shot:(if $n==1 then (if $s=="" then null else true end) elif $s=="" then null else $s end),
           inline:($n==1), interactive:($i==1), full:($f==1)}
@@ -7234,8 +7235,8 @@ cmd_snapshot() {
     [[ -n "$driver" && -x "$driver" ]] || die "$E_UNAVAILABLE" "no executor backend at $driver — snapshot reads the page through the same executor \`run\` acts through, inside the same profile."
     local chrome; chrome=$(command -v "$_PG_CHROME" 2>/dev/null || printf '%s' "$_PG_CHROME")
     plan=$(jq -nc --arg p "$_PG_DIR" --arg u "$url" --arg h "$stage/page.html" --arg s "$png" \
-        --argjson i "$interactive" --argjson f "$full" --arg wf "$wait_for" \
-        '{profile:$p, mode:"snapshot", url:$u, html:$h, shot:(if $s=="" then null else $s end),
+        --argjson i "$interactive" --argjson f "$full" --arg wf "$wait_for" --argjson sm "$ACT_STEP_MS" \
+        '{profile:$p, mode:"snapshot", url:$u, html:$h, shot:(if $s=="" then null else $s end), step_ms:$sm,
           interactive:($i==1), full:($f==1)} + (if $wf == "" then {} else {wait_for:$wf} end)')
     payload=$(FIVEDIVE_BROWSER_PROFILE="$_PG_DIR" FIVEDIVE_BROWSER_CHROME="$chrome" \
           FIVEDIVE_BROWSER_TREE_SETTLE_MS="${settle:-${FIVEDIVE_BROWSER_TREE_SETTLE_MS:-$SNAP_SETTLE_DEFAULT}}" \
@@ -7306,6 +7307,9 @@ cmd_snapshot() {
   fi
   printf '%s\n' "$title"
   printf '  %s\n' "$final"
+  # DIVE-7303: read at the settle bound, not after the network went quiet.
+  [[ "$(jq -r '.still_loading // false' <<<"$payload")" == true ]] \
+    && printf '  (still loading when read: if a part you need is missing, snapshot again with no URL)\n'
   if [[ -n "${_DELTA:-}" ]] && [[ "$(jq -r '.applied' <<<"$_DELTA")" == true ]]; then
     _snapshot_delta_print "$out" "$rrc"
     (( rrc )) && return "$rrc"
@@ -7394,7 +7398,13 @@ ACT_UPLOAD_MAX_BYTES="${FIVEDIVE_BROWSER_UPLOAD_MAX_BYTES:-16777216}"
 ACT_MAX_STEPS=40
 # How long --expect is re-read after the last step before NOT VERIFIED
 # (DIVE-4983): a toast lands a second or two after the click that caused it.
-ACT_EXPECT_WAIT_DEFAULT=5000
+# DIVE-7303: 2 s, not 5. On the fresh-100 bench 147 of 446 --expect acts missed
+# and each paid the whole window (12.1 s against 6.3 s for a match); a miss
+# still prints what changed, so the agent sees the page either way.
+ACT_EXPECT_WAIT_DEFAULT=2000
+# A reviewed `run` recipe's verify keeps 5 s: it is a fresh load of a list (the
+# Sent folder) that shows the new row a moment late, and it is one call a job.
+RUN_EXPECT_WAIT_DEFAULT=5000
 
 _approval_dir() {  # _approval_dir [<seat>] — where a seat's pending asks and grants live
   local seat="${1:-$(_seat)}" home
@@ -9712,7 +9722,7 @@ CONNECT_DIR="$STATE_DIR/browser-connect"
 CONNECT_REQ_TTL=900          # the owner has 15 minutes to tap Connect
 CONNECT_LATE_TTL=7200        # a tap up to two hours late gets a fresh button (DIVE-6725)
 # The look at a challenge page (DIVE-6725). Before the ask it may sit through a
-# Cloudflare wait (up to 90 s) inside an agent's 2-minute command; at Done the
+# Cloudflare wait (up to 20 s since DIVE-7303) inside an agent's 2-minute command; at Done the
 # plugin gives the whole Done 150 s, revoke and hand-back serve included.
 CONNECT_LOOK_TIMEOUT=105
 CONNECT_DONE_LOOK_TIMEOUT=60
