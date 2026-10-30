@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a saved login types on a site in input mode, and a take-over of a signed-in browser stays signed in (DIVE-7314), 1.64.3
+
+chill-gorge, 10-30: setting up the DigitalOcean seller account stopped twice. The agent could not type the owner's saved login, and the owner's take-over link opened on the login page.
+
+- **A saved login now types on a site in input mode** (plain Chrome, driven through the screen). Click the field, then `{"op":"type","saved":"<name>.password"}`, or `paste`. It goes through root once, as on a normal page. The value is never in the output, the command line or the audit log. A seat that may not read the Vault is told so by name.
+- **Chrome no longer offers to save a password** in a box browser. The owner's Vault is where logins live, and the offer would have copied one into the Google account signed in there. A paste of a saved value already leaves nothing on the clipboard.
+- **A login that lasts only while the browser runs survives the browser's own restarts:** a take-over link's switch to plain Chrome, a switch between modes, and `serve --restart`. Before, Chrome dropped it on the restart, so the owner landed logged out. A real stop (Done, the idle stop) still ends it, as closing a browser does.
+
 ### Fixed — a site that joined the Google group keeps its page between acts (DIVE-7316), 1.64.2
 
 On a seat whose sign-in group holds a Google login, every new site an agent opens joins that group (DIVE-7076). Those sites never kept a browser between calls: each act and snapshot started a new Chrome, about 40% slower per step, and nothing said so.

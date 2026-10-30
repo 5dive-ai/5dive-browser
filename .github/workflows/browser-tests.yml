@@ -136,6 +136,11 @@ jobs:
         run: bash tests/browser_act_upload_unit.sh
       - name: input paste harness
         run: bash tests/browser_input_paste_unit.sh
+      # DIVE-7314: a saved login typed on an input-mode site (fake daemon, root's
+      # half through its seam), Chrome's password offer off, and a session-only
+      # login kept across a view's re-serve (LIVE C5 on the runner's Chrome).
+      - name: saved login in input mode harness
+        run: bash tests/browser_saved_input_unit.sh
       - name: keep the input harness screens of a failed run
         if: failure()
         uses: actions/upload-artifact@v4

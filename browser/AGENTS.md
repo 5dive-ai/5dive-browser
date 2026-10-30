@@ -355,7 +355,9 @@ in chat.
 instead of typing it: `{"op":"fill","selector":"ref=textbox/Password","saved":"github.password"}`
 in an `act`. A login item has fields: `<name>.login`, `<name>.password` and `<name>.2fa`, which
 types the current 6-digit code; a bare `"saved":"<name>"` is a one-value item. The value is typed
-into the page and never shown to you: not in the output, the page text or a picture.
+into the page and never shown to you: not in the output, the page text or a picture. On a
+site in input mode (no DOM), click the field first, then `{"op":"type","saved":"github.password"}`
+(or `paste`); the act must start on the site's page (`act <site> <url> …`).
 `sudo 5dive secret saved ls` lists the names. Nothing saved for the site? Run
 `5dive browser login-ask <site>`: the owner gets one message with "Sign in once" (recommended)
 and "Save in Vault" (a one-time page on the box); a second ask for the site within 7 days puts

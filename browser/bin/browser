@@ -5454,6 +5454,8 @@ cmd_serve() {
       _pid_live "$cpid" && kill -KILL "$cpid" 2>/dev/null
     fi
     [[ -n "$xpid" ]] && kill "$xpid" 2>/dev/null
+    # A swap (cmd_serve's own stop-and-start) keeps the session-only logins.
+    [[ "${_SERVE_SWAP:-}" == 1 ]] && { _session_cookies_keep "$dir" >/dev/null || true; }
     local ssock; ssock="$(_kv "$f" sock)"
     rm -f "$f" "${ssock:-$dir/.5dive-session.sock}" "$(_viewer_admitted_file "$dir")"
     _rv_alias_sweep
@@ -5466,7 +5468,7 @@ cmd_serve() {
     local rbusy; if rbusy=$(_serve_busy "$dir"); then
       die "$E_UNAVAILABLE" "the $site browser is in use ($rbusy), so it was not restarted. Try again when it is free."
     fi
-    ( cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
+    ( _SERVE_SWAP=1 cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
     ! _serve_running "$dir" >/dev/null \
       || die "$E_UNAVAILABLE" "the $site browser did not stop, so it was not restarted. Try again, or: 5dive browser serve $site --stop"
     printf '%s: stopped the %s browser; starting it again.\n' "$PROG" "$site" >&2
@@ -5566,7 +5568,7 @@ cmd_serve() {
       local ibusy; if ibusy=$(_serve_busy "$dir"); then
         die "$E_UNAVAILABLE" "$site needs its browser in input mode, and the browser it shares with its group is in use ($ibusy); not switching it under them. Try again when it is free (--wait queues for an agent)."
       fi
-      ( cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
+      ( _SERVE_SWAP=1 cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
       ! _serve_running "$dir" >/dev/null \
         || die "$E_UNAVAILABLE" "$site is served in the automated browser and it did not stop, so it cannot be re-served in input mode. Try again, or: 5dive browser serve $site --stop"
       printf '%s: %s is set to input mode; re-serving it as plain Chrome driven through the screen.\n' "$PROG" "$site" >&2
@@ -5574,7 +5576,7 @@ cmd_serve() {
       # The daemon is holding the profile, and Chrome allows one instance per
       # --user-data-dir: stop it (gracefully — that is how the profile is
       # written out) and serve again below, plain.
-      ( cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
+      ( _SERVE_SWAP=1 cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
       ! _serve_running "$dir" >/dev/null \
         || die "$E_UNAVAILABLE" "$site is served by the session daemon and it did not stop, so it cannot be re-served as plain Chrome for a login. Nothing was changed; try again, or: 5dive browser serve $site --stop"
       printf '%s: %s was held by the automated session; re-serving it as plain Chrome for a person to sign in.\n' "$PROG" "$site" >&2
@@ -5583,7 +5585,7 @@ cmd_serve() {
       # THE OWNER'S SERVE IS NOT ANSWERED BY AN ACT'S PRIVATE ONE (DIVE-6334). An
       # act keeps its page in a browser only this seat can reach; a deliberate
       # `serve` is what offers a login to the box, so it replaces that one.
-      ( cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
+      ( _SERVE_SWAP=1 cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
       ! _serve_running "$dir" >/dev/null \
         || die "$E_UNAVAILABLE" "$site is held by an act's own browser and it did not stop, so it cannot be served for the box. Try again, or: 5dive browser serve $site --stop"
     elif (( ! login )) && [[ "$(_kv "$(_serve_pidfile "$dir")" login)" == 1 ]] \
@@ -5594,7 +5596,7 @@ cmd_serve() {
       # it would be refused until somebody stopped a browser nobody is using.
       # Only a LOGIN serve is swapped, only with no live viewer, and only where
       # a warm session can actually start (else this is a restart for nothing).
-      ( cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
+      ( _SERVE_SWAP=1 cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
       ! _serve_running "$dir" >/dev/null \
         || die "$E_UNAVAILABLE" "$site is served as plain Chrome for a login and it did not stop, so the warm session cannot start. Try again, or: 5dive browser serve $site --stop"
       printf '%s: the login view of %s has ended; re-serving it as the warm session.\n' "$PROG" "$site" >&2
@@ -5609,7 +5611,7 @@ cmd_serve() {
       local cbusy; if cbusy=$(_serve_busy "$dir"); then
         die "$E_UNAVAILABLE" "$site shares its browser with another site of its group, which is using it in input mode right now ($cbusy); not switching it under them. Try again when it is free."
       fi
-      ( cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
+      ( _SERVE_SWAP=1 cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
       ! _serve_running "$dir" >/dev/null \
         || die "$E_UNAVAILABLE" "the browser $site shares is in input mode and did not stop, so it cannot be re-served for $site. Try again, or: 5dive browser serve $site --stop"
       printf '%s: the browser %s shares with its group was in input mode for another site; re-serving it as the automated browser for %s.\n' "$PROG" "$site" "$site" >&2
@@ -5623,6 +5625,7 @@ cmd_serve() {
   # (An already-running browser keeps the tab it has; --url only picks where a
   # NEW one opens. The person at the viewer can still move it themselves.)
   _serve_requires
+  _chrome_no_password_offer "$dir"
 
   disp=$(_display_num "$site")
   local tries=0
@@ -5778,6 +5781,66 @@ cmd_serve() {
   else
     printf 'serving %s on :%s (persistent — the profile outlives every viewer)\n' "$site" "$disp"
   fi
+}
+
+# CHROME NEVER OFFERS TO SAVE A PASSWORD IN A BOX BROWSER (DIVE-7314). A login
+# typed from the owner's Vault is the owner's, and the box Chrome's own
+# "Save password?" bubble would copy it into the Google account signed in
+# there (main declined it by hand on chill-gorge's DigitalOcean, 10-30). The
+# Vault is the store; Chrome's is switched off in the profile before each
+# start (its Preferences are read once, at launch). Best-effort: a Preferences
+# file that does not parse is left exactly as it is.
+_chrome_no_password_offer() {  # <profile-dir>  (no Chrome running on it)
+  local d="$1" p t
+  command -v jq >/dev/null 2>&1 && [[ -d "$d" ]] || return 0
+  p="$d/Default/Preferences"
+  if [[ -s "$p" ]]; then
+    jq -e '.credentials_enable_service == false and .profile.password_manager_enabled == false' "$p" >/dev/null 2>&1 && return 0
+    t=$(mktemp "$d/Default/.5dive-prefs.XXXXXX" 2>/dev/null) || return 0
+    if jq -c '.credentials_enable_service = false | .profile.password_manager_enabled = false' "$p" > "$t" 2>/dev/null; then
+      chmod --reference="$p" "$t" 2>/dev/null; mv -f "$t" "$p" 2>/dev/null || rm -f "$t"
+    else
+      rm -f "$t"
+    fi
+  elif [[ ! -e "$p" ]]; then
+    ( umask 077; mkdir -p "$d/Default" && printf '%s\n' '{"credentials_enable_service":false,"profile":{"password_manager_enabled":false}}' > "$p" ) 2>/dev/null || true
+  fi
+  return 0
+}
+
+# A SESSION-ONLY LOGIN SURVIVES THE BROWSER'S OWN SWAPS (DIVE-7314). A view
+# re-serves a warm browser as plain Chrome, and a page verb switches a group's
+# browser between the automated and input modes: each is a stop and a start,
+# and Chrome deletes every cookie with no expiry when it starts. DigitalOcean's
+# login is such a cookie, so the owner's take-over of a signed-in automated
+# browser opened on the login page, with a password nobody held. A swap is not
+# the browser closing, so before the start the cookies with no expiry are given
+# one (SESSION_KEEP_S from now) and kept. Only a swap does this: a real stop
+# (Done, the idle reaper, `serve --stop`) still ends them, as closing a browser
+# does. Cookies that already have an expiry are not touched.
+SESSION_KEEP_S=43200
+_session_cookies_keep() {  # <profile-dir>  (its Chrome has exited) -> how many kept, on stdout
+  local d="$1" db n total=0
+  command -v python3 >/dev/null 2>&1 || { printf '%s: no python3 here, so a login that lasts only while the browser runs is lost on this restart.\n' "$PROG" >&2; return 1; }
+  for db in "$d/Default/Network/Cookies" "$d/Default/Cookies"; do
+    [[ -f "$db" ]] || continue
+    n=$(python3 - "$db" "$SESSION_KEEP_S" 2>/dev/null <<'PY'
+import sqlite3, sys, time
+db, keep = sys.argv[1], int(sys.argv[2])
+c = sqlite3.connect(db, timeout=5)
+cols = {r[1] for r in c.execute("PRAGMA table_info(cookies)")}
+if "is_persistent" not in cols or "expires_utc" not in cols:
+    print(0); sys.exit(0)
+exp = int((time.time() + keep + 11644473600) * 1000000)   # Chrome counts microseconds from 1601
+sets = "is_persistent = 1, expires_utc = ?" + (", has_expires = 1" if "has_expires" in cols else "")
+n = c.execute("UPDATE cookies SET " + sets + " WHERE is_persistent = 0", (exp,)).rowcount
+c.commit(); c.close()
+print(n)
+PY
+) || continue
+    [[ "$n" =~ ^[0-9]+$ ]] && total=$(( total + n ))
+  done
+  printf '%s\n' "$total"
 }
 
 # ------------------------------------------------------------------ the viewer
@@ -12028,6 +12091,7 @@ _input_rc() {  # map the daemon's exit to this command's, with the handoff advic
 cmd_input_verb() {  # <verb> <site> [<url>] [flags]
   local verb="$1"; shift
   local site="" url="" out="" steps="" json=0 wait="no" settle="" swait=""
+  local -a act_argv=("$@")
   while (($#)); do
     case "$1" in
       --out=*)   out="${1#*=}" ;;
@@ -12048,6 +12112,7 @@ cmd_input_verb() {  # <verb> <site> [<url>] [flags]
         printf '%s %s <site> [<url>] — input mode: the screen of the live window, and real keyboard/mouse input.\n' "$PROG" "$verb"
         printf '  act steps: click{x,y[,button,count]} move{x,y} type{value} paste{value|path} press{key} scroll{dy[,dx,x,y]} goto{url} wait{ms} upload{x,y,path} drop{x,y,path}\n'
         printf '  paste puts code or any long text in whole, through the clipboard: a code editor changes text typed key by key.\n'
+        printf '  a login the owner saved: click the field, then {"op":"type","saved":"<name>.password"} (or paste); typed in, never shown.\n'
         printf '  a step that pays, publishes, sends or deletes says so with "kind", and the owner'"'"'s policy applies.\n'
         return 0 ;;
       -*) die "$E_USAGE" "unknown flag: $1" ;;
@@ -12066,7 +12131,28 @@ cmd_input_verb() {  # <verb> <site> [<url>] [flags]
   fi
 
   if [[ "$verb" == act ]]; then
-    _input_act "$site" "$url" "$steps" "$out" "$json" "$wait" "$settle"; return $?
+    # DIVE-7314: A SAVED LOGIN, TYPED ON A SITE IN INPUT MODE. This dispatch
+    # runs before cmd_act, so a saved step reached the daemon as it was written
+    # ("step 2 (type) has missing or out-of-range fields", chill-gorge's
+    # DigitalOcean, 10-30) and root typed the password by hand. The same hop as
+    # the DOM path: once through root, the values back on a private fd.
+    local saved_json=""
+    if jq -e 'type == "array" and any(.[]; type == "object" and has("saved"))' <<<"$steps" >/dev/null 2>&1; then
+      _input_saved_check "$steps"
+      if [[ -n "${FIVEDIVE_BROWSER_SAVED_FD:-}" ]]; then
+        saved_json="$(_act_saved_read "$steps")" || exit $?
+        unset FIVEDIVE_BROWSER_SAVED_FD
+      else
+        _act_saved_escalate "${act_argv[@]}"
+      fi
+    fi
+    unset FIVEDIVE_BROWSER_SAVED_FD
+    # Root kept this act only to read the store: one with nothing saved in it
+    # is the caller's (the same drop as cmd_act's).
+    if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
+      exec runuser -u "$SUDO_USER" -- "$0" act "${act_argv[@]}"
+    fi
+    _input_act "$site" "$url" "$steps" "$out" "$json" "$wait" "$settle" "$saved_json"; return $?
   fi
 
   # shot / snapshot: the screen, after typing <url> into the address bar if given.
@@ -12101,8 +12187,18 @@ cmd_input_verb() {  # <verb> <site> [<url>] [flags]
   _input_rc "$rc" "$site"
 }
 
-_input_act() {  # <site> <url> <steps> <out> <json> <lease-wait> <settle>
-  local site="$1" url="$2" steps="$3" out="$4" json="$5" wait="$6" settle="$7"
+# In input mode a saved value goes in a type or paste step: there is no field to
+# fill by selector, and the step carries the name, never a value or a path.
+_input_saved_check() {  # <steps>
+  local bad
+  bad=$(jq -r --arg re "$SAVED_REF_RE" '[.[] | select(type == "object" and has("saved"))
+      | select((.op != "type" and .op != "paste") or (.saved | type != "string") or (.saved | test($re) | not) or has("value") or has("path"))]
+      | first // empty | tojson' <<<"$1")
+  [[ -z "$bad" ]] || die "$E_USAGE" "on a site in input mode a saved login goes in a type or paste step, by name and with no value or path of its own: click the field first, then {\"op\":\"type\",\"saved\":\"github.password\"} (fields: <name>.login, <name>.password, <name>.2fa; a bare <name> for a one-value item). Nothing ran. Got: $(jq -c 'del(.value, .path)' <<<"$bad")"
+}
+
+_input_act() {  # <site> <url> <steps> <out> <json> <lease-wait> <settle> [<saved-values-json>]
+  local site="$1" url="$2" steps="$3" out="$4" json="$5" wait="$6" settle="$7" saved="${8:-}"
   command -v jq >/dev/null 2>&1 || die "$E_UNAVAILABLE" "jq is required to read the steps"
   [[ -n "$steps" ]] || die "$E_USAGE" "usage: 5dive browser act $site --steps='[{\"op\":\"click\",\"x\":640,\"y\":400}]' (input mode: pixel coordinates of the screenshot)"
   jq -e 'type=="array" and length>0' <<<"$steps" >/dev/null 2>&1 \
@@ -12164,9 +12260,16 @@ _input_act() {  # <site> <url> <steps> <out> <json> <lease-wait> <settle>
   done
 
   _input_open "$site" "input:act" "$wait"
-  local req; req=$(jq -nc --argjson s "$(jq -c 'map(del(.kind, .intent))' <<<"$steps")" --arg st "$settle" \
-      '{op:"input", steps:$s} + (if $st == "" then {} else {settle:($st|tonumber)} end)')
+  # THE STEPS GO ON STDIN, AND A SAVED VALUE ONLY INTO THE REQUEST (DIVE-7314):
+  # a jq argument is on every process's command line. $steps keeps the names,
+  # so the audit rows below never hold a value.
+  local req sv="$saved"; [[ -n "$sv" ]] || sv='{}'
+  req=$(jq -c --slurpfile v <(printf '%s' "$sv") --arg st "$settle" \
+      '{op:"input", steps:map(del(.kind, .intent) | if has("saved") then (.value = $v[0][.saved].value) | del(.saved) else . end)}
+       + (if $st == "" then {} else {settle:($st|tonumber)} end)' <<<"$steps")
+  [[ -n "$saved" ]] && _audit_row "$_SITE_DIR" "input-saved" "$(jq -c '[.[] | .saved // empty]' <<<"$steps" | cut -c1-300)" 2>/dev/null
   local ans rc=0; ans=$(_daemon_call "$_SITE_DIR" "$(_input_req "$site" "$req")") || rc=$?
+  req=""; sv=""
   _lease_release; trap - EXIT
   for k in $kinds; do _audit_row "$_SITE_DIR" "input-$k" "$(jq -c '[.[] | select(.kind != null)]' <<<"$steps" | cut -c1-300)" 2>/dev/null || true; done
   jq -e 'any(.[]; .op == "upload" or .op == "drop")' <<<"$steps" >/dev/null 2>&1 \
