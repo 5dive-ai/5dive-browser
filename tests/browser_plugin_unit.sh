@@ -8669,6 +8669,73 @@ tn 'T52f ...and no claim that one started' 'started a served browser' "$ERR"
 k52stop "$K52"
 tc 'T52h CHANGES.md carries the DIVE-6334 entry' 'DIVE-6334' "$(cat "$ROOT/CHANGES.md")"
 
+# --- T53 a site a page verb joined to the group keeps its served browser too (DIVE-7316) ------
+# cic-arm-b (DIVE-7303, 1.64.1): on a seat whose Main holds a Google sign-in, every page verb on
+# a new site joins it to Main (DIVE-7076), and _act_keep_page returned in silence for a group
+# link ("a group's shared login is not one seat's to hold"). So no act ever kept a browser:
+# "started a served browser" 196 times on 1.58.2 and 0 on every 1.64.1 run, ~40% slower per step.
+#   T53a  an act on a new site joins Main and keeps a private served browser for it, said once
+#   T53b  a no-URL act then continues on that page
+#   T53c  a second new site of the group lands in that same daemon: no new serve, no refusal
+#   T53d  a group this seat offers to the box: nothing kept, and it says why (it was silent)
+#   T53e  MUTANT: the old group return: T53a and T53b are red, as on 1.64.1
+P53="$TMP/t53-profiles"; G53="$P53/$SEAT/.group-main"
+mk53() {  # a seat whose Main holds google.com, nothing served, nothing offered
+  env PATH="$SPATH" FIVEDIVE_BROWSER_PROFILE_ROOT="$P53" "$BROWSER" serve google.com --stop >/dev/null 2>&1
+  rm -rf "$P53"; mkdir -p "$G53"; chmod 711 "$P53"; chmod 700 "$P53/$SEAT" "$G53"
+  printf 'Main\n' > "$G53/.5dive-group-name"; printf '%s' "$LIVE_DOM" > "$G53/.fake-dom"
+  ln -s .group-main "$P53/$SEAT/google.com"
+  rm -f "$TMP/browser-sessions/$SEAT/google.com.offered"
+}
+keep53() { keep52 env FIVEDIVE_BROWSER_PROFILE_ROOT="$P53" "$@"; }
+mk53
+t  'T53 (precondition) Main is not served' no "$(k52live "$G53")"
+
+# --- T53a / T53b / T53c ---
+keep53 "$BROWSER" act "https://shop53.test/signup" --steps='[{"op":"click","selector":"#google"}]' --out="$TMP/t53a"
+t  'T53a the act on a new site exits 0' 0 "$RC"
+tc 'T53a ...it joined Main' 'shop53.test joined Main' "$ERR"
+t  'T53a ...shop53.test is a link into Main' .group-main "$(readlink "$P53/$SEAT/shop53.test")"
+tc 'T53a ...and says it kept a served browser for it (1.64.1: nothing)' 'started a served browser for shop53.test' "$ERR"
+t  'T53a ...a session daemon holds the group'"'"'s profile' yes "$(k52live "$G53")"
+t  'T53a ...private: marked so, in-profile socket' "1 $P53/$SEAT/shop53.test/.5dive-session.sock" \
+   "$(dkv "$G53/.5dive-serve" private) $(dkv "$G53/.5dive-serve" sock)"
+t  'T53a ...offered to no other seat' no \
+   "$(ls "$TMP/browser-sessions/$SEAT/shop53.test.offered" >/dev/null 2>&1 && echo yes || echo no)"
+D53=$(dkv "$G53/.5dive-serve" daemon_pid); N53=$(wc -l < "$DREC")
+keep53 "$BROWSER" act shop53.test --steps='[{"op":"click","selector":"#account"}]' --out="$TMP/t53b"
+t  'T53b a no-URL act continues in that browser' 0 "$RC"
+tn 'T53b ...with no refusal' 'no served' "$ERR"
+t  'T53b ...the click reached the held page' 1 \
+   "$(tail -n +$((N53+1)) "$DREC" | jq -rs '[.[]|select(.call=="click")]|length')"
+keep53 "$BROWSER" act "https://docs53.test/start" --steps='[{"op":"click","selector":"#google"}]' --out="$TMP/t53c"
+t  'T53c a second new site of the group: exit 0, joined Main' '0 .group-main' "$RC $(readlink "$P53/$SEAT/docs53.test")"
+t  'T53c ...the same daemon serves it (no second browser)' "$D53 yes" "$(dkv "$G53/.5dive-serve" daemon_pid) $(k52live "$G53")"
+tn 'T53c ...no new serve started for it' 'started a served browser' "$ERR"
+tn 'T53c ...and no "no served browser" fallback' 'no served browser' "$ERR"
+
+# --- T53d a group this seat offers to the box ---
+mk53; mkdir -p "$TMP/browser-sessions/$SEAT"; : > "$TMP/browser-sessions/$SEAT/google.com.offered"
+keep53 "$BROWSER" act "https://shop53.test/signup" --steps='[{"op":"click","selector":"#google"}]' --out="$TMP/t53d"
+t  'T53d an offered group: nothing kept' no "$(k52live "$G53")"
+tc 'T53d ...and it says why, naming the offered login' 'no served browser kept for shop53.test: it shares Main'"'"'s browser, which this seat offers to the box'"'"'s other seats (google.com)' "$ERR"
+rm -f "$TMP/browser-sessions/$SEAT/google.com.offered"
+
+# --- T53e MUTANT: the 1.64.1 return for a group link ---
+MUT53="$TMP/t53-mutant"; rm -rf "$MUT53"; cp -r "$ROOT/browser" "$MUT53"
+perl -0pi -e 's/(\(\( ! _SITE_BROKERED \)\) \|\| return 0\n)(\s*local g s\n)/$1    [[ ! -L "\${_SITE_DIR%\/}" ]] || return 0  # MUTANT-DIVE-7316\n$2/' "$MUT53/bin/browser"
+t  'T53e (anchor) the mutation landed in the copy' 1 "$(grep -c 'MUTANT-DIVE-7316' "$MUT53/bin/browser")"
+mut53() { keep53 env FIVEDIVE_BROWSER_SESSION_DAEMON="$MUT53/bin/session-daemon" "$MUT53/bin/browser" "$@"; }
+mk53
+mut53 act "https://shop53.test/signup" --steps='[{"op":"click","selector":"#google"}]' --out="$TMP/t53e"
+tn 'T53e (control) the mutant copy runs: no syntax error' 'syntax error' "$ERR"
+tc 'T53e (control) ...and joined Main' 'shop53.test joined Main' "$ERR"
+t  'T53e MUTANT: nothing is served after the act — T53a is red' no "$(k52live "$G53")"
+mut53 act shop53.test --steps='[{"op":"click","selector":"#account"}]' --out="$TMP/t53e2"
+tc 'T53e MUTANT: the no-URL act is refused — T53b is red' 'no served' "$ERR"
+mk53; rm -rf "$P53"
+tc 'T53f CHANGES.md carries the DIVE-7316 entry' 'DIVE-7316' "$(cat "$ROOT/CHANGES.md")"
+
 # === T60 DIVE-6371: Cloudflare judged the agent's browser MODE, not the IP ===
 #
 # exact-swallow, 2026-10-16: the agent's `snapshot <url> --wait-for=text=Matcha`

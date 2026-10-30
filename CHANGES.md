@@ -19,9 +19,16 @@ lodar, 10-30: can our browser be as quick per step as Claude in Chrome? On the f
 - **The first snapshot of the public profile no longer fails** with `net::ERR_ABORTED` (8 bench jobs opened with that exit 69): a load Chrome dropped because the served browser was still loading the same site is that load. One that never left its page (a download) is still the error.
 - **A snapshot says when the page was still loading** at the settle bound ("still loading when read"), instead of waiting for a network that never goes quiet.
 
-Bench, the same fresh 100 (Haiku 5.5, WebJudge), against the 1.58.2 run: **median task 105 s → 78 s, 9.1 → 7.5 s per step**, snapshot mean 12.4 s → 7.2 s, finished 32 → 31 of 100 (inside the 24-42 range). Measured with new sites in the public profile, as 1.58.2 had them. On a seat whose default group holds a Google sign-in, a new site now joins that group and runs every call in a new Chrome (DIVE-7316), which hides this gain until that is fixed.
+Bench, the same fresh 100 (Haiku 5.5, WebJudge), against the 1.58.2 run: **median task 105 s → 78 s, 9.1 → 7.5 s per step**, snapshot mean 12.4 s → 7.2 s, finished 32 → 31 of 100 (inside the 24-42 range). Measured with new sites in the public profile, as 1.58.2 had them. On a seat whose default group holds a Google sign-in, a new site joins that group, and before 1.64.2 every call there started a new Chrome (DIVE-7316, below), which hid this gain on such a seat.
 
 `tests/browser_call_stream_unit.sh` 3/3 (new; the old client fails 2), `tests/browser_act_look_unit.sh` 64/64 (N2/N3 abort, W1/W2 wait-for bound), `tests/browser_interstitial_unit.sh` 16/16, `tests/browser_plugin_unit.sh` 2023/2023 (T23a2 names).
+### Fixed — a site that joined the Google group keeps its page between acts (DIVE-7316), 1.64.2
+
+On a seat whose sign-in group holds a Google login, every new site an agent opens joins that group (DIVE-7076). Those sites never kept a browser between calls: each act and snapshot started a new Chrome, about 40% slower per step, and nothing said so.
+
+- **The first act on such a site now keeps a private served browser,** as it already did for a site's own login and for the public profile. The next act carries on where the last one stopped. A second site of the same group uses that same browser, not a new one.
+- **A snapshot of a joined site is warm too,** like the public profile's (DIVE-6778).
+- **Not for a group this seat offers to the box's other seats** (the box's own logins): only a deliberate `serve` holds that browser. The act now says so instead of returning in silence.
 
 ### Fixed — the sign-in link for a site shows that site, not another site of its group (DIVE-7257), 1.64.1
 
