@@ -24,13 +24,20 @@
 #      P4 the clipboard half: a paste leaves nothing on CLIPBOARD (X1 of
 #         browser_input_paste_unit.sh, the same be.x.paste a saved paste goes through)
 #   C  a view's re-serve keeps a login that lasts only while the browser runs
-#      C1 `serve --login` over a warm serve (what `viewer` runs) gives the session
-#         cookie an expiry ~SESSION_KEEP_S out and keeps it
+#      C1 `serve --login` over a warm serve (what `viewer` runs) asks the automated
+#         browser to keep its session logins before it goes, and gives a session
+#         cookie already on disk an expiry ~SESSION_KEEP_S out
 #      C2 NEGATIVE CONTROL: a cookie that already had an expiry is unchanged
-#      C3 a real stop (Done, the reaper) still ends a session cookie
-#      C4 MUTANT: the pre-fix tree's same swap leaves the session cookie to die
-#      C5 LIVE, when this machine has Chrome (CI): Chrome itself drops a session
-#         cookie on a restart, and keeps it after _session_cookies_keep
+#      C3 a real stop (Done, the reaper) asks for no keep and still ends a session cookie
+#      C4 MUTANT: the pre-fix tree's same swap asks for no keep and leaves the
+#         session cookie to die
+#      C5 LIVE, when this machine has Chrome, Xvfb and playwright-core (CI): the
+#         real daemon on real Chrome, a page sets a session and a lasting cookie;
+#         C5a a plain shutdown, then Chrome again: the session cookie is gone;
+#         C5b the swap's shutdown (keep_session), then Chrome again: both are there
+#      C6 lib/session-keep.cjs on a stub context: only cookies with no expiry are
+#         set back, with one ~KEEP_S out; host-only stays host-only (by URL); one
+#         Chrome refuses does not stop the rest
 set -uo pipefail
 printf 'grading tree: %s @ %s\n' "$PWD" "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" >&2
 cd "$(dirname "$0")/.."
@@ -269,23 +276,35 @@ else
   arm 'C1a the view'"'"'s re-serve ran (warm -> plain)' '0 yes' "$SWAPRC $(yn grep -q 'login=1' "$DO/.5dive-serve")"
   [[ "$SWAPRC" == 0 ]] || gha 'C1 swap output' "$(cat "$TMP/swap.out")"
   arm 'C1b the session cookie is kept: persistent, with an expiry ~12 h out' '1 1 yes' "$p $e $(near "$x")"
+  arm 'C1c ...and the automated browser was asked to keep its session logins before it went' 'true' \
+    "$(jq -s -c '[.[] | select(.op=="shutdown")] | last | .keep_session' "$DREC")"
   arm 'C2 NEGATIVE CONTROL: the cookie that had an expiry is unchanged' '1 1 13400000000000000' "$(ck "$DO/Default/Network/Cookies" __cf_bm)"
   python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("UPDATE cookies SET is_persistent=0, has_expires=0, expires_utc=0 WHERE name=\"_digitalocean2_session_v4\""); c.commit()' "$DO/Default/Network/Cookies"
   "$BROWSER" serve digitalocean.com --stop >/dev/null 2>&1
   arm 'C3 a real stop still ends a session cookie (left with no expiry for Chrome to drop)' '0 0 0' "$(ck "$DO/Default/Network/Cookies" _digitalocean2_session_v4)"
+  "$BROWSER" serve digitalocean.com >/dev/null 2>&1; pids "$DO"; "$BROWSER" serve digitalocean.com --stop >/dev/null 2>&1
+  arm 'C3b a real stop of the automated browser asks it for no keep' 'null' \
+    "$(jq -s -c '[.[] | select(.op=="shutdown")] | last | .keep_session' "$DREC")"
   if [[ -x "$BASEDIR/browser/bin/browser" ]]; then
     swap "$BASEDIR/browser/bin/browser"
     arm 'C4 MUTANT: the pre-fix swap leaves the session cookie with no expiry (Chrome drops it at start)' '0 0 0' \
       "$(ck "$DO/Default/Network/Cookies" _digitalocean2_session_v4)"
+    arm 'C4b MUTANT: ...and asks the automated browser for no keep' 'null' \
+      "$(jq -s -c '[.[] | select(.op=="shutdown")] | last | .keep_session' "$DREC")"
     "$BASEDIR/browser/bin/browser" serve digitalocean.com --stop >/dev/null 2>&1
   else
     SKIP=$((SKIP+1)); echo "SKIP: C4 — base $BASE is not in this checkout"
   fi
 
-  # C5 LIVE: what Chrome itself does with the cookie across a restart.
-  if [[ -z "$REAL_CHROME" ]]; then
-    SKIP=$((SKIP+1)); echo "SKIP: C5 — no Chrome on this machine (CI runs it)"
+  # C5 LIVE: the real daemon on real Chrome, then Chrome again on the profile.
+  REAL_XVFB="$(PATH="${PATH#"$FAKEBIN:"}" command -v Xvfb || true)"
+  PWDIR=""; for d in ${NODE_PATH:+${NODE_PATH//:/ }} "$ROOT/browser/node_modules"; do [[ -d "$d/playwright-core" ]] && { PWDIR="$d"; break; }; done
+  if [[ -z "$REAL_CHROME" || -z "$REAL_XVFB" || -z "$PWDIR" ]]; then
+    SKIP=$((SKIP+1)); echo "SKIP: C5 — needs Chrome (${REAL_CHROME:-none}), Xvfb (${REAL_XVFB:-none}) and playwright-core (${PWDIR:-none}); CI has all three"
   else
+    disp=""; for n in $(seq 840 890); do [[ -e "/tmp/.X11-unix/X$n" ]] || { disp=$n; break; }; done
+    "$REAL_XVFB" ":$disp" -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 & _KILL+=("$!")
+    for i in $(seq 1 100); do [[ -e "/tmp/.X11-unix/X$disp" ]] && break; sleep 0.05; done
     PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
     cat > "$TMP/srv.py" <<'PY'
 import http.server, sys
@@ -297,29 +316,65 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", "kept=on; Path=/; Max-Age=86400")
         self.end_headers()
         self.wfile.write(("<html><body>cookie=[" + (self.headers.get("Cookie") or "") + "]</body></html>").encode())
+        if self.path == "/set": open(sys.argv[2], "a").write("set\n")
     def log_message(self, *a): pass
 http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PY
-    python3 "$TMP/srv.py" "$PORT" & _KILL+=($!)
+    python3 "$TMP/srv.py" "$PORT" "$TMP/served" & _KILL+=($!)
     for i in $(seq 1 50); do python3 -c 'import socket,sys; socket.create_connection(("127.0.0.1",int(sys.argv[1])),0.2)' "$PORT" 2>/dev/null && break; sleep 0.1; done
-    LP="$TMP/live-profile"; mkdir -p "$LP"
-    chrome_dom() { timeout 60 "$REAL_CHROME" --headless=new --no-sandbox --disable-gpu --user-data-dir="$LP" --no-first-run \
-        --password-store=basic --dump-dom "http://127.0.0.1:$PORT$1" 2>/dev/null; }
-    chrome_dom /set >/dev/null
-    LDB="$LP/Default/Cookies"; [[ -f "$LP/Default/Network/Cookies" ]] && LDB="$LP/Default/Network/Cookies"
-    if [[ "$(ck "$LDB" sess 2>/dev/null | cut -d' ' -f1)" != 0 ]]; then
-      SKIP=$((SKIP+1)); echo "SKIP: C5 — this Chrome did not write its session cookie to disk on exit ($(ck "$LDB" sess 2>/dev/null)), so there is nothing to keep"
-    else
-      arm 'C5a LIVE: a plain restart drops the session cookie, keeps the one with an expiry' 'cookie=[kept=on]' \
-        "$(chrome_dom /show | grep -o 'cookie=\[[^]]*\]')"
-      chrome_dom /set >/dev/null
-      awk '/^SESSION_KEEP_S=/{print; next} /^_session_cookies_keep\(\) \{/{f=1} f{print} f&&/^}$/{f=0}' "$BROWSER" > "$TMP/keep.sh"
-      kept=$(PROG=t bash -c 'source "$1"; _session_cookies_keep "$2"' _ "$TMP/keep.sh" "$LP")
-      arm 'C5b LIVE: after _session_cookies_keep the restart keeps both' 'yes' \
-        "$(o=$(chrome_dom /show | grep -o 'cookie=\[[^]]*\]'); [[ "$kept" =~ ^[1-9] && "$o" == *sess=on* && "$o" == *kept=on* ]] && echo yes || echo "no (kept=$kept $o)")"
-    fi
+    # live <profile> <shutdown-json> — serve it (CDP) at /set, shut it down with
+    # that request, then a plain headless Chrome on the same profile reads /show.
+    live() {
+      local lp="$1" i; mkdir -m 700 "$lp"; : > "$TMP/served"
+      DISPLAY=":$disp" FIVEDIVE_BROWSER_CHROME="$REAL_CHROME" FIVEDIVE_BROWSER_START_URL="http://127.0.0.1:$PORT/set" NODE_PATH="$PWDIR" \
+        "$REAL_DAEMON" serve "$lp" "$lp/s.sock" > "$lp.ready" 2> "$lp.err" & local dp=$!; _KILL+=("$dp")
+      for i in $(seq 1 600); do grep -q '^ready' "$lp.ready" 2>/dev/null && break; sleep 0.05; done
+      for i in $(seq 1 300); do [[ -s "$TMP/served" ]] && break; sleep 0.05; done
+      sleep 1
+      NODE_PATH="$PWDIR" "$REAL_DAEMON" call "$lp/s.sock" <<<"$2" > "$lp.shut" 2>&1
+      for i in $(seq 1 300); do kill -0 "$dp" 2>/dev/null || break; sleep 0.05; done
+      for i in $(seq 1 100); do pgrep -f -- "--user-data-dir=$lp( |$)" >/dev/null || break; sleep 0.1; done
+      rm -f "$lp"/Singleton*
+      timeout 60 "$REAL_CHROME" --headless=new --no-sandbox --disable-gpu --user-data-dir="$lp" --no-first-run \
+        --password-store=basic --dump-dom "http://127.0.0.1:$PORT/show" 2>/dev/null | grep -o 'cookie=\[[^]]*\]'
+    }
+    o=$(live "$TMP/live-plain" '{"op":"shutdown"}')
+    arm 'C5a LIVE: a plain shutdown, then Chrome again: the session cookie is gone, the lasting one stays' 'cookie=[kept=on]' "$o"
+    [[ "$o" == 'cookie=[kept=on]' ]] || gha 'C5a daemon' "served=$(wc -l < "$TMP/served") ready=$(head -c 300 "$TMP/live-plain.ready") err=$(tail -c 600 "$TMP/live-plain.err")"
+    o=$(live "$TMP/live-keep" '{"op":"shutdown","keep_session":true}')
+    k=$(sed -n 's/.*kept=\([0-9]*\).*/\1/p' "$TMP/live-keep.shut" | head -1)
+    arm 'C5b LIVE: the swap'"'"'s shutdown keeps the session cookie (Chrome stores it), then Chrome again: both are there' 'yes' \
+      "$([[ "$k" =~ ^[1-9] && "$o" == *sess=on* && "$o" == *kept=on* ]] && echo yes || echo "no (kept=$k $o)")"
+    [[ "$k" =~ ^[1-9] ]] || gha 'C5b daemon' "shut=$(head -c 300 "$TMP/live-keep.shut") err=$(tail -c 600 "$TMP/live-keep.err")"
   fi
 fi
+
+# ================================================================ C6  lib/session-keep.cjs, stub context
+o=$(node -e '
+const k = require(process.argv[1]);
+const now = 1700000000000, until = 1700000000 + k.KEEP_S, added = [];
+const jar = [
+  { name: "sess", value: "s1", domain: "cloud.example.com", path: "/", expires: -1, httpOnly: true, secure: true, sameSite: "Lax" },
+  { name: "dom", value: "d1", domain: ".example.com", path: "/app", expires: -1, httpOnly: false, secure: false, sameSite: "None" },
+  { name: "deep", value: "p1", domain: "cloud.example.com", path: "/a/b", expires: -1, httpOnly: false, secure: true },
+  { name: "bad", value: "x", domain: "cloud.example.com", path: "/", expires: -1 },
+  { name: "lasting", value: "l1", domain: "cloud.example.com", path: "/", expires: 1800000000 },
+];
+const ctx = { cookies: async () => jar, addCookies: async (cs) => { if (cs[0].name === "bad") throw new Error("refused"); added.push(...cs); } };
+k.keepSessionCookies(ctx, k.KEEP_S, now).then((n) => {
+  const by = Object.fromEntries(added.map((c) => [c.name, c]));
+  console.log([n, added.length, Object.keys(by).sort().join(","),
+    added.every((c) => c.expires === until),
+    by.sess.url, by.sess.domain === undefined, by.sess.httpOnly, by.sess.sameSite,
+    by.dom.domain, by.dom.path, by.dom.url === undefined,
+    by.deep.url].join(" "));
+});' "$ROOT/browser/lib/session-keep.cjs" 2>&1)
+read -r n na names allexp surl nodom shttp ssame ddom dpath durl deepurl <<<"$o"
+arm 'C6a only the cookies with no expiry are set back, and one Chrome refuses does not stop the rest' '3 3 deep,dom,sess' "$n $na $names"
+arm 'C6b ...each with an expiry KEEP_S (12 h) out' 'true' "$allexp"
+arm 'C6c a host-only cookie is set back by URL (stays host-only), its flags kept' 'https://cloud.example.com/ true true Lax' "$surl $nodom $shttp $ssame"
+arm 'C6d a domain cookie is set back by domain and path' '.example.com /app true' "$ddom $dpath $durl"
+arm 'C6e a host-only cookie on a deeper path keeps that path' 'https://cloud.example.com/a/b/' "$deepurl"
 
 printf '\n%d pass, %d fail, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 (( FAIL == 0 ))

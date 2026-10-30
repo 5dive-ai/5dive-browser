@@ -63,6 +63,7 @@ const gsignin = require(path.join(__dirname, '..', 'lib', 'google-signin.cjs'));
 const popup = require(path.join(__dirname, '..', 'lib', 'popup.cjs'));
 const frontTab = require(path.join(__dirname, '..', 'lib', 'front-tab.cjs'));
 const cleanExit = require(path.join(__dirname, '..', 'lib', 'clean-exit.cjs'));
+const sessionKeep = require(path.join(__dirname, '..', 'lib', 'session-keep.cjs'));
 // What each tab looked like when the agent last saw it, so an act can answer with
 // what changed instead of the whole page (DIVE-6795, lib/look.cjs).
 const look = require(path.join(__dirname, '..', 'lib', 'look.cjs'));
@@ -473,6 +474,14 @@ async function serveMode(profile, sock, broker, input) {
         if (broker && who.uid !== ownUid) {
           send({ t: 'err', msg: `stopping this session is the owning seat's act: it is the box's login and other seats are using it. Nothing was stopped.` });
           return end(E_PERM);
+        }
+        // A swap (bin/browser's own stop-and-start) keeps the session-only
+        // logins (DIVE-7314, lib/session-keep.cjs). Input mode has no cookie
+        // API; bin/browser's file rewrite is that mode's only keep.
+        let kept = 0;
+        if (req.keep_session && typeof ctx.cookies === 'function') {
+          try { kept = await sessionKeep.keepSessionCookies(ctx); } catch (e) { /* a stop must not fail on this */ }
+          send({ t: 'out', data: `kept=${kept}\n` });
         }
         end(0); cleanup(); try { await ctx.close(); } catch (e) { /* going anyway */ } process.exit(0);
       }

@@ -14,7 +14,7 @@ chill-gorge, 10-30: setting up the DigitalOcean seller account stopped twice. Th
 
 - **A saved login now types on a site in input mode** (plain Chrome, driven through the screen). Click the field, then `{"op":"type","saved":"<name>.password"}`, or `paste`. It goes through root once, as on a normal page. The value is never in the output, the command line or the audit log. A seat that may not read the Vault is told so by name.
 - **Chrome no longer offers to save a password** in a box browser. The owner's Vault is where logins live, and the offer would have copied one into the Google account signed in there. A paste of a saved value already leaves nothing on the clipboard.
-- **A login that lasts only while the browser runs survives the browser's own restarts:** a take-over link's switch to plain Chrome, a switch between modes, and `serve --restart`. Before, Chrome dropped it on the restart, so the owner landed logged out. A real stop (Done, the idle stop) still ends it, as closing a browser does.
+- **A login that lasts only while the browser runs survives the browser's own restarts:** a take-over link's switch to plain Chrome, a switch between modes, and `serve --restart`. Before, Chrome dropped it on the restart, so the owner landed logged out. The automated browser now stores such a login itself just before it hands over, so the next Chrome opens with it. A real stop (Done, the idle stop) still ends it, as closing a browser does.
 
 ### Fixed — quicker steps: no 90 s wait on a security check, no 30 s wait on a missed `--wait-for`, a 2 s `--expect`, and a big page no longer takes minutes (DIVE-7303), 1.65.0
 

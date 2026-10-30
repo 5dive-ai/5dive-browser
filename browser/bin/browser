@@ -5435,7 +5435,10 @@ cmd_serve() {
     # is the durable half this whole design protects. The kill below is the
     # backstop for a daemon that is wedged, not the route.
     if [[ -n "$dpid" ]] && _pid_live "$dpid"; then
-      _daemon_call "$dir" '{"op":"shutdown"}' >/dev/null 2>&1 || true
+      # A swap asks the automated browser to keep the session-only logins first
+      # (DIVE-7314: lib/session-keep.cjs, Chrome stores them itself).
+      local sreq='{"op":"shutdown"}'; [[ "${_SERVE_SWAP:-}" == 1 ]] && sreq='{"op":"shutdown","keep_session":true}'
+      _daemon_call "$dir" "$sreq" >/dev/null 2>&1 || true
       local w=0
       while (( w < 100 )) && _pid_live "$dpid"; do sleep 0.05; w=$(( w + 1 )); done
       _pid_live "$dpid" && kill "$dpid" 2>/dev/null
@@ -5454,7 +5457,9 @@ cmd_serve() {
       _pid_live "$cpid" && kill -KILL "$cpid" 2>/dev/null
     fi
     [[ -n "$xpid" ]] && kill "$xpid" 2>/dev/null
-    # A swap (cmd_serve's own stop-and-start) keeps the session-only logins.
+    # A swap (cmd_serve's own stop-and-start) keeps the session-only logins:
+    # the daemon's keep above for the automated browser, and this file rewrite for
+    # a plain Chrome's, which only helps when that Chrome wrote them to disk.
     [[ "${_SERVE_SWAP:-}" == 1 ]] && { _session_cookies_keep "$dir" >/dev/null || true; }
     local ssock; ssock="$(_kv "$f" sock)"
     rm -f "$f" "${ssock:-$dir/.5dive-session.sock}" "$(_viewer_admitted_file "$dir")"
@@ -5814,8 +5819,10 @@ _chrome_no_password_offer() {  # <profile-dir>  (no Chrome running on it)
 # and Chrome deletes every cookie with no expiry when it starts. DigitalOcean's
 # login is such a cookie, so the owner's take-over of a signed-in automated
 # browser opened on the login page, with a password nobody held. A swap is not
-# the browser closing, so before the start the cookies with no expiry are given
-# one (SESSION_KEEP_S from now) and kept. Only a swap does this: a real stop
+# the browser closing, so the cookies with no expiry are given one (SESSION_KEEP_S
+# from now) and kept: by the automated browser itself before it closes
+# (lib/session-keep.cjs, the route that works on real Chrome), and here, in the
+# file, for a plain Chrome that wrote them to disk. Only a swap does this: a real stop
 # (Done, the idle reaper, `serve --stop`) still ends them, as closing a browser
 # does. Cookies that already have an expiry are not touched.
 SESSION_KEEP_S=43200
