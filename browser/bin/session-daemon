@@ -593,7 +593,9 @@ async function serveMode(profile, sock, broker, input) {
   });
   server.on('error', (e) => die(E_UNAVAILABLE, `could not listen on ${sock}: ${e.message}`));
   for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
-    process.on(sig, async () => { cleanup(); try { await ctx.close(); } catch (e) { /* going anyway */ } process.exit(0); });
+    // The same wait as `shutdown` (DIVE-7314 it3): a signalled stop lets Chrome
+    // write its profile out instead of exiting on the context's close event.
+    process.on(sig, async () => { shuttingDown = true; cleanup(); try { await ctx.close(); } catch (e) { /* going anyway */ } process.exit(0); });
   }
 }
 
