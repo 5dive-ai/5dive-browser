@@ -317,10 +317,11 @@ class H(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(("<html><body>cookie=[" + (self.headers.get("Cookie") or "") + "]</body></html>").encode())
         if self.path == "/set": open(sys.argv[2], "a").write("set\n")
+        if self.path == "/show": open(sys.argv[3], "a").write("cookie=[" + (self.headers.get("Cookie") or "") + "]\n")
     def log_message(self, *a): pass
 http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PY
-    python3 "$TMP/srv.py" "$PORT" "$TMP/served" & _KILL+=($!)
+    python3 "$TMP/srv.py" "$PORT" "$TMP/served" "$TMP/shown" & _KILL+=($!)
     for i in $(seq 1 50); do python3 -c 'import socket,sys; socket.create_connection(("127.0.0.1",int(sys.argv[1])),0.2)' "$PORT" 2>/dev/null && break; sleep 0.1; done
     # live <profile> <shutdown-json> — serve it (CDP) at /set, shut it down with
     # that request, then a plain headless Chrome on the same profile reads /show.
@@ -335,17 +336,33 @@ PY
       for i in $(seq 1 300); do kill -0 "$dp" 2>/dev/null || break; sleep 0.05; done
       for i in $(seq 1 100); do pgrep -f -- "--user-data-dir=$lp( |$)" >/dev/null || break; sleep 0.1; done
       rm -f "$lp"/Singleton*
-      timeout 60 "$REAL_CHROME" --headless=new --no-sandbox --disable-gpu --user-data-dir="$lp" --no-first-run \
-        --password-store=basic --dump-dom "http://127.0.0.1:$PORT/show" 2>/dev/null | grep -o 'cookie=\[[^]]*\]'
+      # What the stop left on disk, for the failure annotation: each row's flags
+      # and its encryption prefix (763130 = v10, 763131 = v11).
+      python3 -c 'import sqlite3,sys
+try:
+    c=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True)
+    print(";".join("%s:%s:p%s:e%s:%s" % r for r in c.execute("SELECT host_key,name,is_persistent,has_expires,substr(hex(encrypted_value),1,6) FROM cookies")) or "no-rows")
+except Exception as e: print("no-db:%s" % e)' "$lp/Default/Network/Cookies" > "$lp.disk" 2>&1
+      # READ IT BACK THE WAY THE OWNER'S VIEW DOES (DIVE-7314 it3): plain headed
+      # Chrome on the display with serve's own flags, and the server records the
+      # Cookie header /show arrives with. it2 read back through headless
+      # --dump-dom, which is not the path the take-over runs.
+      : > "$TMP/shown"
+      DISPLAY=":$disp" "$REAL_CHROME" --no-sandbox --disable-gpu --user-data-dir="$lp" --no-first-run \
+        --no-default-browser-check --window-size=1280,800 --hide-crash-restore-bubble \
+        "http://127.0.0.1:$PORT/show" >/dev/null 2>"$lp.read.err" & local rp=$!; _KILL+=("$rp")
+      for i in $(seq 1 600); do [[ -s "$TMP/shown" ]] && break; sleep 0.05; done
+      kill -TERM "$rp" 2>/dev/null; for i in $(seq 1 100); do kill -0 "$rp" 2>/dev/null || break; sleep 0.1; done
+      kill -KILL "$rp" 2>/dev/null; head -1 "$TMP/shown"
     }
     o=$(live "$TMP/live-plain" '{"op":"shutdown"}')
     arm 'C5a LIVE: a plain shutdown, then Chrome again: the session cookie is gone, the lasting one stays' 'cookie=[kept=on]' "$o"
-    [[ "$o" == 'cookie=[kept=on]' ]] || gha 'C5a daemon' "served=$(wc -l < "$TMP/served") ready=$(head -c 300 "$TMP/live-plain.ready") err=$(tail -c 600 "$TMP/live-plain.err")"
+    [[ "$o" == 'cookie=[kept=on]' ]] || gha 'C5a daemon' "served=$(wc -l < "$TMP/served") disk=$(head -c 400 "$TMP/live-plain.disk") ready=$(head -c 300 "$TMP/live-plain.ready") err=$(tail -c 600 "$TMP/live-plain.err") read-err=$(tail -c 400 "$TMP/live-plain.read.err")"
     o=$(live "$TMP/live-keep" '{"op":"shutdown","keep_session":true}')
     k=$(sed -n 's/.*kept=\([0-9]*\).*/\1/p' "$TMP/live-keep.shut" | head -1)
     arm 'C5b LIVE: the swap'"'"'s shutdown keeps the session cookie (Chrome stores it), then Chrome again: both are there' 'yes' \
       "$([[ "$k" =~ ^[1-9] && "$o" == *sess=on* && "$o" == *kept=on* ]] && echo yes || echo "no (kept=$k $o)")"
-    [[ "$k" =~ ^[1-9] ]] || gha 'C5b daemon' "shut=$(head -c 300 "$TMP/live-keep.shut") err=$(tail -c 600 "$TMP/live-keep.err")"
+    [[ "$k" =~ ^[1-9] && "$o" == *sess=on* ]] || gha 'C5b daemon' "shut=$(head -c 300 "$TMP/live-keep.shut") disk=$(head -c 400 "$TMP/live-keep.disk") err=$(tail -c 600 "$TMP/live-keep.err") read-err=$(tail -c 400 "$TMP/live-keep.read.err")"
   fi
 fi
 
