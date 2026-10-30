@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a saved login types on a site in input mode, and a take-over of a signed-in browser stays signed in (DIVE-7314), 1.65.1
+
+chill-gorge, 10-30: setting up the DigitalOcean seller account stopped twice. The agent could not type the owner's saved login, and the owner's take-over link opened on the login page.
+
+- **A saved login now types on a site in input mode** (plain Chrome, driven through the screen). Click the field, then `{"op":"type","saved":"<name>.password"}`, or `paste`. It goes through root once, as on a normal page. The value is never in the output, the command line or the audit log. A seat that may not read the Vault is told so by name.
+- **Chrome no longer offers to save a password** in a box browser. The owner's Vault is where logins live, and the offer would have copied one into the Google account signed in there. A paste of a saved value already leaves nothing on the clipboard.
+- **A login that lasts only while the browser runs survives the browser's own restarts:** a take-over link's switch to plain Chrome, a switch between modes, and `serve --restart`. Before, Chrome dropped it on the restart, so the owner landed logged out. The automated browser now stores such a login itself just before it hands over, so the next Chrome opens with it. A real stop (Done, the idle stop) still ends it, as closing a browser does.
+
 ### Fixed — quicker steps: no 90 s wait on a security check, no 30 s wait on a missed `--wait-for`, a 2 s `--expect`, and a big page no longer takes minutes (DIVE-7303), 1.65.0
 
 lodar, 10-30: can our browser be as quick per step as Claude in Chrome? On the fresh-100 bench our snapshot averaged 12.4 s against a 5.9 s median: the time was in a long tail, and the tail had four causes, each fixed here.

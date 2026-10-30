@@ -14,6 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        # Full history: mutant arms (DIVE-7314's A7/C4) run the pre-fix tree via git archive.
+        with:
+          fetch-depth: 0
       # Plain bash, no bun deps, no Chrome: the suite drives the real bin/browser
       # as a subprocess with a FAKE google-chrome first on PATH. It grades the
       # shipped script, the manifest and this repo's marketplace entry.
@@ -189,6 +192,12 @@ jobs:
       # and the suites above grade the executor's "playwright is absent" refusals.
       - name: install the pinned playwright-core
         run: npm install --prefix browser --no-audit --no-fund
+      # DIVE-7314: a saved login typed on an input-mode site (fake daemon, root's
+      # half through its seam), Chrome's password offer off, and a session-only
+      # login kept across a view's re-serve. After the install: its LIVE C5 runs
+      # the real daemon (playwright-core) on the runner's Chrome and Xvfb.
+      - name: saved login in input mode harness
+        run: bash tests/browser_saved_input_unit.sh
       - name: totp harness
         run: bash tests/browser_totp_unit.sh
       # DIVE-6013: profile groups — two sites in one group share a sign-in, another

@@ -63,6 +63,7 @@ const gsignin = require(path.join(__dirname, '..', 'lib', 'google-signin.cjs'));
 const popup = require(path.join(__dirname, '..', 'lib', 'popup.cjs'));
 const frontTab = require(path.join(__dirname, '..', 'lib', 'front-tab.cjs'));
 const cleanExit = require(path.join(__dirname, '..', 'lib', 'clean-exit.cjs'));
+const sessionKeep = require(path.join(__dirname, '..', 'lib', 'session-keep.cjs'));
 // What each tab looked like when the agent last saw it, so an act can answer with
 // what changed instead of the whole page (DIVE-6795, lib/look.cjs).
 const look = require(path.join(__dirname, '..', 'lib', 'look.cjs'));
@@ -416,7 +417,15 @@ async function serveMode(profile, sock, broker, input) {
   // GUARDED, because the harness's recording stub is not an EventEmitter and a
   // daemon that cannot be tested is a daemon whose refusals are unmeasured. The
   // real playwright context always has it.
-  if (typeof ctx.on === 'function') ctx.on('close', () => { cleanup(); process.exit(0); });
+  //
+  // NOT DURING OUR OWN SHUTDOWN (DIVE-7314 it3). Playwright emits `close` when
+  // Chrome drops the CDP pipe, which is the START of its shutdown, and exiting
+  // node there makes Playwright kill Chrome before it writes the profile out:
+  // on CI's Chrome the stopped profile had no cookie file at all, so neither a
+  // kept session login nor an ordinary lasting cookie reached the next browser.
+  // A `shutdown` request sets this and waits for ctx.close() to see Chrome exit.
+  let shuttingDown = false;
+  if (typeof ctx.on === 'function') ctx.on('close', () => { if (shuttingDown) return; cleanup(); process.exit(0); });
 
   // WHAT IS IN FLIGHT, not only THAT something is: a refusal that cannot say
   // who has the browser sends the caller to a `lease --status` that reads free.
@@ -474,6 +483,15 @@ async function serveMode(profile, sock, broker, input) {
           send({ t: 'err', msg: `stopping this session is the owning seat's act: it is the box's login and other seats are using it. Nothing was stopped.` });
           return end(E_PERM);
         }
+        // A swap (bin/browser's own stop-and-start) keeps the session-only
+        // logins (DIVE-7314, lib/session-keep.cjs). Input mode has no cookie
+        // API; bin/browser's file rewrite is that mode's only keep.
+        let kept = 0;
+        if (req.keep_session && typeof ctx.cookies === 'function') {
+          try { kept = await sessionKeep.keepSessionCookies(ctx); } catch (e) { /* a stop must not fail on this */ }
+          send({ t: 'out', data: `kept=${kept}\n` });
+        }
+        shuttingDown = true;
         end(0); cleanup(); try { await ctx.close(); } catch (e) { /* going anyway */ } process.exit(0);
       }
 
@@ -575,7 +593,9 @@ async function serveMode(profile, sock, broker, input) {
   });
   server.on('error', (e) => die(E_UNAVAILABLE, `could not listen on ${sock}: ${e.message}`));
   for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
-    process.on(sig, async () => { cleanup(); try { await ctx.close(); } catch (e) { /* going anyway */ } process.exit(0); });
+    // The same wait as `shutdown` (DIVE-7314 it3): a signalled stop lets Chrome
+    // write its profile out instead of exiting on the context's close event.
+    process.on(sig, async () => { shuttingDown = true; cleanup(); try { await ctx.close(); } catch (e) { /* going anyway */ } process.exit(0); });
   }
 }
 
