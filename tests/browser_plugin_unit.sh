@@ -3383,6 +3383,10 @@ const body = new El('body', {}, '', [
   new El('div', { role: 'button', 'aria-hidden': 'true' }, 'Archive'),
   new El('span', {}, 'just text'),
   new El('a', { href: '/menu', 'data-norender': '' }, 'Closed menu link'),
+  // DIVE-7303: a list wrapped in its label, a checkbox wrapped in its own, an overlong name.
+  new El('label', {}, 'Occupation ', [new El('select', {}, '', [new El('option', {}, 'Actors'), new El('option', {}, 'Actuaries')])]),
+  new El('label', {}, 'Remember me ', [new El('input', { type: 'checkbox' })]),
+  new El('button', { 'aria-label': 'L'.repeat(300) }),
 ]);
 const all = flatten(body).slice(1);
 const doc = {
@@ -3413,6 +3417,13 @@ tn 'T23a a hidden input is not offered as addressable' 'csrf' "$WALKREFS"
 tn 'T23a an element the page declares hidden is not offered' 'Delete forever' "$WALKREFS"
 tn 'T23a an aria-hidden node is not offered' 'Archive' "$WALKREFS"
 tn 'T23a a plain span is not a node' 'just text' "$WALKREFS"
+# DIVE-7303: every option of a 1,000-job list inside a <label> took the label's
+# whole text as its name, and the tree of that one page was 66 MB.
+tc 'T23a2 an option inside a labelled list is named by its own text' 'option/Actors option/Actuaries' "$WALKREFS"
+tn 'T23a2 ...never by the label around the list' 'option/Occupation' "$WALKREFS"
+tc 'T23a2 a control wrapped in its label still takes the label' 'checkbox/Remember me' "$WALKREFS"
+tc 'T23a2 a name stops at 200 characters' "button/$(printf 'L%.0s' $(seq 200)) " "$WALKREFS "
+tn 'T23a2 ...not one more' "button/$(printf 'L%.0s' $(seq 201))" "$WALKREFS"
 t  'T23a --interactive drops the non-actionable roles' 'no' \
    "$(ARIA="$ARIA" node "$TMP/walk-test.js" interactive | jq -r '.refs|join(" ")' | grep -q 'label/' && echo yes || echo no)"
 # MARKING IS THE SAME WALK. One element, and exactly one.
@@ -3747,7 +3758,13 @@ const mkpage = (kind) => { let clock = 0, keydowns = 0, lastGoto = '';
     if (process.env.DPWGOTO_MS) await new Promise((r) => setTimeout(r, Number(process.env.DPWGOTO_MS)));
     // DIVE-6795: the site's own redirect interrupts this goto, once.
     if (process.env.DPWGOTO_INTERRUPT && !gotoInterrupted) { gotoInterrupted = true;
-      throw new Error(`page.goto: Navigation to "${url}" is interrupted by another navigation to "${url}home"`); } },
+      throw new Error(`page.goto: Navigation to "${url}" is interrupted by another navigation to "${url}home"`); }
+    // DIVE-7303: Chrome drops the load with net::ERR_ABORTED, once. `land`: the tab
+    // is on the url anyway (the served browser was already loading it); `stay`: it
+    // never left the page it was on (a download aborts so).
+    if (process.env.DPWGOTO_ABORT && !gotoInterrupted) { gotoInterrupted = true;
+      if (process.env.DPWGOTO_ABORT === 'stay') lastGoto = null;
+      throw new Error(`page.goto: net::ERR_ABORTED at ${url}`); } },
   waitForLoadState: async (state) => { rec({ call: 'waitForLoadState', state, kind }); },
   // DPWHANG_URL: a page whose script never yields, so content() never answers
   // (DIVE-6778, T34i). Unset, content answers as it always did.

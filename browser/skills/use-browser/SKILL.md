@@ -20,7 +20,7 @@ needs nothing connected.
 
 1. **Snapshot** with `--interactive` and pick refs from what it printed. Never invent a ref.
    Exit 76 is a loading screen, not the page: run it again with `--wait-for='text=<words the
-   loaded page has>'`. Never guess a CSS selector for `--wait-for`; a miss waits 30 s.
+   loaded page has>'`. Never guess a CSS selector for `--wait-for`; a miss waits 10 s.
 2. **Act** on those refs. `--steps` is a JSON array, never empty, run in order in one tab. Each
    step is one of:
    `{"op":"goto","url":…}` `{"op":"click","selector":…}` `{"op":"fill","selector":…,"value":…}`
@@ -33,11 +33,12 @@ needs nothing connected.
    the browser is on. **An act prints what it changed**: the refs that appeared (`+ ref=…`), the
    ones that went and the new text. Act on those refs next; snapshot again only when the ref you
    need is not there.
-3. **Verify** with `--expect=<regex>`: the words that prove the job (the saved value, or the
-   site's own success message), matched on screen for up to 5 s. **A matched `--expect` IS the
-   check:** report and move on, never re-open the page to confirm. Between steps, go by the
-   text and refs the act printed, never the picture. Open the `page.png` once, at the end, only
-   when no `--expect` matched, before you say the job worked.
+3. **Verify** with `--expect=<regex>` only on the act that does the job (the save, the send,
+   the search whose result you report): the words that prove it, matched on screen for up to
+   2 s. A click that only opens a page or a menu needs no `--expect`: what it changed is printed.
+   **A matched `--expect` IS the check:** report and move on, never re-open the page to confirm.
+   Between steps, go by the text and refs the act printed, never the picture. Open the
+   `page.png` once, at the end, only when no `--expect` matched, before you say the job worked.
 
 ## Reading pages
 
