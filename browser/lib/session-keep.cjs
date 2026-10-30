@@ -5,8 +5,8 @@
 // starts, and DigitalOcean's login is such a cookie, so the owner's take-over of
 // a signed-in automated browser opened on the login page.
 //
-// Rewriting the cookie file after Chrome exits is not enough: Chrome does not
-// reliably write a session cookie to disk at all (CI's Chrome never did). So the
+// Rewriting the cookie file after Chrome exits is not enough: it can only keep
+// a session cookie Chrome happened to write, and none was there on CI. So the
 // automated browser, which can still talk to Chrome, reads its live cookies and
 // sets each one with no expiry back with one, KEEP_S from now, before it closes.
 // Chrome then stores them itself, encrypted as it stores any lasting cookie, and
