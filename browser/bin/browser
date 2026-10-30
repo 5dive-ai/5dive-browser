@@ -1382,12 +1382,30 @@ _serve_busy() {  # <profile-dir>
 # from the rendezvous alone (no daemon call, so no queue and no audit row):
 # <site>.sock is the served site's own socket or a link to it (_rv_alias), and
 # that site's .offered marker says how it was served.
-_rv_served_drive() {  # <owner> <site>
+_rv_served_as() {  # <owner> <site> -> the site the browser behind <site>'s socket was started for
   local s t; s=$(_rv_sock "$1" "$2"); t="$2"
   [[ -S "$s" ]] || return 1
   if [[ -L "$s" ]]; then t=$(readlink -- "$s") || return 1; t="${t##*/}"; t="${t%.sock}"; fi
   _valid_site "$t" || return 1
+  printf '%s\n' "$t"
+}
+_rv_served_drive() {  # <owner> <site>
+  local t; t=$(_rv_served_as "$1" "$2") || return 1
   if [[ "$(_kv "$(_rv_offer "$1" "$t")" drive)" == input ]]; then echo input; else echo cdp; fi
+}
+# THE GROUP'S BROWSER IS ON ANOTHER SITE, THE OTHER WAY (DIVE-7346). Prints
+# "<input|cdp> <that site>" when the box browser behind <site>'s socket was
+# started for another site of its group in the mode <site> does NOT use. `status`
+# and the overview both say so from this one read, and neither moves the browser:
+# a page verb on <site> does (_drive_fit).
+_rv_group_other() {  # <owner> <site>
+  local as have need=cdp
+  as=$(_rv_served_as "$1" "$2") || return 1
+  [[ "$as" != "$2" ]] || return 1
+  have=$(_rv_served_drive "$1" "$2") || return 1
+  if [[ "$(_kv "$(_rv_offer "$1" "$2")" drive)" == input || "$(_site_drive_adapter "$2")" == input ]]; then need=input; fi
+  [[ "$need" != "$have" ]] || return 1
+  printf '%s %s\n' "$have" "$as"
 }
 
 # A page verb's site, in the browser mode it needs. Set by the dispatcher for the
@@ -2745,6 +2763,20 @@ _input_probe() {  # <site> <dir>
 
 _probe() {
   local site="$1" dir="$2"
+  # A BROKERED SITE WHOSE GROUP'S BROWSER IS ON ANOTHER SITE, THE OTHER WAY
+  # (DIVE-7346, report 594). bing.com (automated) shares one browser with
+  # discord.gg (input): the probe below went into that input-mode browser, was
+  # refused, and said UNKNOWN while the overview said "served". Nothing is
+  # checked now, and the line says why and what switches it.
+  if (( _SITE_BROKERED )); then
+    local other
+    if other=$(_rv_group_other "$_SITE_OWNER" "$site"); then
+      local how="in input mode" cmd="5dive browser shot $site $(_site_url "$site")"
+      [[ "${other%% *}" == cdp ]] && { how="as the automated browser"; cmd="5dive browser shot $site"; }
+      echo "unconfirmed (not checked now — the browser $site shares with its group is serving ${other#* } $how, and a status check does not switch it. A page verb on $site switches it: $cmd)"
+      return 0
+    fi
+  fi
   # INPUT MODE HAS NO DOM TO PROBE (DIVE-5287), and loading the probe URL would
   # move the window an agent or a person is working in. It reads the title.
   if [[ "$(_site_drive_adapter "$site")" == input ]] \
@@ -3151,7 +3183,11 @@ _ls_box_offers() {
     (( shown )) || printf '\n  the box login (owned by %s — you use it, you do not log in again):\n' "$BOX_SEAT"
     shown=1
     _resolve_site "$site" >/dev/null
-    if _daemon_live "$_SITE_DIR"; then
+    local other
+    if _daemon_live "$_SITE_DIR" && other=$(_rv_group_other "$BOX_SEAT" "$site"); then
+      # The same read `status <site>` makes (DIVE-7346), so the two agree.
+      printf '  %-20s %s\n' "$site" "served — its group's browser is on ${other#* } $([[ "${other%% *}" == input ]] && echo 'in input mode' || echo 'as the automated browser') now; a page verb on $site switches it, status cannot check it until then"
+    elif _daemon_live "$_SITE_DIR"; then
       printf '  %-20s %s\n' "$site" "served — ready to use"
     else
       printf '  %-20s %s\n' "$site" "not being served (sudo -u $BOX_SEAT 5dive browser serve $site)"

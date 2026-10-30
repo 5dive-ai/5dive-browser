@@ -139,6 +139,10 @@ jobs:
       # mode's paste (bare Xvfb + fake daemon; its live arm is L15 above).
       - name: group window harness
         run: bash tests/browser_group_window_unit.sh
+      # DIVE-7346: a brokered status and the overview agree on a site whose
+      # group's browser is held the other way for another site (fake daemon).
+      - name: group status harness
+        run: bash tests/browser_group_status_unit.sh
       - name: act upload harness
         run: bash tests/browser_act_upload_unit.sh
       - name: input paste harness

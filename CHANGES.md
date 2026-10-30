@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — `status` no longer says UNKNOWN for a box login whose group's browser is busy with another site, and the overview says the same thing (DIVE-7346), 1.65.2
+
+Report 594: an agent asked `5dive browser status bing.com` and got UNKNOWN, while `5dive browser status` called bing.com "served — ready to use" in the same minute. bing.com shares one browser with discord.gg (its sign-in group), and the owner was using that browser for discord.gg in input mode. The status check sent bing.com's check into that browser, which refused it.
+
+- **`status bing.com` now says what is going on:** not checked now, because the browser it shares is serving discord.gg in input mode, and a status check does not switch it. It names the page verb that does (`5dive browser shot bing.com <url>`). The same holds the other way round, for an input-mode site while the group's browser is the automated one.
+- **The overview says the same for that site** instead of "ready to use", so the two answers agree.
+- `shot bing.com <url>` switches the browser and returns the screenshot, as the line promises (since 1.64.0: on 1.63 the same shot refuses with this UNKNOWN, which matches the report, so that box runs a plugin older than 1.64.0).
+
 ### Fixed — a saved login types on a site in input mode, and a take-over of a signed-in browser stays signed in (DIVE-7314), 1.65.1
 
 chill-gorge, 10-30: setting up the DigitalOcean seller account stopped twice. The agent could not type the owner's saved login, and the owner's take-over link opened on the login page.
