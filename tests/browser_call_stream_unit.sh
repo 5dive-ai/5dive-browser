@@ -15,8 +15,10 @@ t() { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); printf 'PASS: %s\n' "$1"; el
 TMP=$(mktemp -d); trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$TMP"' EXIT
 
 # fake <sock> <MB> <chunk bytes> [<ms between chunks>]: answers any request with
-# one `out` line of that many MB (ASCII with a euro sign every 1000 bytes).
-fake() { node -e '
+# one `out` line of that many MB (ASCII with a euro sign every 1000 bytes). exec,
+# so the background job IS node and the EXIT trap's kill stops it (a plain call left
+# the servers running, holding the caller's pipe open).
+fake() { exec node -e '
   const net = require("net"); const [sock, mb, chunk, gap] = process.argv.slice(1);
   const unit = "x".repeat(997) + "€";             // 1000 bytes, the euro is 3 of them
   const body = unit.repeat(Math.round(Number(mb) * 1000));
