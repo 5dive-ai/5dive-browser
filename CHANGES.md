@@ -8,7 +8,7 @@ that file stays where it is.
 
 ## Unreleased
 
-### Fixed — a saved login types on a site in input mode, and a take-over of a signed-in browser stays signed in (DIVE-7314), 1.64.3
+### Fixed — a saved login types on a site in input mode, and a take-over of a signed-in browser stays signed in (DIVE-7314), 1.65.1
 
 chill-gorge, 10-30: setting up the DigitalOcean seller account stopped twice. The agent could not type the owner's saved login, and the owner's take-over link opened on the login page.
 
@@ -16,6 +16,20 @@ chill-gorge, 10-30: setting up the DigitalOcean seller account stopped twice. Th
 - **Chrome no longer offers to save a password** in a box browser. The owner's Vault is where logins live, and the offer would have copied one into the Google account signed in there. A paste of a saved value already leaves nothing on the clipboard.
 - **A login that lasts only while the browser runs survives the browser's own restarts:** a take-over link's switch to plain Chrome, a switch between modes, and `serve --restart`. Before, Chrome dropped it on the restart, so the owner landed logged out. A real stop (Done, the idle stop) still ends it, as closing a browser does.
 
+### Fixed — quicker steps: no 90 s wait on a security check, no 30 s wait on a missed `--wait-for`, a 2 s `--expect`, and a big page no longer takes minutes (DIVE-7303), 1.65.0
+
+lodar, 10-30: can our browser be as quick per step as Claude in Chrome? On the fresh-100 bench our snapshot averaged 12.4 s against a 5.9 s median: the time was in a long tail, and the tail had four causes, each fixed here.
+
+- **A page with 1,000 options no longer holds a snapshot for minutes.** OhioMeansJobs wraps its job list in a `<label>`, so every option took the label's whole text as its name: 1,211 refs made a 66 MB tree.json, and the client that reads the daemon's answer searched that growing answer from its start on every chunk. Measured on the bench rig, that page: 179 s, 153 s, 152 s before; 8.2 s, 4.4 s, 4.0 s after (tree.json 194 KB). An option is named by its own text, a name stops at 200 characters, and `session-daemon call` reads its answer in time linear in its size (also: a character split across two chunks is no longer cut).
+- **"Just a moment…" is watched for 20 s, not 90 s** (`FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS`). On the bench none of ten checks cleared in 90 s, and those ten waits were a fifth of all snapshot time. One that clears by itself does in 5-15 s.
+- **`snapshot --wait-for` gives up after 10 s**, as an act's `wait_for` does (`FIVEDIVE_BROWSER_ACT_STEP_MS`), not 30 s.
+- **`act --expect` is re-read for 2 s, not 5** (`FIVEDIVE_BROWSER_EXPECT_WAIT_MS`); 147 of 446 bench acts missed and paid the whole window. A reviewed `run` recipe's verify keeps 5 s. The use-browser skill asks for `--expect` only on the act that does the job, not on every click.
+- **The first snapshot of the public profile no longer fails** with `net::ERR_ABORTED` (8 bench jobs opened with that exit 69): a load Chrome dropped because the served browser was still loading the same site is that load. One that never left its page (a download) is still the error.
+- **A snapshot says when the page was still loading** at the settle bound ("still loading when read"), instead of waiting for a network that never goes quiet.
+
+Bench, the same fresh 100 (Haiku 5.5, WebJudge), against the 1.58.2 run: **median task 105 s → 78 s, 9.1 → 7.5 s per step**, snapshot mean 12.4 s → 7.2 s, finished 32 → 31 of 100 (inside the 24-42 range). Measured with new sites in the public profile, as 1.58.2 had them. On a seat whose default group holds a Google sign-in, a new site joins that group, and before 1.64.2 every call there started a new Chrome (DIVE-7316, below), which hid this gain on such a seat.
+
+`tests/browser_call_stream_unit.sh` 3/3 (new; the old client fails 2), `tests/browser_act_look_unit.sh` 64/64 (N2/N3 abort, W1/W2 wait-for bound), `tests/browser_interstitial_unit.sh` 16/16, `tests/browser_plugin_unit.sh` 2023/2023 (T23a2 names).
 ### Fixed — a site that joined the Google group keeps its page between acts (DIVE-7316), 1.64.2
 
 On a seat whose sign-in group holds a Google login, every new site an agent opens joins that group (DIVE-7076). Those sites never kept a browser between calls: each act and snapshot started a new Chrome, about 40% slower per step, and nothing said so.

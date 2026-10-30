@@ -424,15 +424,18 @@ async function serveMode(profile, sock, broker, input) {
   const cleanup = () => { try { fs.unlinkSync(sock); } catch (e) { /* already gone */ } };
 
   const server = net.createServer((conn) => {
-    let buf = '';
+    // The request's bytes, searched only where they are new (DIVE-7303, as callMode):
+    // an upload step carries its file, up to 16 MB, inside this one line.
+    let parts = [];
     const send = (o) => { try { conn.write(JSON.stringify(o) + '\n'); } catch (e) { /* caller left */ } };
     const end = (rc) => { send({ t: 'end', rc }); try { conn.end(); } catch (e) { /* caller left */ } };
     conn.on('error', () => { /* a caller that walks away is not an error here */ });
     conn.on('data', async (d) => {
-      buf += d.toString('utf8');
-      const nl = buf.indexOf('\n');
-      if (nl < 0) return;
-      const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+      const nl = d.indexOf(10);
+      if (nl < 0) { parts.push(d); return; }
+      parts.push(d.subarray(0, nl));
+      const line = Buffer.concat(parts).toString('utf8');
+      parts = nl + 1 < d.length ? [d.subarray(nl + 1)] : [];
       let req;
       try { req = JSON.parse(line); } catch (e) { send({ t: 'err', msg: `request is not JSON: ${e.message}` }); return end(E_NOTHING_RAN); }
 
@@ -946,17 +949,21 @@ async function snapshotRequest(ctx, req, send, end) {
     if (stay) send({ t: 'log', line: `  the browser is already on ${req.url}; read as it is, not reloaded` });
     // The load's settle ends when the page is quiet, as act's does (DIVE-6778).
     const watch = !stay && typeof page.context === 'function' ? aria.requestWatch(page.context()) : null;
-    let inter, waited;
+    let inter, waited, loading = false;
     try {
       if (!stay) resp = await goTo(page, req.url);
       // A Cloudflare "Just a moment..." clears in this same load, or not at all
       // (DIVE-6317). A --wait-for behind one that never cleared would only wait again.
       inter = await aria.waitInterstitial(page);
-      // --wait-for (DIVE-4983), exactly as the cold driver's snapshotMode does it.
+      // --wait-for (DIVE-4983), exactly as the cold driver's snapshotMode does it,
+      // bounded as an act's wait_for is (DIVE-7303): a miss waited 30 s on the bench.
       waited = req.wait_for
-        ? await aria.waitForPast(page, String(req.wait_for), inter, { timeoutMs: STEP_TIMEOUT }) : null;
+        ? await aria.waitForPast(page, String(req.wait_for), inter, { timeoutMs: stepLimit(req) }) : null;
+      // The settle never waits for the network to go quiet (a page with ads never
+      // does); it SAYS so instead (DIVE-7303), so the agent knows a late part may
+      // still come and can look again, as Claude in Chrome's agent does.
       const settle = settleOf(req, stay ? 0 : TREE_SETTLE_MS);
-      if (settle > 0) await aria.settleQuiet(page, settle, watch);
+      if (settle > 0) loading = !(await aria.settleQuiet(page, settle, watch)) && !!watch;
     } finally { if (watch) watch.stop(); }
     const snap = await aria.snapshot(page, { interactiveOnly: !!req.interactive });
     // The agent has now seen this tab: the next act on it says what changed since.
@@ -983,6 +990,7 @@ async function snapshotRequest(ctx, req, send, end) {
       png_b64: png,
       ...(waited ? { wait_for: waited } : {}),
       ...(inter ? { interstitial: inter } : {}),
+      ...(loading ? { still_loading: true } : {}),
       // A served browser is a headed one (the launch above), recorded as the cold one is.
       browser_mode: 'headed',
       ...(resp ? { http_status: resp.status() } : {}),
@@ -1011,12 +1019,27 @@ const sentTo = new WeakMap();
 // (amtrak.com -> /home) while the snapshot's goto runs, Playwright throws
 // "interrupted by another navigation", and 2 of the bench's first 5 snapshots
 // died on it (exit 69, then a second call). The navigation that won is waited for.
+// ...AND SO IS A LOAD THAT ABORTED BECAUSE THE SAME SITE WAS STILL LOADING
+// (DIVE-7303). The first snapshot of the public profile starts the served browser
+// ON its url, then loads it again; Chrome drops one of the two with
+// net::ERR_ABORTED, and 8 of the fresh-100 bench's jobs opened with that exit 69
+// and a second call that found the browser already there. When the page did land
+// on the site it was sent to, that is the load; anywhere else, or still on the
+// page it left (a same-site download aborts too), the error stands.
+const sameOrigin = (a, b) => { try { return new URL(a).origin === new URL(b).origin; } catch (e) { return false; } };
 async function goTo(page, url) {
-  let resp = null;
+  let resp = null, before = '';
+  try { before = page.url(); } catch (e) { /* none */ }
   try { resp = await page.goto(url, { waitUntil: 'domcontentloaded' }); }
   catch (e) {
-    if (!/interrupted by another navigation/.test(String(e && e.message))) throw e;
-    await page.waitForLoadState('domcontentloaded');
+    const msg = String(e && e.message);
+    if (/net::ERR_ABORTED/.test(msg)) {
+      try { await page.waitForLoadState('domcontentloaded'); } catch (e2) { /* judged by where it is */ }
+      if (!sameOrigin(page.url(), url) || page.url() === before) throw e;
+    } else {
+      if (!/interrupted by another navigation/.test(msg)) throw e;
+      await page.waitForLoadState('domcontentloaded');
+    }
   }
   try { sentTo.set(page, { asked: url, landed: page.url() }); } catch (e) { /* only a shortcut is lost */ }
   return resp;
@@ -1918,14 +1941,20 @@ function callMode(sock) {
   let req;
   try { req = JSON.parse(raw); } catch (e) { die(E_NOTHING_RAN, `the request on stdin is not JSON: ${e.message}`); }
   const conn = net.createConnection(sock);
-  let buf = '', ended = false;
+  // ONLY THE NEW BYTES ARE SEARCHED FOR THE LINE'S END (DIVE-7303). The reply was
+  // one string that every chunk was appended to and searched from its start, so a
+  // multi-megabyte answer (a results page of 1,211 refs) cost the square of its
+  // size: 90% CPU in this client for 150-220 s on the bench, while the browser
+  // had answered in seconds. The pieces are kept as bytes and joined once per
+  // line, which also never cuts a character that spans two chunks.
+  let parts = [], ended = false;
   conn.on('connect', () => conn.write(JSON.stringify(req) + '\n'));
   conn.on('error', (e) => die(E_UNAVAILABLE, `no live session at ${sock}: ${e.message}`));
   conn.on('data', (d) => {
-    buf += d.toString('utf8');
-    let nl;
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+    let from = 0, nl;
+    while ((nl = d.indexOf(10, from)) >= 0) {
+      parts.push(d.subarray(from, nl)); from = nl + 1;
+      const line = Buffer.concat(parts).toString('utf8'); parts = [];
       if (!line) continue;
       let f; try { f = JSON.parse(line); } catch (e) { continue; }
       if (f.t === 'log') process.stderr.write(f.line + '\n');
@@ -1942,6 +1971,7 @@ function callMode(sock) {
       // and exit on its own, which is the only exit that cannot truncate.
       else if (f.t === 'end') { ended = true; process.exitCode = f.rc; conn.end(); }
     }
+    if (from < d.length) parts.push(d.subarray(from));
   });
   // A DAEMON THAT DIES MID-REQUEST IS NOT A ZERO. Without this the socket simply
   // closes and node exits 0 — a publish whose browser crashed would read as a

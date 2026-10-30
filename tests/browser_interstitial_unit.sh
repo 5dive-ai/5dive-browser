@@ -40,17 +40,20 @@ t 'I5 "Checking your browser before accessing" is the same interstitial' 'true' 
 t 'I6 NEGATIVE: "Attention Required!" (a block) is not waited on' 'null clock=0' "$(w 30000 'Attention Required! | Cloudflare')"
 t 'I7 NEGATIVE: "Access denied" is not waited on' 'null clock=0' "$(w 30000 'Access denied')"
 
-# DIVE-6334: round 6's Gamma did not clear in 30 s from cic-arm-a. A challenge
-# that holds for 45 s and then clears is waited out by the SHIPPED bound (1.42.1:
-# 30 s, so not cleared), and one that never clears is still bounded, at 90 s.
+# DIVE-6334: round 6's Gamma did not clear in 30 s from cic-arm-a, so the bound
+# went to 90 s. DIVE-7303: on the fresh-100 bench none of ten cleared in 90 s and
+# they were a fifth of snapshot time, so the shipped bound is 20 s: a check that
+# clears by itself (5-15 s) is still waited out, one that stays costs 20 s.
 held() { local n="$1" a=(); for ((k = 0; k < n; k++)); do a+=('Just a moment...'); done; a+=('Gamma'); w default "${a[@]}"; }
-t 'I13 a challenge held 45 s then cleared: the default bound waits it out' \
-  '{"title":"Just a moment...","cleared":true,"waited_ms":45000} clock=45000' "$(held 45)"
-t 'I14 one that never clears: stops at the 90 s default, then the STOP (handoff) applies' \
-  '{"title":"Just a moment...","cleared":false,"waited_ms":90000} clock=90000' "$(w default 'Just a moment...')"
-t 'I15 FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS still sets the bound' \
-  '{"title":"Just a moment...","cleared":false,"waited_ms":20000} clock=20000' \
-  "$(FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS=20000 w default 'Just a moment...')"
+t 'I13 a challenge held 15 s then cleared: the default bound waits it out' \
+  '{"title":"Just a moment...","cleared":true,"waited_ms":15000} clock=15000' "$(held 15)"
+t 'I13b a challenge held 45 s: the default bound stops at 20 s, not cleared (DIVE-7303)' \
+  '{"title":"Just a moment...","cleared":false,"waited_ms":20000} clock=20000' "$(held 45)"
+t 'I14 one that never clears: stops at the 20 s default, then the STOP (handoff) applies' \
+  '{"title":"Just a moment...","cleared":false,"waited_ms":20000} clock=20000' "$(w default 'Just a moment...')"
+t 'I15 FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS still sets the bound (the old 90 s)' \
+  '{"title":"Just a moment...","cleared":true,"waited_ms":45000} clock=45000' \
+  "$(FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS=90000 held 45)"
 
 # Every executor goto calls it: the two snapshot paths, render, both act gotos, and readMode's goto.
 t "I8 driver-playwright calls it after its snapshot goto, its act goto and readMode's goto" 3 "$(grep -c 'aria.waitInterstitial(page)' browser/bin/driver-playwright)"

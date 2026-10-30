@@ -136,7 +136,17 @@ function pageWalk(opts) {
   // node still appears: a ref of `button/` is useless, but hiding the node would
   // tell the agent the button does not exist, which is worse than telling it the
   // button has no label.
+  // A NAME IS A LABEL, NOT A PAGE (DIVE-7303). OhioMeansJobs wraps a 1,000-option
+  // job list in a <label>, so every option took the whole label's text as its
+  // name: 1,211 refs made a 66 MB tree.json and held the snapshot 150-220 s on the
+  // bench. An option is named by its own text, never its list's label, and no name
+  // runs past NAME_MAX characters (a ref is copied by the agent; 200 is a long one).
+  var NAME_MAX = 200;
   function nameOf(el) {
+    var n = fullName(el);
+    return n.length > NAME_MAX ? n.slice(0, NAME_MAX).trim() : n;
+  }
+  function fullName(el) {
     var byId = el.getAttribute('aria-labelledby');
     if (byId) {
       var parts = byId.split(/\s+/).map(function (id) {
@@ -151,7 +161,8 @@ function pageWalk(opts) {
       var forLab = scopeOf(el).querySelector('label[for="' + CSS.escape(el.id) + '"]');
       if (forLab && text(forLab)) return text(forLab);
     }
-    var wrap = el.closest ? el.closest('label') : null;
+    var wrap = el.closest && el.tagName.toLowerCase() !== 'option' && (el.getAttribute('role') || '') !== 'option'
+      ? el.closest('label') : null;
     if (wrap && text(wrap)) return text(wrap);
     var ph = el.getAttribute('placeholder');
     if (ph && ph.trim()) return ph.trim();
@@ -1277,18 +1288,23 @@ async function waitForVisible(page, target, { timeoutMs = 30000, pollMs = 250 } 
 // a fresh load starts the check over, so an agent's `sleep 20` and a second
 // snapshot measured nothing. So right after a goto, while the title is one of
 // these self-clearing interstitials, the page is watched for up to `timeoutMs`
-// (FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS, default 90 s). It never clicks: if the
+// (FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS, default 20 s since DIVE-7303). It never clicks: if the
 // title is still there at the end, the caller's existing hard stop applies, and
 // that stop is the handoff (connect-request --challenge).
 // DIVE-6334: 30 s did not clear gamma.app from cic-arm-a's datacenter IP in
-// round 6 (twice). 90 s is the row's bound: a "Just a moment..." that clears by
+// round 6 (twice). 90 s was the row's bound: a "Just a moment..." that clears by
 // itself is over long before it, and the wait ends at the first look it has gone,
 // so a page that clears pays only its own time. A --wait-for behind one that
 // never cleared is skipped, so the whole call stays inside a 2-minute tool limit.
+// DIVE-7303: 20 s. On the fresh-100 bench not one of ten waits cleared in its
+// 90 s (bbb.org, cars.com, ziprecruiter, merriam-webster), and those ten were a
+// fifth of all snapshot time; Claude in Chrome hands the page back at once. A
+// check that clears by itself does it in 5-15 s, so 20 s keeps those and stops
+// paying 70 s more for the ones that stay.
 // Only the titles that clear by themselves: "Attention Required" and "Access
 // denied" are blocks, and waiting on them buys nothing.
 const INTERSTITIAL_TITLE = /(just a moment|checking your browser|one moment,? please)/i;
-const INTERSTITIAL_WAIT_MS = Number(process.env.FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS || 90000);
+const INTERSTITIAL_WAIT_MS = Number(process.env.FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS || 20000);
 async function waitInterstitial(page, { timeoutMs = INTERSTITIAL_WAIT_MS, pollMs = 1000 } = {}) {
   const titleNow = async () => { try { return String(await page.title()); } catch (e) { return null; } };
   let t = await titleNow();
