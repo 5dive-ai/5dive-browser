@@ -25,6 +25,11 @@
 #   L7 (DIVE-6327) a throwaway profile's disk cache stays inside the profile, so
 #      nothing is left in the cache home; and the caches older versions left
 #      there are reaped — only those
+#   L8 (DIVE-7432) a squatted per-launch root over a ~/.config/google-chrome the
+#      seat cannot write still launches: the crash dir is a fresh dir, never the
+#      home; a detached child's is reaped after it; with no dir to be had at all
+#      the rc 133 message names the crash dir, its owner and why the claim
+#      failed; the pre-fix tree traps on the same box (negative control)
 set -uo pipefail
 printf 'grading tree: %s @ %s\n' "$PWD" "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" >&2
 cd "$(dirname "$0")/.."
@@ -140,10 +145,12 @@ long="$TMP/$(printf 'r%.0s' $(seq 60))"
 : > "$SEEN"
 FIVEDIVE_BROWSER_TMP_ROOT="$long" HOME="$LONGHOME" XDG_CONFIG_HOME="$TMP/shared" "$BROWSER" status launch.test >/dev/null 2>&1; rc=$?
 arm 'L4 a root too long for the socket is not used: Chrome gets the caller TMPDIR' "$SYSTMP" "$(seen tmp)"
-# With no per-launch dir the crash dir falls back to the DIVE-4587 one, the home
-# (never the shared value). A home that cannot hold it is the residual this
-# fallback does not cover; the default root under /tmp is what makes it rare.
-arm 'L4 ...and the crash dir falls back to the home, never the shared value' "$LONGHOME/.config/google-chrome/Crash Reports" "$(seen crash)"
+# With no per-launch dir the crash dir is a FRESH dir (DIVE-7432), never the
+# home (the DIVE-4587 fallback this replaced) and never the shared value.
+arm 'L4 ...and the crash dir is a fresh dir under /tmp, never the home nor the shared value' yes \
+  "$(yn grep -qE "^/tmp/\.5dive-browser-cfg-$EUID\.[0-9]+\.[0-9]+\.[A-Za-z0-9]{6}/google-chrome/Crash Reports\$" <<<"$(seen crash)")"
+c=$(seen crash)
+arm 'L4 ...which is gone with the launch' no "$(yn test -e "${c%/google-chrome/*}")"
 arm 'L4 ...and launches' 0 "$rc"
 : > "$SEEN"
 FIVEDIVE_BROWSER_TMP_ROOT="$long" TMPDIR="/tmp/.5dive-browser-0/1.2" HOME="$LONGHOME" "$BROWSER" status launch.test >/dev/null 2>&1
@@ -208,6 +215,68 @@ arm 'L7 one holding anything but Default/ stays' yes "$(yn test -e "$C7/tmp.DDDD
 arm 'L7 one whose Default/ holds more than cache stays' yes "$(yn test -e "$C7/tmp.EEEEEEEEEE/Default/Bookmarks")"
 arm 'L7 a name mktemp never makes stays' yes "$(yn test -e "$C7/tmp.short")"
 arm 'L7 the rest of the cache home is untouched' yes "$(yn test -d "$C7/fontconfig")"
+
+# --- L8 (DIVE-7432) the claim fails AND the home's google-chrome is not ours ------
+# witty-palm, report 604: the box seat's per-launch claim fell back and its
+# ~/.config/google-chrome was another seat's (made when /home/claude/.config was
+# every seat's shared config home), so every serve trapped rc 133. A squatted
+# root (here a symlink, as a root-owned one fails the same -O/-L test) and an
+# unwritable google-chrome under a short home stand in for the two.
+H8="$TMP/h8"; mkdir -p "$H8/.config/google-chrome"; chmod 500 "$H8/.config/google-chrome"
+mkdir -p "$TMP/elsewhere"; ln -s "$TMP/elsewhere" "$TMP/squat"
+FB="$TMP/fb"; mkdir -p "$FB"
+arm 'L8 (control) this run cannot create the crash dir in the foreign google-chrome' no \
+  "$(yn mkdir "$H8/.config/google-chrome/Crash Reports" 2>/dev/null)"
+l8() {  # l8 <bin/browser> [<fallback roots>] -> OUT, RC
+  : > "$SEEN"
+  OUT=$(FIVEDIVE_BROWSER_TMP_ROOT="$TMP/squat" FIVEDIVE_BROWSER_CFG_FALLBACK_ROOTS="${2-$FB}" \
+        HOME="$H8" "$1" status launch.test 2>&1); RC=$?
+}
+l8 "$BROWSER"
+arm 'L8 a squatted root and a foreign ~/.config/google-chrome: status launches (rc 0)' 0 "$RC"
+arm 'L8 ...and is not BROKEN' no "$(yn grep -q 'BROKEN\|exited 133' <<<"$OUT")"
+c=$(seen crash)
+arm 'L8 ...Chrome'"'"'s crash dir was a fresh one in the fallback root, not the home' yes \
+  "$(yn grep -qE "^$FB/\.5dive-browser-cfg-$EUID\.[0-9]+\.[0-9]+\.[A-Za-z0-9]{6}/google-chrome/Crash Reports\$" <<<"$c")"
+arm 'L8 ...which is gone with the launch' no "$(yn test -e "${c%/google-chrome/*}")"
+arm 'L8 ...and nothing was written under the squatted root' 0 "$(find "$TMP/elsewhere" -mindepth 1 | wc -l | tr -d ' ')"
+
+# A detached child's fallback dir is reaped once its owner is gone, never before.
+sleep 300 & vp=$!; vs=$(starttime "$vp"); kill -9 "$vp"; wait "$vp" 2>/dev/null
+mkdir -p "$FB/.5dive-browser-cfg-$EUID.$vp.$vs.AAAAAA/google-chrome"
+sleep 300 & lp=$!; _KILL+=("$lp"); ls_=$(starttime "$lp")
+mkdir -p "$FB/.5dive-browser-cfg-$EUID.$lp.$ls_.BBBBBB/google-chrome"
+mkdir -p "$FB/.5dive-browser-cfg-$EUID.$lp.0.CCCCCC"
+l8 "$BROWSER"
+arm 'L8 a dead owner'"'"'s fallback dir is reaped' no "$(yn test -e "$FB/.5dive-browser-cfg-$EUID.$vp.$vs.AAAAAA")"
+arm 'L8 a live owner'"'"'s survives' yes "$(yn test -e "$FB/.5dive-browser-cfg-$EUID.$lp.$ls_.BBBBBB")"
+arm 'L8 ...and one with no start time, while its pid lives' yes "$(yn test -e "$FB/.5dive-browser-cfg-$EUID.$lp.0.CCCCCC")"
+kill "$lp" 2>/dev/null; wait "$lp" 2>/dev/null
+
+# No fresh dir to be had either: the home is the last resort, and when Chrome
+# traps there the message names the dir, its owner and why the claim failed.
+l8 "$BROWSER" "$TMP/no-such-root"
+arm 'L8 no fallback root at all: the launch traps in the home (rc 133 is said)' yes "$(yn grep -q 'BROKEN.*exited 133' <<<"$OUT")"
+arm 'L8 ...the message names the crash dir and its owner' yes \
+  "$(yn grep -qF "crash dir $H8/.config/google-chrome ($H8/.config/google-chrome belongs to $(id -un))" <<<"$OUT")"
+arm 'L8 ...and why the per-launch claim failed' yes \
+  "$(yn grep -qF "the per-launch dir could not be claimed: $TMP/squat is a symlink, and no fresh dir could be made" <<<"$OUT")"
+
+# Negative control: the tree before DIVE-7432 traps on the first case.
+# Pinned, not origin/main (once merged origin/main IS the fix). A shallow
+# checkout fetches the one commit; if it does not resolve that is a FAIL.
+L8_BASE=14959968f654cf578d78e76ffb46b63bfcd58dc4   # 5dive-browser main at 1.66.0
+git -C "$ROOT" cat-file -e "$L8_BASE^{commit}" 2>/dev/null \
+  || git -C "$ROOT" fetch -q --depth=1 origin "$L8_BASE" >/dev/null 2>&1
+if git -C "$ROOT" cat-file -e "$L8_BASE:browser/bin/browser" 2>/dev/null; then
+  OLD="$TMP/old"; rm -rf "$OLD"; cp -r "$ROOT/browser" "$OLD"
+  git -C "$ROOT" show "$L8_BASE:browser/bin/browser" > "$OLD/bin/browser"; chmod +x "$OLD/bin/browser"
+  l8 "$OLD/bin/browser"
+  arm 'L8 (negative control) the pre-fix tree traps rc 133 on the same box' yes "$(yn grep -q 'BROKEN.*exited 133' <<<"$OUT")"
+  arm 'L8 (negative control) ...with its crash dir in the foreign home dir' "$H8/.config/google-chrome/Crash Reports" "$(seen crash)"
+else
+  arm "L8 the pinned pre-fix tree $L8_BASE resolves (fetch failed: control NOT run)" yes no
+fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

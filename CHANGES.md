@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — the box login's browser no longer crashes at start (status 133) when its private launch folder can't be made (DIVE-7432), 1.66.1
+
+Report 604, witty-palm: `browser serve` for the box login failed on every site with `chrome_crashpad_handler: --database is required`, even after `sudo 5dive browser setup`, while a hire on the same box worked.
+
+- **Chrome's crash folder no longer falls back to the home.** Each launch gets its own folder under `/tmp/.5dive-browser-<uid>`. When that can't be made, the launch now gets a fresh private folder under /tmp (or /dev/shm), not `~/.config`. On these boxes, `~/.config/google-chrome` can belong to another seat from the days when every seat shared one config folder.
+- **`sudo 5dive browser setup` repairs it.** A `~/.config/google-chrome` that the seat doesn't own is moved aside under a name that says whose it was. It is not handed over, because it may hold the other seat's data. This covers the box login, every hire and the seat being set up.
+- **A crash at start now says why.** The error names the crash folder Chrome was given and who owns it, and says whether the private launch folder was claimed and, if not, why.
+
 ### Added — a saved card fills a card form by part, on any site (DIVE-7381), 1.66.0
 
 The owner can now save a card in the Vault (`sudo 5dive secret link --save=<name> --card`, 5dive CLI). An act fills it by part, like a login: `"saved":"<name>.number"`, `.exp` (MM/YY), `.cvc` and `.holder` (the name on the card). Each part is typed and never shown, and every output is scrubbed of it, as for a password.

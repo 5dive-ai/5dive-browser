@@ -14,6 +14,9 @@
 #   B6 DIVE-7156: root, a person and a hire each also make the box seat's (claude,
 #      the owner's logins) store; one it has is untouched; no claude account, no store.
 #   B7 negative control: origin/main before DIVE-7156 leaves claude storeless.
+#   H1-H6 DIVE-7432: setup moves aside a ~/.config/google-chrome another uid owns
+#      (box seat, registry seats; a hire: its own and the box seat's), keeps its
+#      data, never follows a symlinked ~/.config; pre-fix tree leaves it (control).
 #
 # Driven through the real bin/browser as a subprocess, stack step off (the stack is
 # browser_setup_stack_unit.sh's), with fakes for id/chown/systemctl/visudo so no
@@ -32,7 +35,7 @@ tn() { if [[ "$3" != *"$2"* ]]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); pr
 CORE="$TMP/core"; mkdir -p "$CORE"
 for c in bash env sed head tail paste mkdir chmod cat rm cp mv ln stat grep awk timeout \
          tr sort date mktemp dirname basename readlink realpath uname wc cut tee touch sleep \
-         jq getent printf ls find xargs flock pgrep sha256sum; do
+         jq getent printf ls find xargs flock pgrep sha256sum python3; do
   p=$(command -v "$c" 2>/dev/null) && [[ "$p" == /* ]] && ln -sf "$p" "$CORE/$c"
 done
 # id: euid 0; FAKE_USERS are the unix accounts that exist; a seat's primary group
@@ -47,7 +50,7 @@ u="${!#}"
 [[ -n "${FAKE_NO_CLAUDE:-}" && "$u" == claude ]] && exit 1
 [[ " ${FAKE_USERS:-} claude root " == *" $u "* ]] || exit 1
 case "$1" in
-  -u)  echo 1000 ;;
+  -u)  echo "${FAKE_SEAT_UID:-1000}" ;;
   -gn) echo "$u" ;;
   *)   echo "uid=1000($u)" ;;
 esac
@@ -56,6 +59,17 @@ printf '#!/usr/bin/env bash\necho "chown $*" >> "$CALL_LOG"\n' > "$CORE/chown"
 printf '#!/usr/bin/env bash\necho "systemctl $*" >> "$CALL_LOG"\n' > "$CORE/systemctl"
 for c in visudo 5dive; do printf '#!/usr/bin/env bash\nexit 0\n' > "$CORE/$c"; done
 chmod +x "$CORE/id" "$CORE/chown" "$CORE/systemctl" "$CORE/visudo" "$CORE/5dive"
+# getent: a seat's home is $FAKE_HOME_ROOT/<seat> when that is set (DIVE-7432's arms).
+REAL_GETENT=$(command -v getent)
+rm -f "$CORE/getent"
+cat > "$CORE/getent" <<GETENT
+#!/usr/bin/env bash
+if [[ "\$1" == passwd && -n "\${FAKE_HOME_ROOT:-}" && -n "\${2:-}" ]]; then
+  echo "\$2:x:1000:1000::\$FAKE_HOME_ROOT/\$2:/bin/bash"; exit 0
+fi
+exec "$REAL_GETENT" "\$@"
+GETENT
+chmod +x "$CORE/getent"
 
 STATE="$TMP/state"; PROFILES="$STATE/browser-profiles"
 fresh() {
@@ -84,6 +98,7 @@ go() {  # AS=root|person|hire
   env -i HOME="$TMP" PATH="$CORE" STATE_DIR="$STATE" "${who[@]}" \
     FAKE_USERS="agent-alpha agent-beta agent-gamma agent-delta ubuntu" CALL_LOG="$CALL_LOG" \
     ${FAKE_NO_CLAUDE:+FAKE_NO_CLAUDE=1} \
+    ${FAKE_SEAT_UID:+FAKE_SEAT_UID=$FAKE_SEAT_UID} ${FAKE_HOME_ROOT:+FAKE_HOME_ROOT=$FAKE_HOME_ROOT} \
     FIVEDIVE_BROWSER_STACK=off FIVEDIVE_BROWSER_PROFILE_ROOT="$PROFILES" \
     FIVEDIVE_BROWSER_SYSTEMD_DIR="$TMP/systemd" FIVEDIVE_BROWSER_SYSTEMCTL=systemctl \
     FIVEDIVE_BROWSER_SUDOERS_DIR="$TMP/sudoers" FIVEDIVE_BROWSER_VISUDO="$CORE/visudo" \
@@ -191,6 +206,62 @@ if git -C "$ROOT" cat-file -e "$B7_BASE:browser/bin/browser" 2>/dev/null; then
   t  'B7 ...and so does a hire'                                  no "$(has claude)"
 else
   t  "B7 the pre-7156 tree $B7_BASE resolves (fetch failed: control NOT run)" yes no
+fi
+
+# --- H DIVE-7432: setup moves aside a ~/.config/google-chrome the seat does not own
+# witty-palm, report 604: /home/claude/.config/google-chrome belonged to another
+# seat (the shared-config era), so claude's browser trapped rc 133 whenever its
+# crash dir fell back to the home. Files here are this runner's uid; the fake
+# `id -u <seat>` answers FAKE_SEAT_UID, so another uid makes them "another seat's".
+ME=$(id -u); MEN=$(id -un)
+HR="$TMP/homes"
+homes() {  # every seat's home with a google-chrome holding a marker
+  rm -rf "$HR"; local s
+  for s in claude agent-alpha agent-beta; do
+    mkdir -p "$HR/$s/.config/google-chrome/Crash Reports"; echo theirs > "$HR/$s/.config/google-chrome/marker"
+    chmod 700 "$HR/$s/.config/google-chrome"
+  done
+}
+moved() { compgen -G "$HR/$1/.config/google-chrome.$MEN.moved-*" >/dev/null && echo yes || echo no; }
+homes; fresh; FAKE_HOME_ROOT="$HR" FAKE_SEAT_UID=$((ME + 1)) AS=root go
+t  'H1 root setup: exits 0'                                      0 "$RC"
+t  'H1 ...claude'"'"'s foreign google-chrome is no longer at its name' no "$( [[ -e "$HR/claude/.config/google-chrome" ]] && echo yes || echo no)"
+t  'H1 ...it was moved aside, named for its owner'               yes "$(moved claude)"
+t  'H1 ...whole: the other seat'"'"'s data is kept, not chowned'   theirs "$(cat "$HR"/claude/.config/google-chrome."$MEN".moved-*/marker 2>/dev/null)"
+tn 'H1 ...and nothing was chowned to the seat'                   "google-chrome" "$(cat "$CALL_LOG")"
+tc 'H1 ...and setup says so'                                     "moved aside claude's ~/.config/google-chrome (it belonged to $MEN" "$OUT"
+t  'H1 ...a registry seat'"'"'s is moved too'                     yes "$(moved agent-alpha)"
+t  'H1 ...and the other'"'"'s'                                    yes "$(moved agent-beta)"
+: > "$CALL_LOG"; AS=root FAKE_HOME_ROOT="$HR" FAKE_SEAT_UID=$((ME + 1)) go
+tn 'H2 re-run: nothing more is moved'                            'moved aside' "$OUT"
+
+homes; fresh; FAKE_HOME_ROOT="$HR" FAKE_SEAT_UID=$ME AS=root go
+t  'H3 a google-chrome the seat owns stays where it is'          theirs "$(cat "$HR/claude/.config/google-chrome/marker" 2>/dev/null)"
+t  'H3 ...and is not moved'                                      no "$(moved claude)"
+tn 'H3 ...nor said to be'                                        'moved aside' "$OUT"
+
+homes; fresh; rm -rf "$HR/claude/.config"; mkdir -p "$TMP/decoy/google-chrome"; ln -s "$TMP/decoy" "$HR/claude/.config"
+FAKE_HOME_ROOT="$HR" FAKE_SEAT_UID=$((ME + 1)) AS=root go
+t  'H4 a ~/.config that is a symlink is not followed: its target is untouched' yes "$( [[ -d "$TMP/decoy/google-chrome" ]] && echo yes || echo no)"
+t  'H4 ...and nothing is moved in it'                            0 "$(find "$TMP/decoy" -maxdepth 1 -name 'google-chrome.*' | wc -l | tr -d ' ')"
+t  'H4 ...the other seats are still healed'                      yes "$(moved agent-alpha)"
+
+homes; fresh; FAKE_HOME_ROOT="$HR" FAKE_SEAT_UID=$((ME + 1)) AS=hire go
+t  'H5 a hire'"'"'s setup heals its own seat'                     yes "$(moved agent-alpha)"
+t  'H5 ...and the box seat'                                      yes "$(moved claude)"
+t  'H5 ...and no other seat'                                     no "$(moved agent-beta)"
+
+# Negative control: the tree before DIVE-7432 leaves the foreign dir in place.
+H_BASE=14959968f654cf578d78e76ffb46b63bfcd58dc4   # 5dive-browser main at 1.66.0
+git -C "$ROOT" cat-file -e "$H_BASE^{commit}" 2>/dev/null \
+  || git -C "$ROOT" fetch -q --depth=1 origin "$H_BASE" >/dev/null 2>&1
+if git -C "$ROOT" cat-file -e "$H_BASE:browser/bin/browser" 2>/dev/null; then
+  rm -rf "$OLD"; cp -r "$ROOT/browser" "$OLD"
+  git -C "$ROOT" show "$H_BASE:browser/bin/browser" > "$OLD/bin/browser"; chmod +x "$OLD/bin/browser"
+  homes; fresh "$OLD"; FAKE_HOME_ROOT="$HR" FAKE_SEAT_UID=$((ME + 1)) AS=root go
+  t  'H6 (negative control) the pre-fix tree leaves claude'"'"'s foreign google-chrome in place' theirs "$(cat "$HR/claude/.config/google-chrome/marker" 2>/dev/null)"
+else
+  t  "H6 the pre-fix tree $H_BASE resolves (fetch failed: control NOT run)" yes no
 fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
