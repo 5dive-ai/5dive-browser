@@ -87,8 +87,9 @@ PAGE = """<!doctype html>
  #pastebox[hidden],#note[hidden]{display:none}
  /* With the field open, Type has done its job: its room keeps Paste on a phone-wide bar. */
  #pastebox:not([hidden])~#type{display:none}
+ /* 16px, not the bar's 14: a phone zooms the page in on a focused field with smaller text (DIVE-7379). */
  #pastein{flex:1;min-width:0;background:#15191f;color:inherit;border:1px solid #2e3540;border-radius:6px;
-  padding:1px 8px;font:inherit;line-height:19px}
+  padding:1px 8px;font:inherit;font-size:16px;line-height:19px}
  #bar button{background:#1f2630;color:inherit;border:1px solid #2e3540;border-radius:6px;padding:1px 12px;
   font:inherit;line-height:19px;cursor:pointer}
  #bar button:disabled{opacity:.45;cursor:default}
