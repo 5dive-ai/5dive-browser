@@ -14,6 +14,9 @@
 #      each `input` and clears itself), copied verbatim, on the same sequences —
 #      each phone sequence must come out WRONG there, or this harness proves nothing
 #   L  the bar's language, and nothing is sent before connect or after disconnect
+#   Z  a phone does not stay zoomed in (DIVE-7379): the field's text is 16px (a
+#      phone zooms in on a focused field with smaller text), the page may still
+#      zoom, and Send or the keyboard closing takes the page back to its scale
 # Pure node, no browser.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -23,7 +26,8 @@ trap 'rc=$?; rm -rf "$TMP"; echo "HARNESS-RC=$rc"' EXIT
 cp browser/lib/login-link/viewer-ui.js "$TMP/viewer-ui.mjs"
 
 cat >"$TMP/t.mjs" <<'JS'
-import { wireBar, pickText, TEXT } from './viewer-ui.mjs';
+import { wireBar, pickText, TEXT, unzoom, UNZOOM_MS } from './viewer-ui.mjs';
+import { readFileSync } from 'node:fs';
 
 let PASS = 0, FAIL = 0;
 const t = (name, want, got) => {
@@ -234,6 +238,71 @@ for (const [name, steps, want] of PHONE) {
   bar.connect(); bar.disconnect();
   t('L4 after the screen closes: buttons off, field hidden and emptied',
     [true, true, true, ''], [doc.els.type.disabled, doc.els.paste.disabled, doc.els.pastebox.hidden, doc.els.pastein.value]);
+}
+
+// Z: zoom (DIVE-7379). lodar's phone zoomed in on Type and could not get out.
+{
+  const html = readFileSync('browser/lib/login-link-server.py', 'utf8');
+  // The field's font size as the cascade leaves it: `font:` resets the size (to
+  // the body's 14px through inherit), a later `font-size:` wins over it.
+  const body = /html,body\{[^}]*font:(\d+)px/.exec(html);
+  const rule = /#pastein\{([^}]*)\}/.exec(html);
+  let px = 0;
+  for (const d of (rule ? rule[1] : '').split(';')) {
+    const [k, v = ''] = d.split(':').map((x) => x.trim());
+    if (k === 'font') px = v === 'inherit' ? +body[1] : parseFloat(v);
+    if (k === 'font-size') px = v === 'inherit' ? +body[1] : parseFloat(v);
+  }
+  t('Z1 the Type field\'s text is at least 16px (no zoom on focus)', true, px >= 16);
+  const vp = /<meta name="viewport" content="([^"]*)"/.exec(html);
+  t('Z2 the page may still zoom (no user-scalable=no, no maximum-scale)', true,
+    !!vp && !/user-scalable\s*=\s*(no|0)|maximum-scale/i.test(vp[1]));
+}
+function zoomDoc(scale) {
+  const doc = barDoc();
+  const meta = { content: 'width=device-width, initial-scale=1', log: [] };
+  meta.getAttribute = () => meta.content;
+  meta.setAttribute = (k, v) => { meta.content = v; meta.log.push(v); };
+  doc.querySelector = (sel) => (sel === 'meta[name="viewport"]' ? meta : null);
+  doc.documentElement = { style: { minHeight: '' } };
+  const win = { visualViewport: { scale }, setTimeout: (f, ms) => setTimeout(f, ms) };
+  return { doc, meta, win };
+}
+{
+  const { doc, meta, win } = zoomDoc(3);
+  t('Z3 zoomed in: unzoom caps the page at its own scale', true, unzoom(doc, win));
+  t('Z3 ... with maximum-scale=1, and a layout for Chrome to take it at', ['width=device-width, initial-scale=1, maximum-scale=1', '100.01%'],
+    [meta.content, doc.documentElement.style.minHeight]);
+  await new Promise((r) => setTimeout(r, UNZOOM_MS + 50));
+  t('Z3 ... then gives the old viewport back, so the owner can pinch again', ['width=device-width, initial-scale=1', ''],
+    [meta.content, doc.documentElement.style.minHeight]);
+  const one = zoomDoc(1);
+  t('Z4 not zoomed: unzoom leaves the page alone', [false, []], [unzoom(one.doc, one.win), one.meta.log]);
+}
+{
+  const { doc, meta, win } = zoomDoc(2.5);
+  wireBar(doc, fakeRfb(), TEXT.en, { readText: async () => '' }, win).connect();
+  doc.els.type.click();
+  doc.els.pastein.value = 'owner@example.com';
+  fire(doc.els.pastebox, ev('submit'));
+  t('Z5 Send takes a zoomed page back to its scale', ['width=device-width, initial-scale=1, maximum-scale=1'], meta.log);
+  const b = zoomDoc(2.5);
+  wireBar(b.doc, fakeRfb(), TEXT.en, { readText: async () => '' }, b.win).connect();
+  b.doc.els.type.click();
+  fire(b.doc.els.pastein, ev('blur'));
+  t('Z6 the keyboard closing without Send does too', ['width=device-width, initial-scale=1, maximum-scale=1'], b.meta.log);
+  await new Promise((r) => setTimeout(r, UNZOOM_MS + 50));
+  // Send with focus moving to the screen: submit AND blur, both before the page
+  // has redrawn (found on 5dive-ci: the viewport stayed capped, no pinch again).
+  const c = zoomDoc(2.5);
+  const field = c.doc.els.pastein;
+  const rfb = Object.assign(fakeRfb(), { focus() { fire(field, ev('blur')); } });
+  wireBar(c.doc, rfb, TEXT.en, { readText: async () => '' }, c.win).connect();
+  c.doc.els.type.click();
+  field.value = 'owner@example.com';
+  fire(c.doc.els.pastebox, ev('submit'));
+  await new Promise((r) => setTimeout(r, UNZOOM_MS + 50));
+  t('Z7 Send that also closes the keyboard gives the page its own viewport back', 'width=device-width, initial-scale=1', c.meta.content);
 }
 
 console.log(`\n${PASS} passed, ${FAIL} failed`);

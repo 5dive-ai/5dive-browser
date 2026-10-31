@@ -8,6 +8,13 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a phone no longer gets stuck zoomed in after Type on the take-over page (DIVE-7379), 1.65.3
+
+lodar, 10-31, Brave on Android: on the Linode login take-over he tapped Type, and the page zoomed in so far that only a corner of the box's screen showed. He could not zoom back out (a pinch there goes to the box's browser), and the bar was off the screen.
+
+- **The Type field's text is 16px**, the size under which a phone zooms the page in on a focused field.
+- **Send, or the keyboard closing, takes the page back to its own scale** if it is zoomed in, then lets the owner pinch-zoom again. Checked in Chrome at phone size: zoomed in 5×, after Send 1×, and a pinch still zooms afterwards; without the fix it stayed at 5×.
+
 ### Fixed — `status` no longer says UNKNOWN for a box login whose group's browser is busy with another site, and the overview says the same thing (DIVE-7346), 1.65.2
 
 Report 594: an agent asked `5dive browser status bing.com` and got UNKNOWN, while `5dive browser status` called bing.com "served — ready to use" in the same minute. bing.com shares one browser with discord.gg (its sign-in group), and the owner was using that browser for discord.gg in input mode. The status check sent bing.com's check into that browser, which refused it.

@@ -82,9 +82,37 @@ export function sendText(rfb, text, timer = { id: 0 }) {
   rfb.focus();
 }
 
+// Takes the page back to its own scale when a phone has zoomed it in (DIVE-7379).
+// lodar, 2026-10-31, Brave on Android: after Type the page stayed zoomed on a
+// corner of the box's screen, and a pinch there goes to the box (noVNC takes the
+// touches), so nothing on the page could zoom it back out. A viewport that may
+// not zoom past 1 makes the browser drop to 1; the old one comes back a moment
+// later, so the owner can still pinch-zoom the bar.
+export const UNZOOM_MS = 300;
+export function unzoom(doc, win) {
+  const meta = doc.querySelector && doc.querySelector('meta[name="viewport"]');
+  if (!win || !meta || (win.visualViewport && win.visualViewport.scale <= 1)) return false;
+  const was = meta.getAttribute('content');
+  // Send blurs the field, so a second call can come before the first one's
+  // restore: that one already has the page's own viewport to give back.
+  if (/maximum-scale/.test(was)) return false;
+  // Chrome takes a changed viewport only at a layout that has something to lay
+  // out, so each step also moves the page's height by a hair (on 5dive-ci,
+  // without it the cap did not apply when the keyboard closed with no Send, and
+  // the restore never did: the page could not be pinch-zoomed again).
+  const html = doc.documentElement;
+  meta.setAttribute('content', was + ', maximum-scale=1');
+  if (html) html.style.minHeight = '100.01%';
+  win.setTimeout(() => {
+    meta.setAttribute('content', was);
+    if (html) html.style.minHeight = '';
+  }, UNZOOM_MS);
+  return true;
+}
+
 // Labels the bar in the viewer's language and wires Type, Paste and Send to the
 // noVNC connection. The buttons stay disabled until connect() is called.
-export function wireBar(doc, rfb, t, clipboard) {
+export function wireBar(doc, rfb, t, clipboard, win = doc.defaultView) {
   const $ = (id) => doc.getElementById(id);
   const note = $('note'), typeBtn = $('type'), pasteBtn = $('paste'), box = $('pastebox'), field = $('pastein');
   note.textContent = t.note;
@@ -108,7 +136,10 @@ export function wireBar(doc, rfb, t, clipboard) {
     const text = field.value;
     field.value = '';
     if (live) sendText(rfb, text, timer);
+    unzoom(doc, win);
   });
+  // The phone's keyboard closing (Send, its own back key, a tap on the screen).
+  field.addEventListener('blur', () => unzoom(doc, win));
   return {
     connect() { live = true; typeBtn.disabled = false; pasteBtn.disabled = false; },
     disconnect() {
