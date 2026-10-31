@@ -266,7 +266,9 @@ usage() {
                                       # values typed) as a ROUTINE for replay.
                                       # A fill/type step with "saved":"<name>.login"
                                       # (.password, .2fa = the current code; a bare
-                                      # <name> for a one-value item) types a login
+                                      # <name> for a one-value item; a card's
+                                      # .number .exp .cvc .holder) types a login
+
                                       # the owner saved, never shown to you
                                       # (names: sudo 5dive secret saved ls).
   5dive browser snapshot <url> --delta  # after the first full snapshot: only what
@@ -7805,7 +7807,10 @@ SAVED_NAME_RE='^[a-z][a-z0-9-]{0,39}$'
 # DIVE-6973: a step names an ITEM, and for a login pair one of its fields:
 # "github.login", "github.password", "github.2fa" (the current 6-digit code). A
 # bare name is a one-value item, so DIVE-6844's items keep filling as before.
-SAVED_REF_RE='^[a-z][a-z0-9-]{0,39}(\.(login|password|2fa))?$'
+# DIVE-7381: a card's fields, "visa.number", "visa.exp" (MM/YY), "visa.cvc",
+# "visa.holder" (the name on the card).
+SAVED_REF_RE='^[a-z][a-z0-9-]{0,39}(\.(login|password|2fa|number|exp|cvc|holder))?$'
+SAVED_CARD_REF_RE='\.(number|exp|cvc|holder)$'
 # Root's way into the Vault: the CLI's `secret _reveal`, which decrypts the item
 # and writes down who used it where. A box whose CLI predates it is read directly.
 SAVED_CLI=/usr/local/bin/5dive
@@ -7827,7 +7832,7 @@ _act_saved_check() {  # <steps>
   bad=$(jq -r --arg re "$SAVED_REF_RE" '[.[] | select(has("saved"))
       | select((.op != "fill" and .op != "type") or (.saved | type != "string") or (.saved | test($re) | not) or has("value"))]
       | first // empty | tojson' <<<"$steps")
-  [[ -z "$bad" ]] || die "$E_USAGE" "a saved login goes in a fill or type step, by name and with no value of its own: {\"op\":\"fill\",\"selector\":\"…\",\"saved\":\"github.password\"} (fields: <name>.login, <name>.password, <name>.2fa; a bare <name> for a one-value item). Got: $(jq -c 'del(.value)' <<<"$bad")"
+  [[ -z "$bad" ]] || die "$E_USAGE" "a saved login goes in a fill or type step, by name and with no value of its own: {\"op\":\"fill\",\"selector\":\"…\",\"saved\":\"github.password\"} (fields: <name>.login, <name>.password, <name>.2fa; a card's <name>.number, .exp, .cvc, .holder; a bare <name> for a one-value item). Got: $(jq -c 'del(.value)' <<<"$bad")"
 }
 
 # An item's store key, and a ref's: linkedin-password -> LINKEDIN_PASSWORD,
@@ -7896,16 +7901,24 @@ _saved_reveal() {  # <seat> <start-host> <ref>...
 # password into a form of its own. A new value (the owner's rewrite) or a remove
 # clears the binding (5dive-cli `secret`).
 #
+# DIVE-7381: A CARD IS NOT BOUND. It is for paying at the next sign-up too, so
+# binding it to the first checkout would refuse the second. An item named by a
+# card field is neither checked against nor written to saved.hosts, and its
+# executor host is empty (no page check). The guards for a card are the low
+# limit its save page asks for and the pay approval (pay=ask) at the pay click.
+#
 # A `.2fa` ref is the authenticator seed in the store; root turns it into the
 # current 6-digit code here (lib/totp.cjs, the seed on node's stdin) and only the
 # code goes on to the seat.
 _act_saved_values() {  # <steps> <start-host> <seat>
   local item key bound start="$2" seat="$3" conn="${CONNECTORS_DIR:-/etc/5dive/connectors}" raw hostmap="{}"
   local hosts="$conn/saved.hosts"
-  local -a refs items
+  local -a refs items cards
   mapfile -t refs < <(jq -r '[.[] | .saved // empty] | unique[]' <<<"$1")
-  mapfile -t items < <(printf '%s\n' "${refs[@]}" | sed 's/\..*$//' | sort -u)
+  mapfile -t cards < <(printf '%s\n' "${refs[@]}" | grep -E "$SAVED_CARD_REF_RE" | sed 's/\..*$//' | sort -u)
+  mapfile -t items < <(printf '%s\n' "${refs[@]}" | sed 's/\..*$//' | sort -u | grep -vxF -f <(printf '%s\n' "${cards[@]}") || true)
   for item in "${items[@]}"; do
+
     key="$(_saved_key_of "$item")"
     bound="$(sed -n "s/^${key}=//p" "$hosts" 2>/dev/null | head -n 1)"
     if [[ -n "$bound" ]] && ! _saved_host_within "$start" "$bound"; then
@@ -8071,7 +8084,8 @@ cmd_act() {
         printf '  --record=<routine> saves these steps (never the values typed) for `5dive browser replay`.\n'
         printf '  A fill or type step can name a login the owner saved instead of carrying it:\n'
         printf '  {"op":"fill","selector":"ref=textbox/Password","saved":"<name>.password"}; <name>.login, and\n'
-        printf '  <name>.2fa for the current 6-digit code; a bare <name> for a one-value item. Typed in, never\n'
+        printf '  <name>.2fa for the current 6-digit code; a card'"'"'s <name>.number, .exp (MM/YY), .cvc, .holder\n'
+        printf '  (any site: a card is not bound to one); a bare <name> for a one-value item. Typed in, never\n'
         printf '  shown. Nothing saved yet: 5dive browser login-ask <site>. Never ask for a password in chat.\n'
         printf '  <url> may be omitted to continue on the page a served browser is already on. A served browser\n'
         printf '  already ON <url> is not reloaded (a goto step of your own does reload). An act on the public\n'

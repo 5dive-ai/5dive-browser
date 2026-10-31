@@ -8,6 +8,13 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — a saved card fills a card form by part, on any site (DIVE-7381), 1.66.0
+
+The owner can now save a card in the Vault (`sudo 5dive secret link --save=<name> --card`, 5dive CLI). An act fills it by part, like a login: `"saved":"<name>.number"`, `.exp` (MM/YY), `.cvc` and `.holder` (the name on the card). Each part is typed and never shown, and every output is scrubbed of it, as for a password.
+
+- **A card is not bound to one site.** A login is tied to the site of its first use, so a page cannot talk an agent into typing it elsewhere. A card is for paying at the next sign-up too, so it fills on any site. The guards are the low limit its save page asks for and the pay approval, which still asks the owner at the pay click.
+- A login used in the same act is still bound as before.
+
 ### Fixed — a phone no longer gets stuck zoomed in after Type on the take-over page (DIVE-7379), 1.65.3
 
 lodar, 10-31, Brave on Android: on the Linode login take-over he tapped Type, and the page zoomed in so far that only a corner of the box's screen showed. He could not zoom back out (a pinch there goes to the box's browser), and the bar was off the screen.

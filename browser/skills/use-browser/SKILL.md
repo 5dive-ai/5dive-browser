@@ -79,6 +79,11 @@ a step will pay and `act` does not stop it, ask first anyway.
 - A sign-in form with no saved login: never ask for a password in chat. Run
   `5dive browser login-ask <site>`; on your next turn fill `"saved":"<name>.login"` / `.password` / `.2fa`
   (input mode: click the field, then `{"op":"type","saved":"<name>.password"}`).
+- A card form at a sign-up: never ask for card details in chat. If `sudo 5dive secret saved ls`
+  shows a card ("card ending 1234"), fill `"saved":"<name>.number"` / `.exp` / `.cvc` / `.holder`;
+  the pay click still asks the owner. None saved: `sudo 5dive secret link --save=card --card`
+  makes the owner's one-time page for one.
+
 - Two accounts on one site (`github.com_work`, `github.com_personal`): ask the owner which one,
   never guess, then name it: `5dive browser act github.com_work <url> …`.
 

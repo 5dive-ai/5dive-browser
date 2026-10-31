@@ -354,7 +354,11 @@ in chat.
 **A login the owner saved.** To sign in or fill in the owner's details, name what they saved
 instead of typing it: `{"op":"fill","selector":"ref=textbox/Password","saved":"github.password"}`
 in an `act`. A login item has fields: `<name>.login`, `<name>.password` and `<name>.2fa`, which
-types the current 6-digit code; a bare `"saved":"<name>"` is a one-value item. The value is typed
+types the current 6-digit code; a bare `"saved":"<name>"` is a one-value item. A card the owner
+saved (`saved ls` shows "card ending 1234") has `<name>.number`, `<name>.exp` (MM/YY),
+`<name>.cvc` and `<name>.holder`; unlike a login it is not bound to one site, and the pay click
+still asks the owner (pay=ask). The value is typed
+
 into the page and never shown to you: not in the output, the page text or a picture. On a
 site in input mode (no DOM), click the field first, then `{"op":"type","saved":"github.password"}`
 (or `paste`); the act must start on the site's page (`act <site> <url> …`).
