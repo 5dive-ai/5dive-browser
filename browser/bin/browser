@@ -2062,6 +2062,71 @@ _setup_box_seat_store() {
   return 1
 }
 
+# DIVE-7432 — setup moves aside a ~/.config/google-chrome the seat does not own.
+#
+# Chrome's crash dir is a per-launch dir now (_tmp_claim), and a fresh one when
+# that cannot be had, so the home is the last resort. But a google-chrome there
+# that another seat made — /home/claude/.config was every seat's shared config
+# home before DIVE-4587, and the first seat to run Chrome owns it, 0700 — never
+# heals by itself and traps the launch (rc 133) whenever the home IS reached.
+# Root can repair it, and only root. MOVED, NOT CHOWNED: it may hold the other
+# seat's crash reports, and handing those to this seat would be a leak. The
+# rename stays in the same dir under a name that says whose it was.
+# By fd (DIVE-5201, wiki: chown -h guards the leaf, not the parents): the home
+# is opened O_NOFOLLOW (its parents are root's), .config relative to it the same
+# way, and the leaf is lstat'ed and renamed through that held fd — a symlink the
+# seat swaps in mid-walk is refused at open or renamed, never followed.
+_heal_chrome_crash_dir() {  # <seat> -> "<moved-to>\t<owner>" when it moved one
+  local seat="$1" uid home
+  uid=$(id -u "$seat" 2>/dev/null) || return 0
+  home=$(getent passwd "$seat" 2>/dev/null | cut -d: -f6)
+  [[ "$uid" =~ ^[0-9]+$ && "$home" == /?* ]] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$home" "$uid" 2>/dev/null <<'PY' || true
+import os, pwd, sys, time
+home, uid = sys.argv[1], int(sys.argv[2])
+D = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+try:
+    h = os.open(home, D)
+    c = os.open(".config", D, dir_fd=h)
+    st = os.stat("google-chrome", dir_fd=c, follow_symlinks=False)
+except OSError:
+    sys.exit(0)
+if st.st_uid == uid:
+    sys.exit(0)
+try:
+    owner = pwd.getpwuid(st.st_uid).pw_name
+except KeyError:
+    owner = str(st.st_uid)
+dst = "google-chrome.%s.moved-%s" % (owner, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
+try:
+    os.rename("google-chrome", dst, src_dir_fd=c, dst_dir_fd=c)
+except OSError:
+    sys.exit(0)
+print("%s/.config/%s\t%s" % (home.rstrip("/"), dst, owner))
+PY
+}
+_setup_heal_crash_dirs() {  # <seat>... — say what was moved; never fatal
+  local s out to owner
+  local -A done_=()
+  for s in "$@"; do
+    [[ -n "$s" && "$s" != root && -z "${done_[$s]:-}" ]] || continue
+    done_[$s]=1
+    out=$(_heal_chrome_crash_dir "$s")
+    [[ -n "$out" ]] || continue
+    to="${out%%$'\t'*}"; owner="${out#*$'\t'}"
+    printf "moved aside %s's ~/.config/google-chrome (it belonged to %s, so %s's browser could not start whenever its crash dir fell back to the home): now %s\n" \
+      "$s" "$owner" "$s" "$to"
+  done
+  return 0
+}
+_registry_seats() {  # every agent-<name> in the registry, one per line
+  local reg="${FIVEDIVE_AGENT_REGISTRY:-$STATE_DIR/agents.json}"
+  [[ -r "$reg" ]] && command -v jq >/dev/null 2>&1 || return 0
+  jq -r '(.agents // {}) | objects | keys[]' "$reg" 2>/dev/null \
+    | grep -E '^[a-z0-9][a-z0-9_-]*$' | sed 's/^/agent-/'
+}
+
 cmd_setup() {
   as_root "setup makes a root-owned store, so it"
   # The stack first, and before the seat checks: it is box-wide. A person
@@ -2070,11 +2135,18 @@ cmd_setup() {
   local seat hire_gap=""; seat="$(_seat)"
   if _setup_is_hire; then
     hire_gap=$(_stack_hire_check)
+    # DIVE-7432: before the box seat's own setup below, which would heal it unheard.
+    _setup_heal_crash_dirs "$seat" "$BOX_SEAT"
     # DIVE-7156: agent create's setup is the one a self-hosted box always runs.
     [[ "$seat" == "$BOX_SEAT" ]] || _setup_box_seat_store || true
   else
     local stack_ok=1
     _stack_converge || stack_ok=0
+    # DIVE-7432: the box seat first, as report 604's was; before the store
+    # steps below, whose own setups would heal it unheard.
+    local -a heal=("$BOX_SEAT" "$seat")
+    mapfile -t -O 2 heal < <(_registry_seats)
+    _setup_heal_crash_dirs "${heal[@]}"
     # DIVE-7075: whoever ran it, the box's earlier hires get their stores now.
     # DIVE-7156; first, or a back-filled hire makes it unannounced
     [[ "$seat" == "$BOX_SEAT" ]] || _setup_box_seat_store || true
@@ -2573,7 +2645,7 @@ _chrome_launch_error() {
     return 0
   fi
   err=$(printf '%s' "$err" | tr '\n\r\t' '   ' | cut -c1-200)
-  printf 'it exited %s%s' "$rc" "${err:+ — $err}"
+  printf 'it exited %s%s%s' "$rc" "${err:+ — $err}" "$(_crash_note "$err" "$rc")"
   return 0
 }
 
@@ -5748,10 +5820,10 @@ cmd_serve() {
       # drive, for a site served this way because the other way does not work.
       if (( input )); then
         kill "$xpid" 2>/dev/null; wait "$xpid" 2>/dev/null || true
-        die "$E_UNAVAILABLE" "$site (input mode) is NOT being served: the browser did not come up. ${dwhy:-the session daemon printed nothing}"
+        die "$E_UNAVAILABLE" "$site (input mode) is NOT being served: the browser did not come up. ${dwhy:-the session daemon printed nothing}$(_crash_note "$dwhy")"
       fi
-      printf '%s: NOTE — no warm session for %s, so every command will stop and restart this browser. %s\n' \
-        "$PROG" "$site" "${dwhy:-the session daemon printed nothing}" >&2
+      printf '%s: NOTE — no warm session for %s, so every command will stop and restart this browser. %s%s\n' \
+        "$PROG" "$site" "${dwhy:-the session daemon printed nothing}" "$(_crash_note "$dwhy")" >&2
     fi
   fi
   if [[ -n "$dpid" ]]; then
@@ -5813,7 +5885,7 @@ cmd_serve() {
     rm -f "$(_serve_pidfile "$dir")"
     local why; why=$(tr -s '\n' ' ' < "$errlog" 2>/dev/null | sed 's/^ *//;s/ *$//' | cut -c1-500)
     [[ -n "$why" ]] || why="it printed nothing"
-    die "$E_UNAVAILABLE" "chrome exited immediately (status $crc) — $site is NOT being served, and no display was left behind. Chrome said: $why"
+    die "$E_UNAVAILABLE" "chrome exited immediately (status $crc) — $site is NOT being served, and no display was left behind. Chrome said: $why$(_crash_note "$why" "$crc")"
   fi
 
   ( umask 077; printf 'display=%s\nxvfb_pid=%s\nchrome_pid=%s\nstarted_at=%s\n' \
@@ -11850,7 +11922,7 @@ _TMP_LEGACY=""
 _TMP_INHERITED="${TMPDIR-}"; _TMP_INHERITED_SET="${TMPDIR+1}"
 if [[ ( -n "$_TMP_ROOT" && "$_TMP_INHERITED" == "$_TMP_ROOT"/* ) || "$_TMP_INHERITED" == /tmp/.5dive-browser-*/* \
       || "$_TMP_INHERITED" == */.cache/5dive-browser/tmp/* ]]; then _TMP_INHERITED=""; _TMP_INHERITED_SET=""; fi
-_TMP_OWN=""; _TMP_OWN_PID=""
+_TMP_OWN=""; _TMP_OWN_PID=""; _TMP_CFG_OWN=""; _TMP_CLAIM_WHY=""; _TMP_CFG_KIND=""
 _tmp_starttime() {  # <pid> -> starttime; read after the LAST ')' (comm may hold both)
   local s; { read -r s < "/proc/$1/stat"; } 2>/dev/null || return 1
   s="${s##*) }"; local -a f; read -ra f <<<"$s"
@@ -11869,13 +11941,20 @@ _tmp_reap() {  # [<root>] — the live root by default
   done
 }
 _tmp_claim() {  # give THIS process (BASHPID, so a background subshell too) its own TMPDIR
-  local p="$BASHPID" st d
-  _TMP_OWN=""; _TMP_OWN_PID=""
-  if [[ -n "$_TMP_ROOT" ]] && st=$(_tmp_starttime "$p") \
-     && ( umask 077; mkdir -p -- "$_TMP_ROOT" ) 2>/dev/null && [[ -O "$_TMP_ROOT" && ! -L "$_TMP_ROOT" ]]; then
+  local p="$BASHPID" st="" d="" why=""
+  _TMP_OWN=""; _TMP_OWN_PID=""; _TMP_CFG_OWN=""; _TMP_CLAIM_WHY=""; _TMP_CFG_KIND=""
+  # DIVE-7432: each refusal says WHY, for _crash_note.
+  if [[ -z "$_TMP_ROOT" ]]; then why="no per-launch root is set"
+  elif ! st=$(_tmp_starttime "$p"); then st=""; why="this process's start time could not be read"
+  elif ! ( umask 077; mkdir -p -- "$_TMP_ROOT" ) 2>/dev/null; then why="$_TMP_ROOT could not be made"
+  elif [[ -L "$_TMP_ROOT" ]]; then why="$_TMP_ROOT is a symlink"
+  elif [[ ! -O "$_TMP_ROOT" ]]; then why="$_TMP_ROOT belongs to $(stat -c %U -- "$_TMP_ROOT" 2>/dev/null || echo 'another user'), not to $(id -un 2>/dev/null || echo "uid $EUID")"
+  else
     d="$_TMP_ROOT/$p.$st"
-    if (( ${#d} <= _TMP_SOCK_MAX )) && { mkdir -m 700 -- "$d" 2>/dev/null || [[ -d "$d" && -O "$d" && ! -L "$d" ]]; }; then
-      _TMP_OWN="$d"; _TMP_OWN_PID="$p"; export TMPDIR="$d"
+    if (( ${#d} > _TMP_SOCK_MAX )); then why="$_TMP_ROOT is too long a path for Chrome's socket"
+    elif ! { mkdir -m 700 -- "$d" 2>/dev/null || [[ -d "$d" && -O "$d" && ! -L "$d" ]]; }; then why="$d could not be made (is /tmp full?)"
+    else
+      _TMP_OWN="$d"; _TMP_OWN_PID="$p"; _TMP_CFG_KIND=own; export TMPDIR="$d"
       # DIVE-5638: CHROME'S CRASH DIR IS THIS DIRECTORY TOO. Chrome keeps its
       # crashpad database under $XDG_CONFIG_HOME/google-chrome whatever
       # --user-data-dir says, and if it cannot create it there the launch is a
@@ -11904,14 +11983,79 @@ _tmp_claim() {  # give THIS process (BASHPID, so a background subshell too) its 
       return 0
     fi
   fi
+  _TMP_CLAIM_WHY="$why"
   if [[ -n "$_TMP_INHERITED_SET" ]]; then export TMPDIR="$_TMP_INHERITED"; else unset TMPDIR; fi
-  # No private dir: the DIVE-4587 behaviour, Chrome's crash dir under $HOME.
+  # DIVE-7432: NO PRIVATE TMPDIR IS NOT A REASON TO GIVE CHROME $HOME. This used
+  # to unset XDG_CONFIG_HOME here, i.e. the DIVE-4587 crash dir under the home —
+  # the residual DIVE-5638 signed. On witty-palm (report 604, 2026-10-31) the
+  # box seat's claim fell back and its ~/.config/google-chrome was another
+  # seat's, left from when /home/claude/.config was every seat's shared config
+  # home: rc 133 on every site, after every setup, while a hire on the same box
+  # served fine. The crash dir needs no short path (no socket in it) and no
+  # TMPDIR, only a directory nobody else made, so a fresh `mktemp -d` serves.
+  # The name carries pid.starttime so _tmp_reap_cfg can remove a detached
+  # child's once it is gone, exactly as the per-launch root does. The home is
+  # left only when not even that can be had (no writable /tmp nor /dev/shm),
+  # and _crash_note says so if Chrome then traps.
+  local r c
+  for r in ${FIVEDIVE_BROWSER_CFG_FALLBACK_ROOTS-/tmp /dev/shm}; do
+    [[ -d "$r" && ! -L "$r" ]] || continue
+    c=$(umask 077; mktemp -d -- "$r/.5dive-browser-cfg-$EUID.$p.${st:-0}.XXXXXX" 2>/dev/null) || continue
+    [[ -d "$c" && -O "$c" && ! -L "$c" ]] || continue
+    _TMP_CFG_OWN="$c"; _TMP_OWN_PID="$p"; _TMP_CFG_KIND=fresh
+    export XDG_CONFIG_HOME="$c" FIVEDIVE_BROWSER_CHROME_CONFIG="$c"
+    return 1
+  done
+  _TMP_CFG_KIND=home
   unset XDG_CONFIG_HOME FIVEDIVE_BROWSER_CHROME_CONFIG
   return 1
 }
+# DIVE-7432: the fallback crash dirs a detached child left (see _tmp_claim).
+# Ours only (-O, never a symlink), and only once the pid.starttime in the name
+# is gone; one with no start time is kept while its pid lives.
+_tmp_reap_cfg() {
+  local r d n p s
+  for r in ${FIVEDIVE_BROWSER_CFG_FALLBACK_ROOTS-/tmp /dev/shm}; do
+    for d in "$r"/.5dive-browser-cfg-"$EUID".*.*.??????; do
+      [[ -d "$d" && -O "$d" && ! -L "$d" ]] || continue
+      n="${d##*/.5dive-browser-cfg-$EUID.}"; p="${n%%.*}"; n="${n#*.}"; s="${n%%.*}"
+      [[ "$p" =~ ^[0-9]+$ && "$s" =~ ^[0-9]+$ ]] || continue
+      if [[ "$s" == 0 ]]; then [[ -d "/proc/$p" ]] && continue
+      else [[ "$(_tmp_starttime "$p")" == "$s" ]] && continue; fi
+      rm -rf -- "$d"
+    done
+  done
+  return 0
+}
+# DIVE-7432: SAY WHICH CRASH DIR. `chrome_crashpad_handler: --database is
+# required` and rc 133 are ALL Chrome says when it cannot make its crash dir,
+# and report 604 carried nothing else: a squatted /tmp root and another seat's
+# ~/.config/google-chrome read the same. This names the dir this process's
+# launches get, its owner, and whether the per-launch claim worked and if not
+# why — so the next report carries the cause. Nothing for any other failure.
+_crash_note() {  # <chrome's words> [<status>] -> a sentence to append, or nothing
+  [[ "$1" == *"--database is required"* || "${2:-}" == 133 ]] || return 0
+  local where e owner claim
+  if [[ -z "$_TMP_CLAIM_WHY" ]]; then claim="the per-launch dir was claimed"
+  else claim="the per-launch dir could not be claimed: $_TMP_CLAIM_WHY"; fi
+  case "$_TMP_CFG_KIND" in
+    own)   where="$_TMP_ROOT/<pid>.<start>/.config/google-chrome"; e="$_TMP_ROOT" ;;
+    fresh) where="${_TMP_CFG_OWN%/*}/.5dive-browser-cfg-$EUID.<pid>.<start>.XXXXXX/google-chrome"; e="$_TMP_CFG_OWN" ;;
+    *)     where="${HOME:-}/.config/google-chrome"; e="$where"
+           claim="$claim, and no fresh dir could be made under ${FIVEDIVE_BROWSER_CFG_FALLBACK_ROOTS-/tmp /dev/shm}" ;;
+  esac
+  while [[ ! -e "$e" && "$e" == /?* ]]; do e="${e%/*}"; [[ -n "$e" ]] || e=/; done
+  owner=$(stat -c %U -- "$e" 2>/dev/null || echo unknown)
+  if [[ "$_TMP_CFG_KIND" == home && "$e" != "$where" ]]; then owner="missing; $e, the nearest that exists, belongs to $owner"
+  else owner="$e belongs to $owner"; fi
+  printf ' [Chrome could not create its crash dir %s (%s); this seat is %s; %s.]' \
+    "$where" "$owner" "$(id -un 2>/dev/null || echo "uid $EUID")" "$claim"
+}
 _tmp_release() {
-  [[ -n "$_TMP_OWN" && "$BASHPID" == "$_TMP_OWN_PID" ]] || return 0
-  rm -rf -- "$_TMP_OWN"
+  [[ -n "$_TMP_OWN_PID" && "$BASHPID" == "$_TMP_OWN_PID" ]] || return 0
+  [[ -n "$_TMP_OWN" ]] && rm -rf -- "$_TMP_OWN"
+  [[ -n "$_TMP_CFG_OWN" ]] && rm -rf -- "$_TMP_CFG_OWN"
+  return 0
 }
 _tmp_exec() {   # `_tmp_exec <cmd…> &` — see DETACHED above
   _tmp_claim
@@ -11951,6 +12095,7 @@ _tmp_reap_cache() {  # [<cache home>]
 }
 _tmp_reap
 [[ -n "$_TMP_LEGACY" ]] && _tmp_reap "$_TMP_LEGACY"
+_tmp_reap_cfg
 _tmp_reap_cache
 _tmp_claim
 builtin trap '_tmp_release' EXIT
