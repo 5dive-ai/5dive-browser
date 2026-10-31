@@ -30,6 +30,9 @@
 #      V5 nothing saved: the refusal names the Vault and login-ask, never chat
 #      V6 a bound item on another site is refused before the Vault is read
 #      V7 an unknown field is refused
+#      V8 DIVE-7381 a card fills by part (<name>.number, .exp, .cvc, .holder)
+#         into a plain form; no part on any argv or output; NOT bound to a
+#         site, so a second site fills it too and the executor gets no host
 #   R  root's half, where this machine has passwordless sudo (CI has it)
 #      R1 sudo act: root reads the store, the seat types the value
 #      R2 a name with nothing saved: refused, says where the owner saves one
@@ -39,6 +42,8 @@
 #      L1 a local sign-in page: act fills the username and the SAVED password,
 #         submits, and the site says signed in; the site got the exact value
 #      L2 the value appears 0 times in act's output and its artifacts
+#      L3 DIVE-7381 a plain HTML card form: act fills number, expiry, code and
+#         name from a saved card, submits, and the site got each part exactly
 set -uo pipefail
 printf 'grading tree: %s @ %s\n' "$PWD" "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" >&2
 cd "$(dirname "$0")/.."
@@ -192,8 +197,11 @@ VCON="$TMP/vcon"; mkdir -p "$VCON"; chmod 700 "$VCON"
 VPASS='Gh-<&"pass> 9'
 VLOGIN='sam@example.com'
 VSEED='JBSWY3DPEHPK3PXP'
+CNUM='4242424242424242' CEXP='07/39' CCVC='814' CHOLD='Sam <&"Owner>'
 jq -nc --arg l "$VLOGIN" --arg p "$VPASS" --arg s "$VSEED" --arg v "$SECRET" \
-  '{"github.login":$l, "github.password":$p, "github.2fa":$s, "linkedin-password":$v}' > "$TMP/vault.json"
+  --arg n "$CNUM" --arg e "$CEXP" --arg c "$CCVC" --arg h "$CHOLD" \
+  '{"github.login":$l, "github.password":$p, "github.2fa":$s, "linkedin-password":$v,
+    "visa.number":$n, "visa.exp":$e, "visa.cvc":$c, "visa.holder":$h}' > "$TMP/vault.json"
 cat > "$TMP/fake-5dive" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE5_LOG"
@@ -293,6 +301,27 @@ arm 'V6 a bound item on another site: refused, no _reveal, nothing typed' "yes y
 # V7: a field that is not one of the three, or a dangling dot: refused up front.
 arm 'V7a "github.token" is refused' 'refused untyped' "$(s5 '[{"op":"fill","selector":"#pw","saved":"github.token"}]')"
 arm 'V7b "github." is refused' 'refused untyped' "$(s5 '[{"op":"fill","selector":"#pw","saved":"github."}]')"
+
+# V8: DIVE-7381, a card by part, into a plain form that shows every part back.
+export PWHTML="<html><body><form><input id=\"cn\" value=\"$CNUM\"><input id=\"ce\" value=\"$CEXP\"><input id=\"cc\" value=\"$CCVC\"><input id=\"ch\" value=\"$(htmlesc "$CHOLD")\"></form><p>card $CNUM</p></body></html>"
+export PWTEXT="card $CNUM"
+CSTEPS='[{"op":"fill","selector":"#cn","saved":"visa.number"},{"op":"fill","selector":"#ce","saved":"visa.exp"},{"op":"fill","selector":"#cc","saved":"visa.cvc"},{"op":"fill","selector":"#ch","saved":"visa.holder"}]'
+rm -f "$VCON/saved.hosts"
+vact "https://pay.one.test/checkout" "$CSTEPS" "$TMP/v8"
+arm 'V8a a card fills by part: rc 0, each part in its own field' "0|$CNUM|$CEXP|$CCVC|$CHOLD" \
+  "$RC|$(filled '#cn')|$(filled '#ce')|$(filled '#cc')|$(filled '#ch')"
+[[ "$RC" == 0 ]] || gha 'V8 act output' "$OUT $ERR"
+arm 'V8b the number is in none of stdout, stderr, the artifacts, any jq argv, the CLI argv or the rail argv' 0 \
+  "$(leaks "$CNUM" "$OUT" "$ERR" "$TMP/v8" "$(cat "$TMP/jq-argv.log")" "$(cat "$FAKE5_LOG")" "$(cat "$TMP/seam-rail-args")")"
+arm 'V8c the scrub ran on the page that showed it' yes "$(grep -qF '[saved]' "$TMP/v8/page.html" 2>/dev/null && echo yes || echo no)"
+arm 'V8d a card is not bound: nothing written to saved.hosts' "no" "$(grep -qs '^VISA=' "$VCON/saved.hosts" && echo yes || echo no)"
+vact "https://pay.two.test/billing" '[{"op":"fill","selector":"#cn","saved":"visa.number"}]' "$TMP/v8b"
+arm 'V8e ...so a second site fills it too (rc 0, typed), and _reveal was asked for that site' "0|$CNUM|yes" \
+  "$RC|$(filled '#cn')|$(has "--host=pay.two.test visa.number" "$(cat "$FAKE5_LOG")")"
+arm 'V8f a login on the same act is still bound (only the card is exempt)' 'GITHUB=pay.one.test' \
+  "$(vact "https://pay.one.test/checkout" '[{"op":"fill","selector":"#cn","saved":"visa.number"},{"op":"fill","selector":"#pw","saved":"github.password"}]' "$TMP/v8c"; cat "$VCON/saved.hosts" 2>/dev/null)"
+arm 'V8g "visa.pin" is refused' 'refused untyped' "$(s5 '[{"op":"fill","selector":"#cn","saved":"visa.pin"}]')"
+rm -f "$VCON/saved.hosts"
 export PWHTML="$S_PWHTML" PWTEXT="$S_PWTEXT"
 
 # ================================================================ R  root's half
@@ -362,6 +391,42 @@ JS
   [[ "$RC" == 0 ]] || gha 'L1 act output' "$OUT $ERR"
   arm 'L1b the site got exactly the saved value' "$SECRET" "$(cat "$TMP/got" 2>/dev/null)"
   arm 'L2 the value: 0 times in act'"'"'s output and artifacts' 0 "$(leaks "$SECRET" "$OUT" "$ERR" "$TMP/live")"
+
+  # L3: DIVE-7381, a plain HTML card form; the site records the four parts it got.
+  cat > "$TMP/card.cjs" <<'JS'
+const http = require('http'), fs = require('fs');
+const [logf] = process.argv.slice(2);
+http.createServer((req, res) => {
+  res.setHeader('content-type', 'text/html');
+  if (req.method === 'POST' && req.url === '/pay') {
+    let b = ''; req.on('data', (d) => b += d); req.on('end', () => {
+      const f = new URLSearchParams(b);
+      fs.writeFileSync(logf, ['number', 'exp', 'cvc', 'name'].map((k) => f.get(k) || '').join('|'));
+      res.end('<html><body><h1>Card accepted</h1></body></html>'); });
+    return;
+  }
+  res.end('<html><head><title>Pay</title></head><body><form method="post" action="/pay">' +
+    '<input id="cn" name="number" autocomplete="cc-number"><input id="ce" name="exp" placeholder="MM/YY">' +
+    '<input id="cc" name="cvc"><input id="ch" name="name"><button id="go">Continue</button></form></body></html>');
+
+}).listen(0, '127.0.0.1', function () { console.log(this.address().port); });
+JS
+  node "$TMP/card.cjs" "$TMP/card-got" > "$TMP/card-port" & _KILL+=($!)
+  for _ in $(seq 50); do [[ -s "$TMP/card-port" ]] && break; sleep 0.1; done
+  CPORT="$(cat "$TMP/card-port")"
+  CJSON="$(jq -nc --arg n "$CNUM" --arg e "$CEXP" --arg c "$CCVC" --arg h "$CHOLD" \
+    '{"visa.number":{value:$n,host:""},"visa.exp":{value:$e,host:""},"visa.cvc":{value:$c,host:""},"visa.holder":{value:$h,host:""}}')"
+  # The button says Continue, not Pay: a pay click stops for the owner (pay=ask),
+  # and this arm grades the typing, not that approval.
+  run env -u NODE_PATH -u PWWALK -u PWHTML -u PWTEXT -u FIVEDIVE_BROWSER_DRIVER PATH="$REALPATH" FIVEDIVE_BROWSER_RUN_SETTLE_MS=500 \
+    FIVEDIVE_BROWSER_SAVED_FD=3 "$BROWSER" act "http://localhost:$CPORT/" \
+    --steps="${CSTEPS%]},{\"op\":\"click\",\"selector\":\"#go\"}]" --expect='Card accepted' --out="$TMP/live-card" \
+    3< <(printf '%s' "$CJSON")
+  arm 'L3a a real card form in real Chrome: filled from the saved card and submitted (rc 0, verified)' 0 "$RC"
+  [[ "$RC" == 0 ]] || gha 'L3 act output' "$OUT $ERR"
+  arm 'L3b the site got each part exactly' "$CNUM|$CEXP|$CCVC|$CHOLD" "$(cat "$TMP/card-got" 2>/dev/null)"
+  arm 'L3c the number is 0 times in act'"'"'s output and artifacts' 0 "$(leaks "$CNUM" "$OUT" "$ERR" "$TMP/live-card")"
+
 fi
 
 printf '\n%d pass, %d fail, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
