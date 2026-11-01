@@ -1,0 +1,11 @@
+{
+  "_comment": "INPUT MODE (DIVE-7476, report 617). amazon.co.jp will not serve its pages to a driven read in the automated browser: on exact-swallow (2026-11-01, browser 1.66.0, the owner's own login behind a residential proxy) every snapshot of /dp/ and /s?k= pages through the served Playwright session came back as Amazon's generic error page (title \"ご迷惑をおかけしています！\"), while the owner's viewer loaded the same product page and Rakuten and eight other JP shops read fine in the SAME group Chrome. A headless read gets Amazon's bot interstitial instead. So this site is served as plain Chrome and driven through the screen, keyboard and mouse, like tiktok.com. There is no DOM probe here on purpose: nothing reads the page's DOM in this mode. In a sign-in group, the group's one browser is switched to input mode by an Amazon page verb and back by the next verb on a site that needs the automated browser (DIVE-7237).",
+  "site": "amazon.co.jp",
+  "drive": "input",
+  "probe": {
+    "url": "https://www.amazon.co.jp/",
+    "challenge_when_title_matches": "ご迷惑をおかけしています|sorry! something went wrong|robot check|just a moment|attention required|captcha|verify you are human|are you a robot|security check|unusual (activity|traffic)|verification required",
+    "_comment_challenge": "\"ご迷惑をおかけしています！\" is Amazon's error page, the one report 617's automated reads landed on; \"Sorry! Something went wrong!\" is its English twin. In input mode it is named as a stop rather than returned as the page. The \"click the button below to keep shopping\" bot interstitial is titled plain \"Amazon.co.jp\", so no title can catch it: the agent sees it on the screenshot and hands the window to a person (`5dive browser handoff amazon.co.jp`)."
+  },
+  "actions": {}
+}

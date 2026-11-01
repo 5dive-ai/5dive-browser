@@ -1,12 +1,12 @@
 # Input mode: sites driven by screen, keyboard and mouse
 
-Part of the use-browser skill. Read it when a verb says "INPUT mode", or the site is tiktok.com.
+Part of the use-browser skill. Read it when a verb says "INPUT mode", or the site is tiktok.com or amazon.co.jp.
 
 Some sites will not render for a browser under automation control. For those, the site's
 adapter says `"drive": "input"`, and the browser is **plain Chrome, driven the way a person
 drives it**: you read the screen and act through a real keyboard and mouse. There is no
 automation channel, so to the page it is indistinguishable from the owner's own window.
-tiktok.com is the first such site. A box can also make input mode the **default** for every
+tiktok.com and amazon.co.jp are such sites. A box can also make input mode the **default** for every
 logged-in site (`5dive browser config` shows it; root sets `drive=input`), and then this is how
 you work on all of them, unless a site's adapter says `"drive": "cdp"`. The verbs tell you when a
 site is in input mode: `read`, `tree` or `run` refused "INPUT mode" means use the screen.

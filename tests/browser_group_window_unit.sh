@@ -16,6 +16,11 @@
 #      through the grant it already has, in the mode the site needs; its own
 #      input verb switches it too; a stop stays the owner's and names --restart;
 #      a restart under another call is refused
+#   P  DIVE-7476 (report 617): amazon.co.jp in the group, behind the seat's proxy.
+#      With a proxy that has no login, an Amazon page verb switches the group's
+#      browser to input mode and gets the screen; the other site's verb switches
+#      it back. With a proxy that has a login, the Amazon verb is refused by
+#      name and the group's browser is left as it was.
 #   N  negative control: the pre-fix tree refuses G1's verb with the INPUT-mode
 #      message (skipped where the base commit is not in the checkout)
 # Run unprivileged: every seam is honoured only without root.
@@ -145,6 +150,25 @@ n=$(starts); hold_lease 30
 o=$(brk serve tiktok.com --restart 2>&1); rc=$?
 arm 'R5 a restart while another call holds the browser is refused, nothing restarted' "69 cdp $n" "$rc $(served) $(starts)"
 free_lease
+
+# ---- P: amazon.co.jp in the group, behind the seat's proxy (DIVE-7476) ------
+cp "$ROOT/browser/adapters/amazon.co.jp.json" "$TMP/ad/"
+ln -s .group-main "$TMP/pr/$SEAT/amazon.co.jp"
+PX="$TMP/pr/$SEAT/.5dive-proxy"
+"$BROWSER" serve reddit.com --restart >/dev/null 2>&1
+printf 'socks5://127.0.0.1:1080\n' > "$PX"; chmod 600 "$PX"
+o=$("$BROWSER" shot amazon.co.jp https://www.amazon.co.jp/dp/B00D81RNDK --out="$TMP/p1.png" 2>&1); rc=$?
+arm 'P1 proxy with no login: an Amazon verb switches the group browser to input and gets the screen' "0 input input yes" \
+  "$rc $(served) $(lastvia screen) $(yn test -s "$TMP/p1.png")"
+[[ "$rc" == 0 ]] || printf 'P1 output: %s\n' "$o"
+o=$("$BROWSER" tree reddit.com https://www.reddit.com/ 2>&1); rc=$?
+arm 'P2 ...and the other site'"'"'s next verb switches it back' "0 cdp cdp" "$rc $(served) $(lastvia tree)"
+printf 'http://u:p@example.com:8080\n' > "$PX"
+o=$("$BROWSER" shot amazon.co.jp https://www.amazon.co.jp/dp/B00D81RNDK --out="$TMP/p3.png" 2>&1); rc=$?
+arm 'P3 proxy WITH a login: the Amazon verb is refused (69), naming the login, browser left as it was' "69 yes cdp" \
+  "$rc $(yn grep -q 'proxy with a login' <<<"$o") $(served)"
+rm -f "$PX"
+"$BROWSER" serve reddit.com --stop >/dev/null 2>&1
 
 # ---- N: the pre-fix tree, on G1's fixture ------------------------------------
 if git -C "$ROOT" cat-file -e "$BASE:browser/bin/browser" 2>/dev/null; then
