@@ -5634,23 +5634,24 @@ cmd_serve() {
   # INPUT MODE (DIVE-5287) IS ALREADY PLAIN. Its browser is the login view's
   # launch, held by a daemon that drives it through the display rather than a
   # CDP pipe — so a person's view and an agent's work are the SAME window, and
-  # `--login` has nothing to swap. A proxied seat cannot have it: plain Chrome
-  # cannot carry the proxy's login (DIVE-4951), and the site is served as input
-  # BECAUSE the automated browser does not work there.
+  # `--login` has nothing to swap. A seat whose proxy has a LOGIN cannot have
+  # it: plain Chrome cannot carry that (DIVE-4951), and the site is served as
+  # input BECAUSE the automated browser does not work there. A proxy with no
+  # login is carried as --proxy-server (DIVE-7476), so that seat keeps input.
   # DIVE-5338: the box default applies only where no adapter said a word, and a
   # proxied seat falls back to the automated browser instead of being refused.
   local input=0 _dw; _dw="$(_site_drive_adapter "$site")"
   if [[ "$_dw" == input ]]; then
     input=1
   elif [[ -z "$_dw" ]] && ! _is_public "$site" && [[ "$(_box_drive)" == input ]]; then
-    if [[ -f "$(_proxy_file)" ]]; then
-      printf '%s: NOTE — this box defaults to input mode, but this seat has a proxy, which plain Chrome cannot carry; %s keeps the automated browser.\n' "$PROG" "$site" >&2
+    if _proxy_blocks_plain; then
+      printf '%s: NOTE — this box defaults to input mode, but this seat has a proxy with a login, which plain Chrome cannot carry; %s keeps the automated browser.\n' "$PROG" "$site" >&2
     else
       input=1
     fi
   fi
-  if (( input )) && [[ -f "$(_proxy_file)" ]]; then
-    die "$E_UNAVAILABLE" "$site is set to input mode (plain Chrome, driven through the screen — the site refuses an automated browser), and this seat has a proxy set, which plain Chrome cannot carry: serving it would put this login on the box's own IP. Nothing was started. \`5dive browser proxy clear\` to use input mode here."
+  if (( input )) && _proxy_blocks_plain; then
+    die "$E_UNAVAILABLE" "$site is set to input mode (plain Chrome, driven through the screen — the site refuses an automated browser), and this seat has a proxy with a login set, which plain Chrome cannot carry: serving it would put this login on the box's own IP. Nothing was started. Use a proxy endpoint with no username and password (\`5dive browser proxy set\`), or \`5dive browser proxy clear\`, to use input mode here."
   fi
 
   local plain=0 _lnote=""
@@ -9509,6 +9510,20 @@ _proxy_mask() {  # the password becomes ****; the scheme, user and host stay rea
   elif [[ "$ui" == *:* ]]; then printf '%s://%s:****@%s:%s\n' "$scheme" "${ui%%:*}" "$host" "$port"
   else printf '%s://%s@%s:%s\n' "$scheme" "$ui" "$host" "$port"; fi
 }
+# CAN PLAIN CHROME CARRY THIS SEAT'S PROXY? (DIVE-7476). rc 0 = a proxy is set
+# that it can NOT: one with a login (--proxy-server takes host:port only), or a
+# file this seat cannot read or parse (fail closed — the daemon refuses it too).
+# A proxy with no login is carried as --proxy-server (bin/session-daemon
+# inputLaunch), so input mode keeps the seat's route instead of being refused.
+_proxy_blocks_plain() {
+  local f u; f="$(_proxy_file)"
+  [[ -e "$f" ]] || return 1
+  [[ -r "$f" ]] || return 0
+  u="$(_proxy_get)"
+  [[ -n "$u" ]] || return 1   # comments only: no proxy, as lib/proxy.cjs reads it
+  [[ "$u" =~ $_PROXY_RE ]] || return 0
+  [[ -n "${BASH_REMATCH[3]}" ]]
+}
 _proxy_served_note() {
   local d site; local -a up=()
   for d in "$(_seat_dir)"/*/; do
@@ -12140,7 +12155,8 @@ _site_drive_adapter() {  # the adapter's word for it: input, cdp, or empty
 # public profile is never input: it has no owner window to share.
 #
 # A PROXIED SEAT FALLS BACK, IT IS NOT REFUSED. The adapter's input is refused
-# under a proxy (DIVE-4951) because that site does not work any other way. The
+# under a proxy WITH A LOGIN (DIVE-4951) because that site does not work any
+# other way; a proxy with no login is carried, and changes nothing (DIVE-7476). The
 # box default is a preference: the seat keeps its proxy and the automated
 # browser, and `serve` says so in one line.
 _DRIVE_DEFAULT_FILE="${FIVEDIVE_BROWSER_DRIVE_DEFAULT_FILE:-$STATE_DIR/browser/drive-default}"
@@ -12154,7 +12170,7 @@ _box_drive() {  # input, cdp, or empty (nothing set: the shipped default)
 _site_drive() {  # _site_drive <site>
   local w; w="$(_site_drive_adapter "$1")"
   [[ -n "$w" ]] && { printf '%s\n' "$w"; return 0; }
-  if ! _is_public "$1" && [[ "$(_box_drive)" == input && ! -f "$(_proxy_file)" ]]; then
+  if ! _is_public "$1" && [[ "$(_box_drive)" == input ]] && ! _proxy_blocks_plain; then
     printf 'input\n'; return 0
   fi
   printf 'cdp\n'

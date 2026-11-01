@@ -1024,7 +1024,8 @@ case (chill-gorge, 2026-09-30). Through the session daemon's Playwright launch
 sign-in form. Plain Chrome on the same profile, box and IP rendered it. So the blocker is the
 channel, not the IP, and a proxy does not fix it.
 
-An adapter opts a site in with `"drive": "input"`. Any site can; `tiktok.com.json` ships with it.
+An adapter opts a site in with `"drive": "input"`. Any site can; `tiktok.com.json` and
+`amazon.co.jp.json` (DIVE-7476: every automated read returned Amazon's error page) ship with it.
 Then:
 
 - `serve` starts `session-daemon --input`. That daemon launches Chrome with exactly the DIVE-5203
@@ -1065,8 +1066,10 @@ Then:
   by the last signed-in read, or `unknown` when there has never been one. It is never
   `authenticated` by elimination. A daemon from before 1.31.0 has no `title_probe`. Until it is
   restarted, `status` behaves as before.
-- A proxied seat is refused input mode rather than served off its proxy, for DIVE-4951's reason:
-  plain Chrome cannot carry a proxy login.
+- A seat whose proxy has a **login** is refused input mode rather than served off its proxy, for
+  DIVE-4951's reason: plain Chrome cannot carry a proxy login. A proxy with **no** login (every
+  socks5 one) is passed to plain Chrome as `--proxy-server=<scheme>://<host>:<port>`, so input
+  mode keeps the seat's route (DIVE-7476).
 
 Why screenshots and not a Chrome extension, which main's design note preferred: branded Google
 Chrome has ignored `--load-extension` since 137. On this host's Chrome 153 both the flag and its

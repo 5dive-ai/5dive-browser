@@ -17,6 +17,14 @@
 #           policy; a daemon challenge (75) becomes E_COLD with handoff advice
 #        R6 handoff opens / reports / closes through `hand`
 #        R7 a proxied seat is refused input mode rather than served off-proxy
+#        R7b (DIVE-7476) a proxy with NO login does not block input mode: the
+#           adapter's site and the box default both serve as input under it
+#        R1b the shipped amazon.co.jp adapter opts into input mode, and names
+#           Amazon's error page as a challenge title
+#        P  (DIVE-7476) the REAL daemon's input launch, with a fake Chrome that
+#           records its argv: a proxy with no login reaches Chrome as
+#           --proxy-server=<scheme>://<host>:<port>; one with a login is refused
+#           (69) and Chrome is never started; no proxy adds no flag
 #        R8 regression: a CDP site is never routed to the input verbs
 #        R10 the BOX default (DIVE-5338): `config drive=input` serves an adapter-less
 #           site as input; an adapter's "drive": "cdp" still wins; a proxied seat
@@ -179,6 +187,9 @@ for s in tiktok.com reddit.com; do mkdir -p "$TMP/pr/$SEAT/$s"; chmod 700 "$TMP/
 
 arm 'R1 the shipped tiktok.com adapter opts into input mode' input "$(jq -r .drive "$ROOT/browser/adapters/tiktok.com.json")"
 arm 'R1 ...and reddit.com (a CDP site) does not' null "$(jq -r .drive "$ROOT/browser/adapters/reddit.com.json")"
+arm 'R1b the shipped amazon.co.jp adapter opts into input mode (DIVE-7476)' input "$(jq -r .drive "$ROOT/browser/adapters/amazon.co.jp.json")"
+arm 'R1b ...and its challenge titles catch Amazon'"'"'s error page' yes \
+  "$(node -e 'process.stdout.write(new RegExp(require(process.argv[1]).probe.challenge_when_title_matches, "i").test("ご迷惑をおかけしています！") ? "yes" : "no")' "$ROOT/browser/adapters/amazon.co.jp.json")"
 
 DREC="$TMP/daemon.rec"; : > "$DREC"
 FAKEBIN="$TMP/bin"; mkdir -p "$FAKEBIN"
@@ -437,6 +448,19 @@ o=$("$BROWSER" serve tiktok.com 2>&1); rc=$?
 arm 'R7 a proxied seat is refused input mode (69), not served off its proxy' '69 yes' "$rc $(yn grep -q 'proxy' <<<"$o")"
 arm 'R7 ...before any browser was started' "$n0" "$(wc -l < "$TMP/daemon.argv")"
 rm -f "$TMP/pr/$SEAT/.5dive-proxy"
+# R7b (DIVE-7476) — report 617: a socks5 proxy with no login. Plain Chrome
+# carries it (--proxy-server, the P arms), so input mode is not refused.
+printf 'socks5://127.0.0.1:1080\n' > "$TMP/pr/$SEAT/.5dive-proxy"; chmod 600 "$TMP/pr/$SEAT/.5dive-proxy"
+n0=$(wc -l < "$TMP/daemon.argv")
+o=$("$BROWSER" serve tiktok.com 2>&1); rc=$?
+arm 'R7b a proxy with no login serves the input site (0), as input' "0 yes" "$rc $(tail -n +$((n0 + 1)) "$TMP/daemon.argv" | grep -q -- '--input' && echo yes || echo no)"
+[[ "$rc" == 0 ]] || printf 'R7b output: %s\n' "$o"
+_KILL+=("$(sed -n 's/^daemon_pid=//p' "$TMP/pr/$SEAT/tiktok.com/.5dive-serve")" "$(sed -n 's/^xvfb_pid=//p' "$TMP/pr/$SEAT/tiktok.com/.5dive-serve")")
+"$BROWSER" serve tiktok.com --stop >/dev/null 2>&1
+printf '# comment\nhttp://u:p@example.com:8080\n' > "$TMP/pr/$SEAT/.5dive-proxy"
+o=$("$BROWSER" serve tiktok.com 2>&1); rc=$?
+arm 'R7b ...while a proxy WITH a login (after a comment line) is still refused (69), naming the login' "69 yes" "$rc $(yn grep -q 'proxy with a login' <<<"$o")"
+rm -f "$TMP/pr/$SEAT/.5dive-proxy"
 
 # R9 — a BROKERED seat (no store of its own, borrowing the box login) routes by
 # the .offered marker, and never by asking the daemon.
@@ -573,6 +597,14 @@ _KILL+=("$(sed -n 's/^daemon_pid=//p' "$TMP/pr/$SEAT/news.example.com/.5dive-ser
 "$BROWSER" serve news.example.com --stop >/dev/null 2>&1
 o=$("$BROWSER" serve tiktok.com 2>&1); rc=$?
 arm 'R10 ...while an adapter'"'"'s own input is still refused under a proxy (69)' 69 "$rc"
+rm -f "$TMP/pr/$SEAT/.5dive-proxy"
+printf 'socks5://127.0.0.1:1080\n' > "$TMP/pr/$SEAT/.5dive-proxy"; chmod 600 "$TMP/pr/$SEAT/.5dive-proxy"
+n0=$(wc -l < "$TMP/daemon.argv")
+o=$("$BROWSER" serve news.example.com 2>&1); rc=$?
+arm 'R7b the box default under a proxy with no login is input, with no fallback note (DIVE-7476)' "0 yes 0" \
+  "$rc $(tail -n +$((n0 + 1)) "$TMP/daemon.argv" | grep -q -- '--input' && echo yes || echo no) $(grep -c 'defaults to input mode, but' <<<"$o")"
+_KILL+=("$(sed -n 's/^daemon_pid=//p' "$TMP/pr/$SEAT/news.example.com/.5dive-serve")" "$(sed -n 's/^xvfb_pid=//p' "$TMP/pr/$SEAT/news.example.com/.5dive-serve")")
+"$BROWSER" serve news.example.com --stop >/dev/null 2>&1
 rm -f "$TMP/pr/$SEAT/.5dive-proxy"
 printf 'cdp\n' > "$TMP/drive-default"
 n0=$(reqs screen)
@@ -716,6 +748,37 @@ arm 'RC7 the shipped cjdropshipping.com adapter opts into input mode (DIVE-7171)
 
 export PATH="$OLDPATH"
 cd "$ROOT"
+
+
+# ---------------------------------------------------------------- P: the daemon's proxy (DIVE-7476)
+# The REAL daemon's input launch, no Chrome and no X server: a fake Chrome
+# records its argv and exits, and the launch fails after it (no window) — the
+# argv is what is graded. The display named does not exist, on purpose.
+PP="$TMP/pp"; mkdir -p "$PP/seat"; chmod 700 "$PP/seat"; mkdir -m 700 "$PP/seat/site"
+cat > "$PP/chrome" <<CHR
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$PP/chrome.argv"; exit 1
+CHR
+chmod +x "$PP/chrome"
+pd() {  # pd <proxy line or empty> -> rc; chrome argv in $PP/chrome.argv
+  : > "$PP/chrome.argv"; rm -f "$PP/seat/.5dive-proxy"
+  [[ -n "$1" ]] && { printf '%s\n' "$1" > "$PP/seat/.5dive-proxy"; chmod 600 "$PP/seat/.5dive-proxy"; }
+  DISPLAY=:7476 FIVEDIVE_BROWSER_CHROME="$PP/chrome" FIVEDIVE_BROWSER_INPUT_WINDOW_WAIT_MS=1500 \
+    timeout 30 "$REAL_DAEMON" serve "$PP/seat/site" "$PP/s.sock" --input > "$PP/out" 2> "$PP/err"
+}
+pd 'socks5://127.0.0.1:1080'; rc=$?
+arm 'P1 a proxy with no login reaches plain Chrome as --proxy-server=socks5://127.0.0.1:1080' yes \
+  "$(yn grep -q -- '--proxy-server=socks5://127.0.0.1:1080' "$PP/chrome.argv")"
+arm 'P1 ...and the browser is still plain (no automation flag)' no "$(yn grep -qE -- '--remote-debugging|--enable-automation|--headless' "$PP/chrome.argv")"
+[[ -s "$PP/chrome.argv" ]] || printf 'P1 daemon rc=%s stderr: %s\n' "$rc" "$(tail -3 "$PP/err")"
+pd 'http://proxy.example.com:3128'; rc=$?
+arm 'P2 an http proxy with no login, the same way' yes "$(yn grep -q -- '--proxy-server=http://proxy.example.com:3128' "$PP/chrome.argv")"
+pd 'http://u:secretpw@proxy.example.com:3128'; rc=$?
+arm 'P3 a proxy WITH a login is refused (69) before Chrome starts' "69 0" "$rc $(wc -l < "$PP/chrome.argv" | tr -d ' ')"
+arm 'P3 ...naming the login, never the password' "yes no" "$(yn grep -q 'proxy with a login' "$PP/err") $(yn grep -q secretpw "$PP/err")"
+pd ''; rc=$?
+arm 'P4 no proxy: Chrome starts with no --proxy-server flag' "yes no" "$(yn test -s "$PP/chrome.argv") $(yn grep -q -- '--proxy-server' "$PP/chrome.argv")"
+rm -f "$PP/seat/.5dive-proxy"
 
 # ---------------------------------------------------- K: spare keys, bare Xvfb
 if [[ -z "$REAL_XVFB" ]]; then

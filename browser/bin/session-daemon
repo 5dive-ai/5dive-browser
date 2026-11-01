@@ -1421,19 +1421,26 @@ function plainArgs(profile, sandbox) {
 async function inputLaunch(profile, chrome) {
   const x11 = require(path.join(__dirname, '..', 'lib', 'x11.cjs'));
   if (!process.env.DISPLAY) die(E_UNAVAILABLE, 'input mode needs the display the browser is drawn on, and no DISPLAY was set.');
-  // A PROXIED SEAT DOES NOT GET INPUT MODE (DIVE-4951's rule, same reason).
+  // A PROXY WITH A LOGIN DOES NOT GET INPUT MODE (DIVE-4951's rule, same reason).
   // Plain Chrome cannot carry the proxy's login, so it would put this login on
   // the box's own IP — the route the proxy is there to avoid.
+  // A PROXY WITH NO LOGIN DOES (DIVE-7476). --proxy-server takes
+  // scheme://host:port, which is all such a proxy is (`proxy set` refuses a
+  // login on socks5 anyway, so every socks proxy lands here). Refusing it too
+  // closed the one escape a site that refuses the automated browser has: report
+  // 617, amazon.co.jp behind the owner's login-less residential socks5.
   let viaProxy = null;
   try { viaProxy = proxy.launchProxy(profile); } catch (e) { die(E_UNAVAILABLE, e.message); }
-  if (viaProxy) {
-    die(E_UNAVAILABLE, 'this seat has a proxy set, and input mode is plain Chrome, which cannot carry a proxy ' +
-      'login: it would take this login out through the box\'s own IP. Nothing was started. Clear the proxy ' +
-      '(`5dive browser proxy clear`) to use input mode here.');
+  if (viaProxy && (viaProxy.username || viaProxy.password)) {
+    die(E_UNAVAILABLE, 'this seat has a proxy with a login set, and input mode is plain Chrome, which cannot carry a proxy ' +
+      'login: it would take this login out through the box\'s own IP. Nothing was started. Use a proxy endpoint ' +
+      'with no username and password, or clear the proxy (`5dive browser proxy clear`), to use input mode here.');
   }
+  // `server` is scheme://host:port with no userinfo (lib/proxy.cjs strips it).
+  const proxyArgs = viaProxy ? [`--proxy-server=${viaProxy.server}`] : [];
   const startUrl = process.env.FIVEDIVE_BROWSER_START_URL || '';
   const start = async (sandbox) => {
-    const args = plainArgs(profile, sandbox);
+    const args = [...plainArgs(profile, sandbox), ...proxyArgs];
     if (/^https?:\/\//i.test(startUrl)) args.push(startUrl);
     const child = cp.spawn(chrome, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let tail = '';

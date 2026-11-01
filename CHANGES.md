@@ -8,6 +8,13 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — Amazon (amazon.co.jp) reads no longer come back as Amazon's error page, and input mode works behind a proxy with no login (DIVE-7476), 1.66.2
+
+Report 617, exact-swallow: every driven read of a logged-in amazon.co.jp came back as Amazon's error page (「ご迷惑をおかけしています！」), returned like a normal read. The owner's own view of the same session loaded the page.
+
+- **amazon.co.jp is now driven the way a person drives it** (input mode: plain Chrome, the screen, keyboard and mouse), like tiktok.com. Its error page is named as a stop, not returned as the page. In a sign-in group, an Amazon verb switches the group's browser to input mode and the next verb on another site of the group switches it back.
+- **A proxy with no username and password no longer blocks input mode.** Plain Chrome now gets it as `--proxy-server`, so the site keeps going out through the seat's proxy. A proxy with a login is still refused, because plain Chrome cannot carry the login.
+
 ### Fixed — the box login's browser no longer crashes at start (status 133) when its private launch folder can't be made (DIVE-7432), 1.66.1
 
 Report 604, witty-palm: `browser serve` for the box login failed on every site with `chrome_crashpad_handler: --database is required`, even after `sudo 5dive browser setup`, while a hire on the same box worked.
