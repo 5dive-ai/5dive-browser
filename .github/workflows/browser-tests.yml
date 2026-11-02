@@ -112,6 +112,10 @@ jobs:
       # frees the profile, and a stale one-shot headless holder is reaped.
       - name: browser probe timeout harness
         run: bash tests/browser_probe_timeout_unit.sh
+      # DIVE-7572: input mode reads a typed address's title only once the page
+      # has loaded (not the address Chrome shows meanwhile). Live arms: L16 below.
+      - name: input page-load harness
+        run: bash tests/browser_page_load_unit.sh
       # DIVE-5528: two serves of one site wait on one lock, and a session daemon
       # no pidfile names is stopped so the site can be served again.
       - name: serve race harness

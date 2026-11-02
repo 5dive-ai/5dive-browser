@@ -2819,6 +2819,11 @@ _input_probe() {  # <site> <dir>
     echo "unconfirmed (input mode: not checked now — $why; the window shows \"$title\"; a screen is the check: 5dive browser shot $site)"
     return 0
   fi
+  # DIVE-7572: a title that is still the address says nothing about the login.
+  if [[ "$(jq -r 'if .loaded == false then "no" else "yes" end' <<<"$t" 2>/dev/null)" == no ]]; then
+    echo "unconfirmed (input mode: $url did not finish loading, its title is still its address \"$title\", so the login was not checked; a screen is the check: 5dive browser shot $site)"
+    return 0
+  fi
   local out_t in_t; out_t=$(_input_title_marker "$site" logged_out); in_t=$(_input_title_marker "$site" logged_in)
   if [[ -z "$out_t" ]] && ! grep -qiE "$GENERIC_SIGNIN_URL" <<<"$url"; then out_t="$INPUT_SIGNIN_TITLE"; fi
   if [[ -n "$out_t" ]] && grep -qiE -- "$out_t" <<<"$title"; then
@@ -12333,6 +12338,10 @@ _input_rc() {  # map the daemon's exit to this command's, with the handoff advic
     # (75), but a person has nothing to clear, so no handoff advice.
     74) printf '%s: STOP — %s refused this read: it served its own error page, not the page you asked for. This is not a security check and a handoff will not help. Do not retry in a loop; use another source for this page, or try again later.\n' "$PROG" "$site" >&2
         exit "$E_COLD" ;;
+    # DIVE-7572: the daemon's 76 — the typed address never finished loading (its
+    # title stayed the address), so nothing was read as the page. Never rc 0.
+    76) printf '%s: the %s page did not finish loading, so it was not read. The screenshot shows how far it got. Try again in a minute; if it never loads, the site or the connection is not answering this browser.\n' "$PROG" "$site" >&2
+        exit "$E_NOT_READY" ;;
     *) exit "$rc" ;;
   esac
 }

@@ -60,6 +60,10 @@ A site's own **error page** is different: the stop says the site **refused this 
 「ご迷惑をおかけしています！」 is one. Don't hand it over and don't retry in a loop: tell your owner
 Amazon refused the read, and use another source for that page or try again later.
 
+A page that **did not finish loading** (exit 76) was not read: its title was still its address
+when the wait ran out. The screenshot shows how far it got. Try once more a minute later; if it
+still does not load, say so rather than reading the screenshot as the page.
+
 ## One window for the box's logins
 
 The box's logins share one browser (Shopify, CJ, Facebook…). When you use a site, that browser

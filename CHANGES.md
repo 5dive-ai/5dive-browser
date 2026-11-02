@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — in input mode, a page is read only once it has loaded, so Amazon's error page is no longer returned as a good read (DIVE-7572), 1.66.4
+
+On exact-swallow (report 617, 1.66.3), the Amazon product read came back as a success with the title `amazon.co.jp/dp/B00D81RNDK`. That is the address Chrome shows while a page is still loading; the screenshot showed Amazon's error page with the tab still spinning. The title was read at a fixed 2.5 s, so the stop for Amazon's error page never saw it.
+
+- **A typed address now waits for the page's own title** (at least 2.5 s, at most 20 s), then for the page to be quiet. Then the error-page and security-check titles are matched. This covers `shot`/`snapshot` with an address, a `goto` step in `act`, and the login check.
+- **A page that never loads is no longer a success.** The read stops with "did not finish loading" (exit 76), keeps the screenshot, and marks it `loaded: false`. In `act`, the plan stops at that `goto`. The login check says "not checked" instead of guessing from the address.
+- **Not measured here:** the IP the input-mode Chrome goes out on (still open from DIVE-7528), and why the first try said the browser was in use even with `--wait`.
+
 ### Fixed — when Amazon refuses a read, the stop says so and no longer sends a person to a handoff (DIVE-7528), 1.66.3
 
 After 1.66.2, the Amazon read on exact-swallow (report 617) still got Amazon's error page (「ご迷惑をおかけしています！」), now in input mode too. The stop called it a security check and told the agent to hand the window to a person, but the page has nothing on it to clear.
