@@ -67,6 +67,7 @@ const sessionKeep = require(path.join(__dirname, '..', 'lib', 'session-keep.cjs'
 // What each tab looked like when the agent last saw it, so an act can answer with
 // what changed instead of the whole page (DIVE-6795, lib/look.cjs).
 const look = require(path.join(__dirname, '..', 'lib', 'look.cjs'));
+const pageLoad = require(path.join(__dirname, '..', 'lib', 'page-load.cjs'));
 const looks = look.memory();
 
 // THE PAGE TEXT IS EXTRACTED HERE, WARM (DIVE-6778). The CLI derived page.md with a
@@ -116,6 +117,9 @@ const E_NOTHING_RAN = 70, E_FAILED = 1, E_UNAVAILABLE = 69, E_PERM = 77;
 // site's own error page (adapter probe.refused_when_title_matches). bin/browser
 // turns it into a stop (75) whose advice is NOT a handoff.
 const E_SITE_REFUSED = 74;
+// 76 (DIVE-7572): input mode, a typed address that never finished loading (its
+// title stayed the address). bin/browser's E_NOT_READY: the fix is to wait.
+const E_NOT_LOADED = 76;
 
 // ---- WHO IS ASKING (DIVE-4664 scope (c)) -----------------------------------
 //
@@ -1382,6 +1386,10 @@ async function sendDownloads(dl, send) {
 const INPUT_SETTLE_MS = Number(process.env.FIVEDIVE_BROWSER_INPUT_SETTLE_MS || 1200);
 const INPUT_GOTO_SETTLE_MS = Number(process.env.FIVEDIVE_BROWSER_INPUT_GOTO_SETTLE_MS || 2500);
 const INPUT_WINDOW_WAIT_MS = Number(process.env.FIVEDIVE_BROWSER_INPUT_WINDOW_WAIT_MS || 20000);
+// DIVE-7572: how long a typed address gets to LOAD before the read says it did
+// not. INPUT_GOTO_SETTLE_MS is the least it waits; this is the most. "Loaded" is
+// the window title no longer being the address (lib/page-load.cjs).
+const INPUT_LOAD_WAIT_MS = Number(process.env.FIVEDIVE_BROWSER_INPUT_LOAD_WAIT_MS || 20000);
 // THE PAGE MUST BE TAKING INPUT BEFORE INPUT IS SENT (quinn's rejection of the
 // first delivery). Measured on Chrome 153 / Xvfb, 2026-09-30: a click and keys
 // sent within ~100ms of a page's title appearing are DROPPED — no mousedown, no
@@ -1726,6 +1734,20 @@ async function gotoByKeys(be, url) {
   await x.press('Return');
 }
 
+// Type <url> and wait for it to load: at least <minMs>, then until the title is
+// no longer the address (at most INPUT_LOAD_WAIT_MS), then the quiet gate. The
+// title is read only after this, so a refused or challenge title is matched on
+// the page, not on the address Chrome shows while it loads (DIVE-7572).
+async function gotoLoaded(be, url, minMs) {
+  await gotoByKeys(be, url);
+  return pageLoad.untilLoaded(async () => (await be.x.windowTitle()).page, () => settled(be),
+    { url, minMs, maxMs: Math.max(minMs, INPUT_LOAD_WAIT_MS), pollMs: 100, sleep: sleepMs });
+}
+const notLoadedMsg = (site, ld) =>
+  `NOT LOADED: the ${site} page did not finish loading within ${Math.round(ld.waited_ms / 1000)}s: its title is still ` +
+  `its address ("${ld.title}"), so nothing on it was read as the page. The screenshot shows how far it got. ` +
+  `Try again; if it never loads, the site or the connection is not answering this browser.`;
+
 async function screenOf(be) {
   const png = await be.x.screenshotPNG();
   const t = await be.x.windowTitle();
@@ -1819,16 +1841,18 @@ async function inputRequest(be, profile, req, send, end, behalf) {
       let opened = false;
       for (let i = 0; i < 20 && !opened; i++) { await sleepMs(100); opened = (await be.x.windowTitle()).window !== before; }
       if (!opened) return skip('no new tab opened, so nothing was loaded');
-      await gotoByKeys(be, req.url);
-      await sleepMs(Number.isFinite(Number(req.wait)) && req.wait !== undefined ? Math.min(Number(req.wait), INPUT_MAX_WAIT_MS) : INPUT_GOTO_SETTLE_MS);
-      await settled(be);
+      // DIVE-7572: the title once the page has LOADED, not the address Chrome
+      // shows while it loads. Classification stays the caller's; `loaded` says
+      // whether the title is the page's own.
+      const ld = await gotoLoaded(be, req.url,
+        Number.isFinite(Number(req.wait)) && req.wait !== undefined ? Math.min(Number(req.wait), INPUT_MAX_WAIT_MS) : INPUT_GOTO_SETTLE_MS);
       const t = await be.x.windowTitle();
       if (!viewerLive(profile) && !be.handoff) {
         await keysReachBrowser(be);
         await be.x.press('ctrl+w');
         await sleepMs(150);
       }
-      out({ drive: 'input', navigated: true, url_requested: req.url, title: t.page, window_title: t.window });
+      out({ drive: 'input', navigated: true, loaded: ld.loaded, url_requested: req.url, title: t.page, window_title: t.window });
       return end(0);
     } catch (e) {
       send({ t: 'err', msg: `could not check ${site} in a tab of its own: ${e.message}` }); return end(E_FAILED);
@@ -1854,15 +1878,24 @@ async function inputRequest(be, profile, req, send, end, behalf) {
   }
 
   if (req.op === 'screen') {
+    let ld = null;
     try {
       if (req.url) {
         if (!INPUT_STEPS.goto({ url: req.url })) { send({ t: 'err', msg: 'screen --url needs an http(s) url' }); return end(E_NOTHING_RAN); }
         const no = inputRefusal(be, profile, req, 'screen');
         if (no) { send({ t: 'err', msg: no }); return end(E_UNAVAILABLE); }
-        await gotoByKeys(be, req.url);
-        await sleepMs(Number.isFinite(Number(req.wait)) && req.wait !== undefined ? Number(req.wait) : INPUT_GOTO_SETTLE_MS);
+        ld = await gotoLoaded(be, req.url,
+          Number.isFinite(Number(req.wait)) && req.wait !== undefined ? Math.min(Number(req.wait), INPUT_MAX_WAIT_MS) : INPUT_GOTO_SETTLE_MS);
       } else if (Number(req.wait) > 0) await sleepMs(Math.min(Number(req.wait), INPUT_MAX_WAIT_MS));
       const shot = await screenOf(be);
+      if (ld && !ld.loaded) {
+        // A refused title that showed up in the last instant still wins: it is the answer.
+        const late = stopOf(shot.title, '', '');
+        out({ ...shot, url_requested: req.url, handoff: !!be.handoff, viewer: viewerLive(profile),
+              ...(late && late.rc === E_SITE_REFUSED ? { refused: true } : { loaded: false }) });
+        if (late) { send({ t: 'err', msg: late.msg }); return end(late.rc); }
+        send({ t: 'err', msg: notLoadedMsg(site, { ...ld, title: shot.title }) }); return end(E_NOT_LOADED);
+      }
       const stop = stopOf(shot.title, '', '');
       out({ ...shot, url_requested: req.url || null, handoff: !!be.handoff, viewer: viewerLive(profile),
             ...(stop && stop.rc === E_SITE_REFUSED ? { refused: true } : {}) });
@@ -1925,7 +1958,12 @@ async function inputRequest(be, profile, req, send, end, behalf) {
               if (s.x !== undefined) await be.x.move(s.x, s.y);
               await pointerOnBrowser(be, 'scrolled');   // wheel notches go to the window under the pointer, too
               await be.x.scroll(s.dy || 0, s.dx || 0, null); break;
-            case 'goto': await gotoByKeys(be, s.url); await sleepMs(INPUT_GOTO_SETTLE_MS); break;
+            case 'goto': {
+              const ld = await gotoLoaded(be, s.url, INPUT_GOTO_SETTLE_MS);
+              // A refused/challenge title is the hard stop's to name, below.
+              if (!ld.loaded && !stopOf(ld.title, '', '')) throw new Error(notLoadedMsg(site, ld) + ' Stopped; the rest of the plan did not run.');
+              break;
+            }
             case 'wait': await sleepMs(s.ms); break;
           }
         } catch (e) { e.message = `${where}: ${e.message}`; throw e; }

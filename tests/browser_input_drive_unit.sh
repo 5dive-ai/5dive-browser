@@ -21,6 +21,9 @@
 #           adapter's site and the box default both serve as input under it
 #        R1b the shipped amazon.co.jp adapter opts into input mode, and names
 #           Amazon's error page as a REFUSAL title, not a challenge (DIVE-7528)
+#        L16 (DIVE-7572) the REAL daemon reads a typed address once it has LOADED:
+#           a late title is read, a late error-page title stops (74), a page that
+#           never loads stops (76), never rc 0
 #        R5b (DIVE-7528) the daemon's 74 (the site's own error page) is a stop
 #           (75) with no handoff advice; L15 is the real daemon's side
 #        P  (DIVE-7476) the REAL daemon's input launch, with a fake Chrome that
@@ -1248,6 +1251,46 @@ HTML
     arm 'L14 ...a chooser that will not close fails by name and says where to click its Cancel' "1 yes" \
       "$rc $(yn grep -Eq 'nothing was attached\. Click its Cancel at about [0-9]+,[0-9]+ with a click step' "$TMP/l14e.log")$( (( rc )) || why "$TMP/l14e.log")"
     l14_stop
+
+    # L16 (DIVE-7572) — THE TITLE IS READ ONCE THE PAGE HAS LOADED. exact-swallow,
+    # 1.66.3: Amazon's error page came back rc 0 titled "amazon.co.jp/dp/…", the
+    # ADDRESS Chrome shows until the page has a title, because the title was read
+    # at a fixed 2.5 s. These pages commit at once and send their <title> 4 s
+    # later (past that 2.5 s), so on the pre-fix daemon /slow reads as its address
+    # with rc 0 and /slow-refused as rc 0: both red. /never never sends a title.
+    node -e '
+      const h = require("http").createServer((q, r) => {
+        r.setHeader("content-type", "text/html; charset=utf-8");
+        r.write("<html><head>" + " ".repeat(2048));
+        const t = { "/slow": "Slow Fixture", "/slow-refused": "ご迷惑をおかけしています！" }[q.url];
+        if (t) setTimeout(() => r.end("<title>" + t + "</title></head><body>page</body></html>"), 4000);
+      });
+      h.listen(0, "127.0.0.1", () => console.log(h.address().port));' > "$TMP/l16.port" 2>/dev/null &
+    _KILL+=("$!")
+    for i in $(seq 1 50); do [[ -s "$TMP/l16.port" ]] && break; sleep 0.1; done
+    L16U="http://127.0.0.1:$(cat "$TMP/l16.port")"
+    LP3="$TMP/lp3"; mkdir -m 700 "$LP3"
+    DISPLAY=":$disp" FIVEDIVE_BROWSER_CHROME="$REAL_CHROME" FIVEDIVE_BROWSER_CHROME_ARGS="file://$PAGE" \
+      FIVEDIVE_BROWSER_INPUT_FAST=1 FIVEDIVE_BROWSER_INPUT_LOAD_WAIT_MS=8000 \
+      "$REAL_DAEMON" serve "$LP3" "$LP3/s.sock" --input > "$TMP/l3.ready" 2> "$TMP/l3.err" &
+    LD3=$!; _KILL+=("$LD3")
+    for i in $(seq 1 600); do grep -q '^ready' "$TMP/l3.ready" 2>/dev/null && break; kill -0 "$LD3" 2>/dev/null || break; sleep 0.05; done
+    see_title "$LP3/s.sock" 'ready:wd=false' >/dev/null
+    l3c() { "$REAL_DAEMON" call "$LP3/s.sock" <<<"$1"; }
+    l3c "{\"op\":\"screen\",\"url\":\"$L16U/slow\",\"refused\":\"ご迷惑をおかけしています\"}" > "$TMP/l16a.out" 2>"$TMP/l16a.err"; rc=$?
+    arm 'L16 a page whose title comes 4 s after it opens is read with its own title, not its address (rc 0)' '0 Slow Fixture' \
+      "$rc $(jq -r .title "$TMP/l16a.out" 2>/dev/null)$( (( rc )) && why "$TMP/l16a.err")"
+    l3c "{\"op\":\"screen\",\"url\":\"$L16U/slow-refused\",\"refused\":\"ご迷惑をおかけしています\",\"challenge\":\"captcha\"}" > "$TMP/l16b.out" 2>"$TMP/l16b.err"; rc=$?
+    arm 'L16 ...and a late error-page title is the refusal stop (74, refused), never rc 0' '74 true no' \
+      "$rc $(jq -r .refused "$TMP/l16b.out" 2>/dev/null) $(yn grep -q 'browser handoff' "$TMP/l16b.err")"
+    l3c "{\"op\":\"screen\",\"url\":\"$L16U/never\",\"refused\":\"ご迷惑をおかけしています\"}" > "$TMP/l16c.out" 2>"$TMP/l16c.err"; rc=$?
+    arm 'L16 a page that never gets a title stops as not loaded (76, loaded:false), with its screenshot' '76 false yes yes' \
+      "$rc $(jq -r .loaded "$TMP/l16c.out" 2>/dev/null) $(yn test "$(jq -r '.png_b64 | length' "$TMP/l16c.out" 2>/dev/null)" -gt 100) $(yn grep -q 'NOT LOADED' "$TMP/l16c.err")"
+    l3c "{\"op\":\"input\",\"steps\":[{\"op\":\"goto\",\"url\":\"$L16U/never\"},{\"op\":\"press\",\"key\":\"End\"}],\"settle\":0}" > "$TMP/l16d.out" 2>"$TMP/l16d.err"; rc=$?
+    arm 'L16 ...and in a plan, a goto that never loads stops the plan (1, one step run), not rc 0' '1 1 yes' \
+      "$rc $(jq -r .steps_run "$TMP/l16d.out" 2>/dev/null) $(yn grep -q 'did not finish loading' "$TMP/l16d.err")"
+    "$REAL_DAEMON" call "$LP3/s.sock" <<<'{"op":"shutdown"}' >/dev/null 2>&1
+    for i in $(seq 1 100); do kill -0 "$LD3" 2>/dev/null || break; sleep 0.05; done
   fi
 fi
 

@@ -1060,6 +1060,10 @@ Then:
   a stop too, but not a challenge (DIVE-7528). The daemon answers 74 with `refused: true`, and the
   command exits 75 saying the site refused the read, with **no** handoff advice: the page has
   nothing on it for a person to clear. Amazon's 「ご迷惑をおかけしています！」 is one.
+- A typed address is read only once it has **loaded** (DIVE-7572): the title is no longer the
+  address Chrome shows while a page has no title of its own (at least 2.5 s, at most
+  `FIVEDIVE_BROWSER_INPUT_LOAD_WAIT_MS`, default 20 s). A page that never loads exits **76**
+  ("did not finish loading"), with its screenshot and `loaded: false`, never 0.
 - `status` (and `probe-all`) loads the probe URL in a **new tab of its own**, reads the window
   title once it settles, and closes that tab (DIVE-5388). It does this only when nobody is driving:
   no handoff, nobody in the viewer, no lease. Otherwise it reads the current title, says
