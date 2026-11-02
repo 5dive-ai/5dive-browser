@@ -2803,6 +2803,13 @@ _input_probe() {  # <site> <dir>
     fi
   fi
   title=$(jq -r '.title // ""' <<<"$t")
+  local refused; refused=$(_input_refused_title "$site")
+  if [[ -n "$refused" ]] && grep -qiE -- "$refused" <<<"$title"; then
+    # DIVE-7528: the site's own error page says nothing about the login either
+    # way, so nothing is stamped or forgotten, and no person is sent to a handoff.
+    echo "REFUSED — $site served its own error page (\"$title\") to this browser; that is not a security check and a handoff will not help, and it says nothing about the login"
+    return 1
+  fi
   if grep -qiE -- "$challenge" <<<"$title"; then
     if (( looked )); then _signed_in_forget "$dir"; _stamp "$dir" challenge; fi
     echo "CHALLENGE — human action required (the window shows \"$title\"; we do not solve these: 5dive browser handoff $site)"
@@ -12244,6 +12251,15 @@ _input_challenge_title() {
   [[ -f "$a" ]] && m=$(jq -r '.probe.challenge_when_title_matches // empty' "$a" 2>/dev/null)
   printf '%s\n' "${m:-$INPUT_CHALLENGE_TITLE}"
 }
+# DIVE-7528: the titles of a site's own ERROR page (probe.refused_when_title_matches),
+# e.g. Amazon's "ご迷惑をおかけしています！". A stop like a challenge, but nothing on
+# it for a person to clear, so its advice is never a handoff. No generic list:
+# only an adapter that measured its site's error page names one.
+_input_refused_title() {
+  local a m=""; a="$(_adapter_path "$1")"
+  [[ -f "$a" ]] && m=$(jq -r '.probe.refused_when_title_matches // empty' "$a" 2>/dev/null)
+  printf '%s\n' "$m"
+}
 
 # Open an input-mode site for a verb: the profile, a live input daemon, and
 # (unless <purpose> is empty) the lease. The owner's own seat starts the serve
@@ -12281,7 +12297,8 @@ _input_open() {  # _input_open <site> <purpose> <lease-wait|no>
 _input_req() {  # _input_req <site> <json-object>
   local lease='{}'
   [[ -n "${_LEASE_TOKEN:-}" ]] && lease="$(_daemon_lease_json)"
-  jq -c --arg c "$(_input_challenge_title "$1")" --argjson l "$lease" '. + {challenge:$c} + $l' <<<"$2"
+  jq -c --arg c "$(_input_challenge_title "$1")" --arg r "$(_input_refused_title "$1")" --argjson l "$lease" \
+    '. + {challenge:$c} + (if $r == "" then {} else {refused:$r} end) + $l' <<<"$2"
 }
 
 # Write what the daemon answered: page.png and page.meta.json in <out>.
@@ -12289,7 +12306,7 @@ _input_write() {  # _input_write <answer-json> <png-path> [<meta-path>]
   local ans="$1" png="$2" meta="${3:-}"
   jq -r '.png_b64 // empty' <<<"$ans" | base64 -d > "$png" 2>/dev/null || true
   [[ -s "$png" ]] || { rm -f "$png"; return 1; }
-  [[ -n "$meta" ]] && jq '{drive, title, window_title, width, height, url_requested, steps_run, handoff, viewer}
+  [[ -n "$meta" ]] && jq '{drive, title, window_title, width, height, url_requested, steps_run, handoff, viewer, refused}
       | with_entries(select(.value != null))
       + {dom: "none — input mode reads the screen, not the page. Coordinates in act are pixels of this PNG."}' \
       <<<"$ans" > "$meta"
@@ -12311,6 +12328,10 @@ _input_rc() {  # map the daemon's exit to this command's, with the handoff advic
   case "$rc" in
     0) return 0 ;;
     75) printf '%s: a security check is on screen. The agent does not solve it — hand the tab to a person, on the same window:\n  5dive browser handoff %s --reason="<what they need to do>"\n  5dive browser handoff %s --wait\n' "$PROG" "$site" "$site" >&2
+        exit "$E_COLD" ;;
+    # DIVE-7528: the daemon's 74 — the site served its own error page. A stop
+    # (75), but a person has nothing to clear, so no handoff advice.
+    74) printf '%s: STOP — %s refused this read: it served its own error page, not the page you asked for. This is not a security check and a handoff will not help. Do not retry in a loop; use another source for this page, or try again later.\n' "$PROG" "$site" >&2
         exit "$E_COLD" ;;
     *) exit "$rc" ;;
   esac

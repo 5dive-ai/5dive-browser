@@ -4,8 +4,10 @@
   "drive": "input",
   "probe": {
     "url": "https://www.amazon.co.jp/",
-    "challenge_when_title_matches": "ご迷惑をおかけしています|sorry! something went wrong|robot check|just a moment|attention required|captcha|verify you are human|are you a robot|security check|unusual (activity|traffic)|verification required",
-    "_comment_challenge": "\"ご迷惑をおかけしています！\" is Amazon's error page, the one report 617's automated reads landed on; \"Sorry! Something went wrong!\" is its English twin. In input mode it is named as a stop rather than returned as the page. The \"click the button below to keep shopping\" bot interstitial is titled plain \"Amazon.co.jp\", so no title can catch it: the agent sees it on the screenshot and hands the window to a person (`5dive browser handoff amazon.co.jp`)."
+    "challenge_when_title_matches": "robot check|just a moment|attention required|captcha|verify you are human|are you a robot|security check|unusual (activity|traffic)|verification required",
+    "refused_when_title_matches": "ご迷惑をおかけしています|sorry! something went wrong",
+    "_comment_refused": "DIVE-7528: \"ご迷惑をおかけしています！\" is Amazon's error page and \"Sorry! Something went wrong!\" its English twin. It is NOT a challenge: it has no checkbox, only a Continue shopping link, so a person has nothing to clear and a handoff cannot help. It is a stop named as Amazon refusing this read. Measured 2026-11-02: input mode behind the owner's relay got it too (1.66.2), and a stock server Chrome got it on most second pages whatever the navigation (goto, in-page, link click, search) and with JavaScript off, while curl from a Hetzner IP read the same /dp/ and /s?k= pages 8 of 8. So Amazon scores the server browser, not only the IP or the automation channel.",
+    "_comment_challenge": "The \"click the button below to keep shopping\" bot interstitial is titled plain \"Amazon.co.jp\", so no title can catch it: the agent sees it on the screenshot and hands the window to a person (`5dive browser handoff amazon.co.jp`)."
   },
   "actions": {}
 }

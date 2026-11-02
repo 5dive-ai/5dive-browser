@@ -112,6 +112,10 @@ if (!process.env.FIVEDIVE_BROWSER_CHROME_CONFIG ||
 
 const PROG = '5dive browser daemon';
 const E_NOTHING_RAN = 70, E_FAILED = 1, E_UNAVAILABLE = 69, E_PERM = 77;
+// 74 (DIVE-7528): input mode only, never a bin/browser exit. The page is the
+// site's own error page (adapter probe.refused_when_title_matches). bin/browser
+// turns it into a stop (75) whose advice is NOT a handoff.
+const E_SITE_REFUSED = 74;
 
 // ---- WHO IS ASKING (DIVE-4664 scope (c)) -----------------------------------
 //
@@ -1750,6 +1754,17 @@ const INPUT_VOCAB = 'click{x,y[,button,count]} move{x,y} type{value} paste{value
 async function inputRequest(be, profile, req, send, end, behalf) {
   const site = path.basename(profile);
   const reChallenge = reOf(req.challenge);
+  // DIVE-7528: a site's own error page, served instead of the page (Amazon's
+  // "ご迷惑をおかけしています！"). A stop like a challenge, but there is nothing on
+  // it for a person to clear, so it must not send anyone to a handoff.
+  const reRefused = reOf(req.refused);
+  const stopOf = (title, lead, tail) => {
+    if (reRefused && reRefused.test(title))
+      return { rc: E_SITE_REFUSED, msg: `REFUSED${lead}: ${site} served its own error page ("${title}") instead of the page you asked for. This is the site refusing this browser, not a security check: there is nothing on it for a person to clear, so a handoff will not help.${tail}` };
+    if (reChallenge && reChallenge.test(title))
+      return { rc: 75, msg: `CHALLENGE${lead}: the page title is "${title}", which is a security check.${tail} A person clears it: 5dive browser handoff ${site}` };
+    return null;
+  };
   const out = (o) => send({ t: 'out', data: JSON.stringify(o) + '\n' });
 
   if (req.op === 'hand') {
@@ -1848,11 +1863,10 @@ async function inputRequest(be, profile, req, send, end, behalf) {
         await sleepMs(Number.isFinite(Number(req.wait)) && req.wait !== undefined ? Number(req.wait) : INPUT_GOTO_SETTLE_MS);
       } else if (Number(req.wait) > 0) await sleepMs(Math.min(Number(req.wait), INPUT_MAX_WAIT_MS));
       const shot = await screenOf(be);
-      out({ ...shot, url_requested: req.url || null, handoff: !!be.handoff, viewer: viewerLive(profile) });
-      if (reChallenge && reChallenge.test(shot.title)) {
-        send({ t: 'err', msg: `CHALLENGE: the page title is "${shot.title}", which is a security check. A person clears it: 5dive browser handoff ${site}` });
-        return end(75);
-      }
+      const stop = stopOf(shot.title, '', '');
+      out({ ...shot, url_requested: req.url || null, handoff: !!be.handoff, viewer: viewerLive(profile),
+            ...(stop && stop.rc === E_SITE_REFUSED ? { refused: true } : {}) });
+      if (stop) { send({ t: 'err', msg: stop.msg }); return end(stop.rc); }
       return end(0);
     } catch (e) {
       send({ t: 'err', msg: `could not read the ${site} screen: ${e.message}` }); return end(E_FAILED);
@@ -1918,13 +1932,14 @@ async function inputRequest(be, profile, req, send, end, behalf) {
         send({ t: 'log', line: `  ${where} ok` });
         // THE HARD STOP, between steps: a plan does not keep typing into a
         // challenge that appeared under it.
-        if (reChallenge) {
+        if (reChallenge || reRefused) {
           const t = await be.x.windowTitle();
-          if (reChallenge.test(t.page)) {
+          const stop = stopOf(t.page, ` after ${where}`, ' Stopped; the rest of the plan did not run.');
+          if (stop) {
             await sleepMs(300);
-            out({ ...(await screenOf(be)), act_report: true, steps_run: ran });
-            send({ t: 'err', msg: `CHALLENGE after ${where}: the page title is "${t.page}", which is a security check. Stopped; the rest of the plan did not run. A person clears it: 5dive browser handoff ${site}` });
-            return end(75);
+            out({ ...(await screenOf(be)), act_report: true, steps_run: ran, ...(stop.rc === E_SITE_REFUSED ? { refused: true } : {}) });
+            send({ t: 'err', msg: stop.msg });
+            return end(stop.rc);
           }
         }
       }
@@ -1940,11 +1955,9 @@ async function inputRequest(be, profile, req, send, end, behalf) {
     const ms = Number.isFinite(Number(req.settle)) && req.settle !== undefined ? Number(req.settle) : INPUT_SETTLE_MS;
     if (ms > 0) await sleepMs(Math.min(ms, INPUT_MAX_WAIT_MS));
     const shot = await screenOf(be);
-    out({ ...shot, act_report: true, steps_run: ran });
-    if (reChallenge && reChallenge.test(shot.title)) {
-      send({ t: 'err', msg: `CHALLENGE: the page the steps left is titled "${shot.title}", which is a security check. A person clears it: 5dive browser handoff ${site}` });
-      return end(75);
-    }
+    const stop = stopOf(shot.title, ' (the page the steps left)', '');
+    out({ ...shot, act_report: true, steps_run: ran, ...(stop && stop.rc === E_SITE_REFUSED ? { refused: true } : {}) });
+    if (stop) { send({ t: 'err', msg: stop.msg }); return end(stop.rc); }
     return end(0);
   }
 

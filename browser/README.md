@@ -1056,6 +1056,10 @@ Then:
   generic list) stops an act between steps with 75. TikTok's slider captcha is an in-page overlay
   and does not change the title; the agent sees it in the screenshot, and the skill tells it to
   hand the window over.
+- A site's own **error page** (adapter `probe.refused_when_title_matches`; no generic list) is
+  a stop too, but not a challenge (DIVE-7528). The daemon answers 74 with `refused: true`, and the
+  command exits 75 saying the site refused the read, with **no** handoff advice: the page has
+  nothing on it for a person to clear. Amazon's 「ご迷惑をおかけしています！」 is one.
 - `status` (and `probe-all`) loads the probe URL in a **new tab of its own**, reads the window
   title once it settles, and closes that tab (DIVE-5388). It does this only when nobody is driving:
   no handoff, nobody in the viewer, no lease. Otherwise it reads the current title, says
