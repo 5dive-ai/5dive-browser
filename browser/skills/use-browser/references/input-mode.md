@@ -94,3 +94,4 @@ file, or use any other way to get it out. Empty clipboard: press Copy again.
 - **Input mode: re-shoot before you click by coordinates.** A cookie banner, a dialog or a name that wraps to two lines moves everything below it, so coordinates from an earlier screenshot miss.
 - **Input mode: a `shot` shows only the first screen (1280x800).** Before you say a list, feed or inbox has nothing new, or count what is on it, `scroll{dy}` (or press `PageDown`) and read the new `page.png`, or say which part you did not reach.
 - **Input mode: a first `shot` can catch the page still loading** (a spinner, grey boxes, an empty list). `wait{ms}` a few seconds and shoot again before you read it or judge signed in.
+- **Input mode: text read off a `shot` is approximate.** A quote or name copied from the picture can differ from the page. Check it against the page text, or mark it approximate where you record it.
