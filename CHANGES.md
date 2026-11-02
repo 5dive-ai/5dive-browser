@@ -8,6 +8,13 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — when Amazon refuses a read, the stop says so and no longer sends a person to a handoff (DIVE-7528), 1.66.3
+
+After 1.66.2, the Amazon read on exact-swallow (report 617) still got Amazon's error page (「ご迷惑をおかけしています！」), now in input mode too. The stop called it a security check and told the agent to hand the window to a person, but the page has nothing on it to clear.
+
+- **An adapter can now name its site's error page** (`probe.refused_when_title_matches`). That page stops the read like a challenge (exit 75), and the message says the site refused this read, with no handoff advice. `status` says REFUSED and leaves the login stamp alone. amazon.co.jp names its error page this way and keeps the real checks (Robot Check and the rest) as challenges.
+- **Not fixed: Amazon still refuses this browser.** Measured from two Hetzner hosts on 2026-11-02: plain curl read the product and search pages 8 of 8, while a stock server Chrome got the error page on most second pages, whatever the navigation and with JavaScript off. So Amazon scores the server browser, not only the IP or the automation channel. The box measurements through the owner's relay are on DIVE-7528.
+
 ### Fixed — Amazon (amazon.co.jp) reads no longer come back as Amazon's error page, and input mode works behind a proxy with no login (DIVE-7476), 1.66.2
 
 Report 617, exact-swallow: every driven read of a logged-in amazon.co.jp came back as Amazon's error page (「ご迷惑をおかけしています！」), returned like a normal read. The owner's own view of the same session loaded the page.

@@ -55,6 +55,11 @@ when they tap Done you carry on from the page they left. Take a `shot` before yo
 A challenge whose title says so stops an act by itself (exit 75). TikTok's puzzle does not change
 the title, so when you see one in a screenshot, hand the window over. Never try to solve it.
 
+A site's own **error page** is different: the stop says the site **refused this read** (still exit
+75), and there is no handoff, because a person has nothing on it to clear. Amazon's
+「ご迷惑をおかけしています！」 is one. Don't hand it over and don't retry in a loop: tell your owner
+Amazon refused the read, and use another source for that page or try again later.
+
 ## One window for the box's logins
 
 The box's logins share one browser (Shopify, CJ, Facebook…). When you use a site, that browser

@@ -20,7 +20,9 @@
 #        R7b (DIVE-7476) a proxy with NO login does not block input mode: the
 #           adapter's site and the box default both serve as input under it
 #        R1b the shipped amazon.co.jp adapter opts into input mode, and names
-#           Amazon's error page as a challenge title
+#           Amazon's error page as a REFUSAL title, not a challenge (DIVE-7528)
+#        R5b (DIVE-7528) the daemon's 74 (the site's own error page) is a stop
+#           (75) with no handoff advice; L15 is the real daemon's side
 #        P  (DIVE-7476) the REAL daemon's input launch, with a fake Chrome that
 #           records its argv: a proxy with no login reaches Chrome as
 #           --proxy-server=<scheme>://<host>:<port>; one with a login is refused
@@ -188,8 +190,14 @@ for s in tiktok.com reddit.com; do mkdir -p "$TMP/pr/$SEAT/$s"; chmod 700 "$TMP/
 arm 'R1 the shipped tiktok.com adapter opts into input mode' input "$(jq -r .drive "$ROOT/browser/adapters/tiktok.com.json")"
 arm 'R1 ...and reddit.com (a CDP site) does not' null "$(jq -r .drive "$ROOT/browser/adapters/reddit.com.json")"
 arm 'R1b the shipped amazon.co.jp adapter opts into input mode (DIVE-7476)' input "$(jq -r .drive "$ROOT/browser/adapters/amazon.co.jp.json")"
-arm 'R1b ...and its challenge titles catch Amazon'"'"'s error page' yes \
-  "$(node -e 'process.stdout.write(new RegExp(require(process.argv[1]).probe.challenge_when_title_matches, "i").test("ご迷惑をおかけしています！") ? "yes" : "no")' "$ROOT/browser/adapters/amazon.co.jp.json")"
+# DIVE-7528: Amazon's error page is a REFUSAL title, not a challenge title: it
+# has nothing on it for a person to clear, so it must not reach the handoff advice.
+amz_re() { node -e 'const p=require(process.argv[1]).probe[process.argv[2]]; process.stdout.write(p && new RegExp(p, "i").test(process.argv[3]) ? "yes" : "no")' "$ROOT/browser/adapters/amazon.co.jp.json" "$1" "$2"; }
+arm 'R1b ...and its refusal titles catch Amazon'"'"'s error page, both languages (DIVE-7528)' 'yes yes' \
+  "$(amz_re refused_when_title_matches 'ご迷惑をおかけしています！') $(amz_re refused_when_title_matches 'Sorry! Something went wrong!')"
+arm 'R1b ...while its challenge titles no longer do (DIVE-7528)' 'no no' \
+  "$(amz_re challenge_when_title_matches 'ご迷惑をおかけしています！') $(amz_re challenge_when_title_matches 'Sorry! Something went wrong!')"
+arm 'R1b ...and a real check still is a challenge' yes "$(amz_re challenge_when_title_matches 'Robot Check')"
 
 DREC="$TMP/daemon.rec"; : > "$DREC"
 FAKEBIN="$TMP/bin"; mkdir -p "$FAKEBIN"
@@ -257,6 +265,7 @@ const srv = net.createServer((c) => {
       if (req.op === 'input') for (let i = 0; i < req.steps.length; i++) send({ t: 'log', line: '  step ' + (i + 1) + ' (' + req.steps[i].op + ') ok' });
       send({ t: 'out', data: JSON.stringify({ drive: 'input', title: 'Fake Page', window_title: 'Fake Page - Google Chrome', width: 1280, height: 800, png_b64: PNG, act_report: req.op === 'input' || undefined, steps_run: req.op === 'input' ? req.steps.length : undefined }) + '\n' });
       if (rc === 75) send({ t: 'err', msg: 'CHALLENGE: fake' });
+      if (rc === 74) send({ t: 'err', msg: 'REFUSED: fake' });
       return end(rc);
     }
     send({ t: 'err', msg: 'refused ' + req.op }); end(70);
@@ -288,6 +297,7 @@ arm 'R3 shot on an input site exits 0 and writes a PNG' '0 yes' "$rc $(yn test -
 arm 'R3 ...asking the daemon for `screen` at that url' 'https://www.tiktok.com/profile' "$(last screen | jq -r .url)"
 arm 'R3 ...carrying the lease' yes "$(last screen | jq -r 'if (.token|length) > 10 and (.lease|test("5dive-lease")) then "yes" else "no" end')"
 arm 'R3 ...and the adapter'"'"'s challenge titles' yes "$(last screen | jq -r 'if (.challenge|test("captcha")) then "yes" else "no" end')"
+arm 'R3 ...and no refusal titles, for an adapter that names none (DIVE-7528)' null "$(last screen | jq -c .refused)"
 o=$("$BROWSER" shot https://www.tiktok.com/@someone --out="$TMP/s2.png" 2>&1); rc=$?
 arm 'R3 a URL in place of the site routes to the input verb too' '0 yes' "$rc $(yn test -s "$TMP/s2.png")"
 o=$("$BROWSER" snapshot tiktok.com --out="$TMP/snap" --json 2>&1); rc=$?
@@ -368,6 +378,20 @@ echo 75 > "$TMP/fake.rc"
 o=$("$BROWSER" act tiktok.com --steps='[{"op":"press","key":"Enter"}]' --out="$TMP/act2" 2>&1); rc=$?
 rm -f "$TMP/fake.rc"
 arm 'R5 a challenge from the daemon is E_COLD (75) with the handoff advice' '75 yes' "$rc $(yn grep -q 'browser handoff tiktok.com' <<<"$o")"
+# R5b (DIVE-7528) — the daemon's 74: the site served its own error page. Still a
+# stop (75), but the advice names the refusal and never sends anyone to a handoff.
+cp "$TMP/ad/tiktok.com.json" "$TMP/tiktok.keep"
+jq '.probe.refused_when_title_matches = "ご迷惑をおかけしています"' "$TMP/tiktok.keep" > "$TMP/ad/tiktok.com.json"
+echo 74 > "$TMP/fake.rc"
+o=$("$BROWSER" snapshot tiktok.com https://www.tiktok.com/x --out="$TMP/snap74" 2>&1); rc=$?
+rm -f "$TMP/fake.rc"; cp "$TMP/tiktok.keep" "$TMP/ad/tiktok.com.json"
+arm 'R5b the request carries the adapter'"'"'s refusal titles' 'ご迷惑をおかけしています' "$(last screen | jq -r .refused)"
+arm 'R5b a refusal from the daemon (74) is a stop (75) that says the site refused the read' '75 yes' "$rc $(yn grep -q 'refused this read' <<<"$o")"
+arm 'R5b ...and gives NO handoff advice (no `browser handoff` command)' no "$(yn grep -q 'browser handoff' <<<"$o")"
+echo 74 > "$TMP/fake.rc"
+o=$("$BROWSER" act tiktok.com --steps='[{"op":"press","key":"Enter"}]' --out="$TMP/act74" 2>&1); rc=$?
+rm -f "$TMP/fake.rc"
+arm 'R5b ...same for act' '75 no' "$rc $(yn grep -q 'browser handoff' <<<"$o")"
 
 # R14 (DIVE-5740) — the upload step. The chooser types as the BROWSER's user, so
 # the path is checked as the caller before anything is sent.
@@ -949,6 +973,14 @@ HTML
     arm 'L15 ...and the read cleared it: a second read finds nothing' '0 0' "$rc $(jq -r .chars "$TMP/l15b.out" 2>/dev/null)"
     lc '{"op":"tree","url":"https://example.com/"}' >/dev/null 2>"$TMP/l.t"; rc=$?
     arm 'L6 a DOM op is refused by name (70)' '70 yes' "$rc $(yn grep -q 'INPUT mode' "$TMP/l.t")"
+    # L15 (DIVE-7528) — the REAL daemon's stop on the screen's title. "." matches
+    # any title: a refusal title wins over a challenge title, exits 74, marks the
+    # answer refused and never names a handoff; a challenge alone is still 75.
+    lc '{"op":"screen","refused":".","challenge":"."}' > "$TMP/l.rf" 2>"$TMP/l.rf.err"; rc=$?
+    arm 'L15 a title matching the refusal titles stops the read (74), marked refused' '74 true' "$rc $(jq -r .refused "$TMP/l.rf" 2>/dev/null)"
+    arm 'L15 ...saying the site refused it, with no handoff' 'yes no' "$(yn grep -q 'REFUSED' "$TMP/l.rf.err") $(yn grep -q 'browser handoff' "$TMP/l.rf.err")"
+    lc '{"op":"screen","challenge":"."}' > /dev/null 2>"$TMP/l.ch.err"; rc=$?
+    arm 'L15 ...while a challenge title alone is still 75 with the handoff' '75 yes' "$rc $(yn grep -q 'browser handoff' "$TMP/l.ch.err")"
     # L11 (DIVE-5388) — the login check in a TAB OF ITS OWN: Ctrl+T, the probe URL
     # typed, the settled title read, Ctrl+W. The person's tab must be exactly where
     # it was afterwards, and Chrome must still be running (a Ctrl+W on the last tab
