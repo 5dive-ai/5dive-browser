@@ -368,6 +368,7 @@ async function openProfile(profile) {
   // DIVE-4951. Unset adds NO key, so the launch is exactly what it was before.
   let viaProxy;
   try { viaProxy = proxy.launchProxy(profile); } catch (e) { die(E_NOTHING_RAN, e.message); }
+  const route = proxy.launchRoute(viaProxy);   // DIVE-7643, as the session daemon
   const { chromium } = loadPlaywright();
   const shown = await startDisplay();
   browserMode = shown.display ? 'headed' : 'headless';
@@ -383,9 +384,9 @@ async function openProfile(profile) {
     return await chromium.launchPersistentContext(profile, {
       headless: !shown.display,
       executablePath: chrome,
-      args: launchArgs(),
+      args: [...launchArgs(), ...route.args],
       viewport: { width: 1280, height: 800 },
-      ...(viaProxy ? { proxy: viaProxy } : {}),
+      ...route.option,
     });
   } catch (e) {
     die(E_NOTHING_RAN, `could not open the ${profile} profile: ${e.message}`);
