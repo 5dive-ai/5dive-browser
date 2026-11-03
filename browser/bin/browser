@@ -5713,6 +5713,11 @@ cmd_serve() {
       # THE OWNER'S SERVE IS NOT ANSWERED BY AN ACT'S PRIVATE ONE (DIVE-6334). An
       # act keeps its page in a browser only this seat can reach; a deliberate
       # `serve` is what offers a login to the box, so it replaces that one.
+      # NEVER UNDER AN ACT THAT HOLDS IT (DIVE-7637): since an offered group keeps
+      # its page too, a seat waking the box login can arrive mid-act; it waits.
+      local pbusy; if pbusy=$(_serve_busy "$dir"); then
+        die "$E_UNAVAILABLE" "$site is held by an act's own browser that is in use right now ($pbusy); not replacing it under that act. Try again when it is free (--wait queues for an agent)."
+      fi
       ( _SERVE_SWAP=1 cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
       ! _serve_running "$dir" >/dev/null \
         || die "$E_UNAVAILABLE" "$site is held by an act's own browser and it did not stop, so it cannot be served for the box. Try again, or: 5dive browser serve $site --stop"
@@ -7816,11 +7821,22 @@ _policy_log() {  # <site> <stderr-file> <page> <screenshot>
 # such a seat no act and no snapshot ever kept a browser: each step was a one-off
 # Chrome, ~40% slower per step (v4 bench, 1.58.2: "started a served browser" 196
 # times; every 1.64.1 run on the same seat: 0), and nothing said so. But a group
-# lives in the seat's OWN store, so it is this seat's to hold. What is not is a
-# group whose login this seat offers to the box (the box seat's Main): only a
-# deliberate serve holds that one, and an act says so instead of returning in
-# silence. A second site of the group finds the same daemon through its link (the
-# pidfile is the group's), so it does not open the profile again.
+# lives in the seat's OWN store, so it is this seat's to hold. A second site of
+# the group finds the same daemon through its link (the pidfile is the group's),
+# so it does not open the profile again.
+#
+# EVEN WHEN THIS SEAT OFFERS THE GROUP TO THE BOX (DIVE-7637). 1.64.2 to 1.66.4
+# kept no browser for a group with any site offered, and an offer is written by
+# EVERY serve that is not private, a landing retry's included, and is removed
+# only by `forget`. So one retry on amtrak.com, once, turned kept pages off for
+# every site the box seat's Main ever joined: 101 of 101 5dive runs in the
+# DIVE-7487 home bench said "no served browser kept", each act opened its page
+# from scratch, the filters an act had just applied were gone at the next one,
+# and the agent gave up (16 steps a task against 26-28 for the leaders). The act
+# keeps the PRIVATE browser here as for any group. That widens nothing: no
+# socket for other seats, no new offer. A seat that wants the offered login
+# wakes the owner's serve, which replaces a private one (DIVE-6334) once no act
+# holds the browser, and an act's next call lands in that served one.
 # FIVEDIVE_BROWSER_ACT_KEEP=0 turns off the logged-in half,
 # FIVEDIVE_BROWSER_PUBLIC_KEEP=0 the public one.
 _act_keep_page() {  # <site> <url>; runs with the lease held, before _page_open
@@ -7831,16 +7847,6 @@ _act_keep_page() {  # <site> <url>; runs with the lease held, before _page_open
   else
     [[ "${FIVEDIVE_BROWSER_ACT_KEEP:-1}" == 1 ]] || return 0
     (( ! _SITE_BROKERED )) || return 0
-    local g s
-    if g=$(_site_group "$_SITE_DIR"); then
-      for s in $(_group_sites "$g"); do
-        if [[ -f "$(_rv_offer "$(_seat)" "$s")" ]]; then
-          printf '%s: no served browser kept for %s: it shares %s'"'"'s browser, which this seat offers to the box'"'"'s other seats (%s), and only a deliberate serve holds that one. This act runs in a one-off browser and the next act opens the page again.\n' \
-            "$PROG" "$1" "$(_group_name "$g")" "$s" >&2
-          return 0
-        fi
-      done
-    fi
     [[ "$(_site_drive "$1")" == cdp ]] || return 0
     kind="$1"; priv=--private
   fi

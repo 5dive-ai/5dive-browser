@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — an agent's browser keeps its page between steps again on a seat that shares its Google group with the box (DIVE-7637), 1.66.5
+
+In the DIVE-7487 home bench, every one of the 101 runs of 5dive in Claude Code said "no served browser kept": each step opened its page from scratch in a new Chrome, so a filter or sort an agent had just applied was gone at the next step. It took 16 steps a task where Claude in Chrome took 26, and finished 24 of 100 to its 51.
+
+- **Why:** since 1.64.2 (DIVE-7316) a group kept no browser when any site of it was offered to the box's other seats. Any serve that is not private writes that offer, a landing retry's included, and only `forget` removes it. So one retry on amtrak.com on 10-30 turned kept pages off for every site that seat's Main ever joined.
+- **Now:** the act keeps its private browser for an offered group too. Nothing widens: no socket for other seats, no new offer. A seat that wakes the box login replaces the private browser, as before (DIVE-6334), but no longer while an act is using it: it is told to try again.
+- **Not measured here:** whether this alone closes the bench gap. The 50-task datacenter rerun is on DIVE-7637.
+
 ### Fixed — in input mode, a page is read only once it has loaded, so Amazon's error page is no longer returned as a good read (DIVE-7572), 1.66.4
 
 On exact-swallow (report 617, 1.66.3), the Amazon product read came back as a success with the title `amazon.co.jp/dp/B00D81RNDK`. That is the address Chrome shows while a page is still loading; the screenshot showed Amazon's error page with the tab still spinning. The title was read at a fixed 2.5 s, so the stop for Amazon's error page never saw it.

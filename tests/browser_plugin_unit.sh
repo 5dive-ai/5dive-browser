@@ -8677,7 +8677,10 @@ tc 'T52h CHANGES.md carries the DIVE-6334 entry' 'DIVE-6334' "$(cat "$ROOT/CHANG
 #   T53a  an act on a new site joins Main and keeps a private served browser for it, said once
 #   T53b  a no-URL act then continues on that page
 #   T53c  a second new site of the group lands in that same daemon: no new serve, no refusal
-#   T53d  a group this seat offers to the box: nothing kept, and it says why (it was silent)
+#   T53d  a group this seat offers to the box keeps its page too, privately (DIVE-7637; 1.64.2-1.66.4
+#         kept nothing, so one stale offer made every act on every Main site a one-off)
+#   T53g  the owner's serve does not replace that private browser while an act holds it, and does once free
+#   T53h  MUTANT: the 1.66.4 offered-group refusal: T53d is red
 #   T53e  MUTANT: the old group return: T53a and T53b are red, as on 1.64.1
 P53="$TMP/t53-profiles"; G53="$P53/$SEAT/.group-main"
 mk53() {  # a seat whose Main holds google.com, nothing served, nothing offered
@@ -8714,12 +8717,46 @@ t  'T53c ...the same daemon serves it (no second browser)' "$D53 yes" "$(dkv "$G
 tn 'T53c ...no new serve started for it' 'started a served browser' "$ERR"
 tn 'T53c ...and no "no served browser" fallback' 'no served browser' "$ERR"
 
-# --- T53d a group this seat offers to the box ---
-mk53; mkdir -p "$TMP/browser-sessions/$SEAT"; : > "$TMP/browser-sessions/$SEAT/google.com.offered"
+# --- T53d a group this seat offers to the box (DIVE-7637) ---
+mk53; mkdir -p "$TMP/browser-sessions/$SEAT"; printf 'site=google.com\nowner=%s\n' "$SEAT" > "$TMP/browser-sessions/$SEAT/google.com.offered"
 keep53 "$BROWSER" act "https://shop53.test/signup" --steps='[{"op":"click","selector":"#google"}]' --out="$TMP/t53d"
-t  'T53d an offered group: nothing kept' no "$(k52live "$G53")"
-tc 'T53d ...and it says why, naming the offered login' 'no served browser kept for shop53.test: it shares Main'"'"'s browser, which this seat offers to the box'"'"'s other seats (google.com)' "$ERR"
+t  'T53d an offered group: the act exits 0' 0 "$RC"
+t  'T53d ...and its page is kept (1.66.4: nothing kept)' yes "$(k52live "$G53")"
+tn 'T53d ...no "no served browser kept" refusal' 'no served browser kept' "$ERR"
+t  'T53d ...kept PRIVATE: marked so' 1 "$(dkv "$G53/.5dive-serve" private)"
+t  'T53d ...and no new offer for the act'"'"'s site' no \
+   "$(ls "$TMP/browser-sessions/$SEAT/shop53.test.offered" >/dev/null 2>&1 && echo yes || echo no)"
+N53d=$(wc -l < "$DREC")
+keep53 "$BROWSER" act shop53.test --steps='[{"op":"click","selector":"#account"}]' --out="$TMP/t53d2"
+t  'T53d ...a no-URL act continues on that page (the filter an act applied survives)' 0 "$RC"
+t  'T53d ...the click reached the held page' 1 \
+   "$(tail -n +$((N53d+1)) "$DREC" | jq -rs '[.[]|select(.call=="click")]|length')"
+
+# --- T53g the owner's serve and an act that holds the private browser ---
+LDIR="$G53"; mklease agent "$HOLDER" 300 act
+run env PATH="$SPATH" DISPLAY= NODE_PATH="$DSTUB/node_modules" PWREC="$DREC" DPWDOM="$DPWDOM" "$BROWSER" serve google.com
+t  'T53g an owner serve while an act holds the kept browser: refused, not swapped under it' "69 yes 1" \
+   "$RC $(k52live "$G53") $(dkv "$G53/.5dive-serve" private)"
+tc 'T53g ...and it says why' "held by an act's own browser that is in use right now" "$ERR"
+rmlease
+run env PATH="$SPATH" DISPLAY= NODE_PATH="$DSTUB/node_modules" PWREC="$DREC" DPWDOM="$DPWDOM" "$BROWSER" serve google.com
+t  'T53g ...once free, the owner serve replaces it: served, no longer private' '0 yes ' \
+   "$RC $(k52live "$G53") $(dkv "$G53/.5dive-serve" private)"
+k52stop google.com
 rm -f "$TMP/browser-sessions/$SEAT/google.com.offered"
+
+# --- T53h MUTANT: the 1.66.4 offered-group refusal ---
+MUT53h="$TMP/t53h-mutant"; rm -rf "$MUT53h"; cp -r "$ROOT/browser" "$MUT53h"
+perl -0pi -e 's/(\(\( ! _SITE_BROKERED \)\) \|\| return 0\n)/$1    if g=\$(_site_group "\$_SITE_DIR"); then for s in \$(_group_sites "\$g"); do [[ -f "\$(_rv_offer "\$(_seat)" "\$s")" ]] \&\& { echo "\$PROG: no served browser kept for \$1 MUTANT-DIVE-7637" >\&2; return 0; }; done; fi\n/' "$MUT53h/bin/browser"
+t  'T53h (anchor) the mutation landed in the copy' 1 "$(grep -c 'MUTANT-DIVE-7637' "$MUT53h/bin/browser")"
+mut53h() { keep53 env FIVEDIVE_BROWSER_SESSION_DAEMON="$MUT53h/bin/session-daemon" "$MUT53h/bin/browser" "$@"; }
+mk53; mkdir -p "$TMP/browser-sessions/$SEAT"; printf 'site=google.com\nowner=%s\n' "$SEAT" > "$TMP/browser-sessions/$SEAT/google.com.offered"
+mut53h act "https://shop53.test/signup" --steps='[{"op":"click","selector":"#google"}]' --out="$TMP/t53h"
+tn 'T53h (control) the mutant copy runs: no syntax error' 'syntax error' "$ERR"
+t  'T53h MUTANT: nothing kept for an offered group — T53d is red' no "$(k52live "$G53")"
+k52stop google.com "$MUT53h/bin/browser" "$MUT53h/bin/session-daemon"
+rm -f "$TMP/browser-sessions/$SEAT/google.com.offered"
+tc 'T53i CHANGES.md carries the DIVE-7637 entry' 'DIVE-7637' "$(cat "$ROOT/CHANGES.md")"
 
 # --- T53e MUTANT: the 1.64.1 return for a group link ---
 MUT53="$TMP/t53-mutant"; rm -rf "$MUT53"; cp -r "$ROOT/browser" "$MUT53"
