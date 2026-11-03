@@ -5523,7 +5523,7 @@ run actenv "$BROWSER" ls
 tn 'T32a the public profile is not listed as a connected site' '_public' "$OUT"
 # the mutant: a <site> is required again (the dispatcher's URL route removed)
 MUT32="$TMP/browser-noroute"
-sed 's|^  read\|links\|shot\|snapshot\|tree\|act)$|  __never_routed__)|' "$BROWSER" > "$MUT32"; chmod +x "$MUT32"
+sed 's|^  read\|links\|shot\|snapshot\|tree\|act\|download)$|  __never_routed__)|' "$BROWSER" > "$MUT32"; chmod +x "$MUT32"
 t  'T32a mutant applied' yes "$(cmp -s "$MUT32" "$BROWSER" && echo no || echo yes)"
 run actenv "$MUT32" act "https://public-web.test/repo" --steps="$STAR"
 t  'T32a MUTANT (no URL route): the zero-site box cannot act' yes "$([[ "$RC" != 0 ]] && echo yes || echo no)"
