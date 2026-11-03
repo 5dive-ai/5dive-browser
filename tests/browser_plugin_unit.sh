@@ -8733,16 +8733,16 @@ t  'T53d ...the click reached the held page' 1 \
    "$(tail -n +$((N53d+1)) "$DREC" | jq -rs '[.[]|select(.call=="click")]|length')"
 
 # --- T53g the owner's serve and an act that holds the private browser ---
-LDIR="$G53"; mklease agent "$HOLDER" 300 act
-run env PATH="$SPATH" DISPLAY= NODE_PATH="$DSTUB/node_modules" PWREC="$DREC" DPWDOM="$DPWDOM" "$BROWSER" serve google.com
+sleep 300 & H53=$!; LDIR="$G53"; mklease agent "$H53" 300 act
+run env PATH="$SPATH" FIVEDIVE_BROWSER_PROFILE_ROOT="$P53" DISPLAY= NODE_PATH="$DSTUB/node_modules" PWREC="$DREC" DPWDOM="$DPWDOM" "$BROWSER" serve google.com
 t  'T53g an owner serve while an act holds the kept browser: refused, not swapped under it' "69 yes 1" \
    "$RC $(k52live "$G53") $(dkv "$G53/.5dive-serve" private)"
 tc 'T53g ...and it says why' "held by an act's own browser that is in use right now" "$ERR"
-rmlease
-run env PATH="$SPATH" DISPLAY= NODE_PATH="$DSTUB/node_modules" PWREC="$DREC" DPWDOM="$DPWDOM" "$BROWSER" serve google.com
+rmlease; kill $H53 2>/dev/null
+run env PATH="$SPATH" FIVEDIVE_BROWSER_PROFILE_ROOT="$P53" DISPLAY= NODE_PATH="$DSTUB/node_modules" PWREC="$DREC" DPWDOM="$DPWDOM" "$BROWSER" serve google.com
 t  'T53g ...once free, the owner serve replaces it: served, no longer private' '0 yes ' \
    "$RC $(k52live "$G53") $(dkv "$G53/.5dive-serve" private)"
-k52stop google.com
+env PATH="$SPATH" FIVEDIVE_BROWSER_PROFILE_ROOT="$P53" "$BROWSER" serve google.com --stop >/dev/null 2>&1
 rm -f "$TMP/browser-sessions/$SEAT/google.com.offered"
 
 # --- T53h MUTANT: the 1.66.4 offered-group refusal ---
@@ -8754,13 +8754,13 @@ mk53; mkdir -p "$TMP/browser-sessions/$SEAT"; printf 'site=google.com\nowner=%s\
 mut53h act "https://shop53.test/signup" --steps='[{"op":"click","selector":"#google"}]' --out="$TMP/t53h"
 tn 'T53h (control) the mutant copy runs: no syntax error' 'syntax error' "$ERR"
 t  'T53h MUTANT: nothing kept for an offered group — T53d is red' no "$(k52live "$G53")"
-k52stop google.com "$MUT53h/bin/browser" "$MUT53h/bin/session-daemon"
+env PATH="$SPATH" FIVEDIVE_BROWSER_PROFILE_ROOT="$P53" FIVEDIVE_BROWSER_SESSION_DAEMON="$MUT53h/bin/session-daemon" "$MUT53h/bin/browser" serve google.com --stop >/dev/null 2>&1
 rm -f "$TMP/browser-sessions/$SEAT/google.com.offered"
 tc 'T53i CHANGES.md carries the DIVE-7637 entry' 'DIVE-7637' "$(cat "$ROOT/CHANGES.md")"
 
 # --- T53e MUTANT: the 1.64.1 return for a group link ---
 MUT53="$TMP/t53-mutant"; rm -rf "$MUT53"; cp -r "$ROOT/browser" "$MUT53"
-perl -0pi -e 's/(\(\( ! _SITE_BROKERED \)\) \|\| return 0\n)(\s*local g s\n)/$1    [[ ! -L "\${_SITE_DIR%\/}" ]] || return 0  # MUTANT-DIVE-7316\n$2/' "$MUT53/bin/browser"
+perl -0pi -e 's/(\(\( ! _SITE_BROKERED \)\) \|\| return 0\n)/$1    [[ ! -L "\${_SITE_DIR%\/}" ]] || return 0  # MUTANT-DIVE-7316\n/' "$MUT53/bin/browser"
 t  'T53e (anchor) the mutation landed in the copy' 1 "$(grep -c 'MUTANT-DIVE-7316' "$MUT53/bin/browser")"
 mut53() { keep53 env FIVEDIVE_BROWSER_SESSION_DAEMON="$MUT53/bin/session-daemon" "$MUT53/bin/browser" "$@"; }
 mk53
