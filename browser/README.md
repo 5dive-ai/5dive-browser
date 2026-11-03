@@ -414,6 +414,13 @@ without a scheduled probe the agent finds out **mid-publish**. So:
   An adapter with no positive marker is untouched — one look, classified on the negative alone —
   because without something to terminate on, waiting only adds a chrome launch to reach the same
   answer.
+- **A slow single-page app can name a longer wait and the address a signed-in session lands on**
+  (DIVE-7648): `probe.wait_ms` replaces the 8000 ms for that adapter's served probe, and
+  `probe.logged_in_when_url_matches` reads `authenticated` from the served probe's final URL when
+  the page shows no logged-out marker, no challenge marker and no bot-check title. Shopify's admin
+  uses both. Every served probe also has one hard deadline (`FIVEDIVE_BROWSER_PROBE_HARD_MS`,
+  default 35000): past it the probe answers, its tab is closed, and the session is free again. A
+  page that is mid-redirect when it is read is looked at again, not reported as a failed load.
 - **A served profile is probed through its session daemon, or not at all.** Chrome allows one
   instance per profile directory, so a probe launched at a profile `serve` is holding is handed
   off to the running browser and returns an empty document. With a session daemon (a 0700 unix

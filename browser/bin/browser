@@ -2491,6 +2491,24 @@ _site_logged_in_marker() {
   local a; a="$(_adapter_path "$1")"
   [[ -f "$a" ]] && jq -r '.probe.logged_in_when_dom_matches // empty' "$a"
 }
+# WHERE A SIGNED-IN SESSION LANDS, AND HOW LONG ITS PAGE TAKES (DIVE-7648).
+# Shopify's admin is drawn by a single-page app that took longer than the 8 s
+# budget on exact-swallow (report 680) before its signed-in marker reached the
+# DOM, while the tab already sat at admin.shopify.com/store/<id>, an address only
+# a signed-in session is sent to. `logged_in_when_url_matches` lets the served
+# probe read that address; `wait_ms` gives one slow app a longer wait without
+# making every adapter pay it. Both optional; absent, the probe is unchanged.
+LANDED_BOT_CHECK_TITLE='<title>[^<]*(just a moment|verifying your connection|attention required|checking your browser)'
+_site_logged_in_url() {
+  local a; a="$(_adapter_path "$1")"
+  [[ -f "$a" ]] && jq -r '.probe.logged_in_when_url_matches // empty' "$a"
+}
+_site_probe_wait_ms() {
+  local a w; a="$(_adapter_path "$1")"
+  [[ -f "$a" ]] || return 0
+  w=$(jq -r '.probe.wait_ms // empty' "$a" 2>/dev/null)
+  [[ "$w" =~ ^[0-9]{1,5}$ ]] && echo "$w"
+}
 # THERE IS DELIBERATELY NO BYPASS BEHIND THIS. It classifies, names a human, and
 # stops. Decided 2026-09-07: "if a platform presents a security challenge, the
 # executor stops and requests human action rather than attempting to bypass it."
@@ -2940,6 +2958,7 @@ _probe() {
   # So an adapter with no `logged_in_when_dom_matches` probes exactly once, as
   # it always did.
   local positive; positive=$(_site_logged_in_marker "$site")
+  local landed; landed=$(_site_logged_in_url "$site")
   local challenge; challenge=$(_site_challenge_marker "$site")
   # THE GENERIC CHECK (DIVE-4943 scope 2), and only for a page verb's gate: with no
   # adapter, the one thing we can still recognise is a page that is VISIBLY a
@@ -2951,10 +2970,14 @@ _probe() {
     generic=1; marker="$GENERIC_SIGNIN_MARKER"
   fi
   local dom; dom=$(mktemp) || { echo "UNKNOWN (probe did not load)"; return 0; }
-  local total="${FIVEDIVE_BROWSER_PROBE_WAIT_MS:-8000}" poll="${FIVEDIVE_BROWSER_PROBE_POLL_MS:-400}"
+  # An adapter's own wait (DIVE-7648) is spent in the served browser's one tab;
+  # the cold loop below launches a Chrome per look, so it keeps the box budget.
+  local awaitms=""; (( warm )) && awaitms=$(_site_probe_wait_ms "$site")
+  local total="${FIVEDIVE_BROWSER_PROBE_WAIT_MS:-$awaitms}" poll="${FIVEDIVE_BROWSER_PROBE_POLL_MS:-400}"
+  total="${total:-8000}"
   [[ "$total" =~ ^[0-9]{1,7}$ ]] || total=8000
   [[ "$poll"  =~ ^[1-9][0-9]{0,6}$ ]] || poll=400
-  local rc waited=0 verdict=""
+  local rc waited=0 verdict="" landed_at=""
   # A PROFILE HELD BY A FORGOTTEN PROBE (DIVE-5375): see _reap_stale_probe. A
   # second Chrome at a held profile exits at once with an empty document, so
   # without this every probe after a wedged one reads UNKNOWN until a person
@@ -2967,8 +2990,9 @@ _probe() {
       # the verdict below is still made HERE, by grep, on the document it sends
       # back. Two regex engines must never both be allowed to decide a login.
       _daemon_call "$dir" "$(jq -nc --arg u "$url" --arg o "$marker" --arg i "$positive" \
-            --arg c "$challenge" --argjson w "$total" \
-            '{op:"probe", url:$u, wait:$w, until:{logged_out:$o, logged_in:$i, challenge:$c}, report_url:true}')" \
+            --arg c "$challenge" --arg l "$landed" --argjson w "$total" \
+            '{op:"probe", url:$u, wait:$w, until:({logged_out:$o, logged_in:$i, challenge:$c}
+              + (if $l == "" then {} else {logged_in_url:$l} end)), report_url:true}')" \
           >"$dom" 2>"$dom.err"
       rc=$?
     else
@@ -2988,6 +3012,18 @@ _probe() {
     fi
     if [[ -n "$marker" ]] && grep -qiE "$marker" "$dom"; then verdict=expired; break; fi
     if [[ -n "$positive" ]] && grep -qiE "$positive" "$dom"; then verdict=authenticated; break; fi
+    # THE ADDRESS A SIGNED-IN SESSION LANDS ON (DIVE-7648), served probe only (the
+    # cold one is not told where it landed). Reached only when neither the
+    # logged-out marker nor ANY challenge marker is in the page — an unconfirmed
+    # challenge candidate is not evidence of a login either.
+    # Nor a page titled as a bot check: Shopify's Cloudflare page ("Verifying your
+    # connection...", tests/fixtures/dive-7079) matches no challenge marker at all,
+    # and an address alone must never certify the page in front of it.
+    if [[ -n "$landed" ]] && (( warm )) && ! grep -qiE "$challenge" "$dom" \
+       && ! grep -qiE "$LANDED_BOT_CHECK_TITLE" "$dom"; then
+      local lurl; lurl=$(sed -n 's/^5dive-probe-final-url: //p' "$dom.err" 2>/dev/null | tail -1)
+      if [[ -n "$lurl" ]] && grep -qiE "$landed" <<<"$lurl"; then verdict=authenticated landed_at="$lurl"; break; fi
+    fi
     # Nothing yet. A warm probe has already spent the whole budget inside the
     # daemon; a cold one buys another look, and only when a positive marker
     # makes "not yet" a state distinct from "logged in".
@@ -3089,7 +3125,7 @@ _probe() {
       _stamp "$dir" expired; echo "session expired — human action required${gwhy:+ (generic check: $gwhy)}"; return 1 ;;
     authenticated)
       _signed_in_note "$dir" "$via"
-      _stamp "$dir" authenticated; echo "authenticated (${gwhy:+generic check: $gwhy; }checked $(date -u +%Y-%m-%dT%H:%MZ))"; return 0 ;;
+      _stamp "$dir" authenticated; echo "authenticated (${gwhy:+generic check: $gwhy; }${landed_at:+the page landed on $landed_at; }checked $(date -u +%Y-%m-%dT%H:%MZ))"; return 0 ;;
   esac
   # NO MARKER, NO VERDICT. `authenticated` is a claim about a LOGIN, and the only
   # evidence for it here is the adapter's logged-out marker failing to match. With
@@ -3109,7 +3145,7 @@ _probe() {
     echo "unconfirmed (no adapter for $site; checked $(date -u +%Y-%m-%dT%H:%MZ))$(_pending_note "$site")"
     return 0
   fi
-  if [[ -z "$marker" && -z "$positive" ]]; then
+  if [[ -z "$marker" && -z "$positive" && -z "$landed" ]]; then
     _stamp "$dir" unknown
     _maybe_propose "$site" "$dir"
     echo "UNKNOWN (no adapter for $site — the page loaded, but nothing here can tell logged-in from logged-out; write $(_adapter_path "$site") with probe.logged_out_when_dom_matches)$(_pending_note "$site")"
@@ -3120,7 +3156,7 @@ _probe() {
   # a logged-in page looks like and the page never showed it inside the budget,
   # the honest answer is that we could not read the state — never `authenticated`
   # by elimination, which is exactly the inference a single-page app breaks.
-  if [[ -n "$positive" ]]; then
+  if [[ -n "$positive" || -n "$landed" ]]; then
     _stamp "$dir" unknown
     echo "UNKNOWN (the page never showed either the signed-in or the signed-out marker within ${total}ms — the state could not be read; acting verbs stay refused)"
     return 0

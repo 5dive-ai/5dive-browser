@@ -128,6 +128,11 @@ jobs:
       # Chrome per profile dir), and the shopify.com adapter's both halves.
       - name: status group serial harness
         run: bash tests/browser_status_group_serial_unit.sh
+      # DIVE-7648: a probe whose page is still redirecting reads on, every probe
+      # has one hard deadline that frees the session, and the Shopify admin's
+      # landed address reads signed in (box report 680).
+      - name: probe SPA and deadline harness
+        run: bash tests/browser_probe_spa_unit.sh
       # DIVE-5287: input mode. Routing through the real bin/browser with a fake
       # daemon, lib/x11.cjs unit arms, and LIVE arms against the runner's own
       # Xvfb + Chrome (real XTEST input, isTrusted, navigator.webdriver false).

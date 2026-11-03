@@ -247,6 +247,17 @@ const within = (ms, p, what) => {
 // (DIVE-4794). Spent only while NOTHING is known — the loop returns the instant
 // any marker matches — so an adapter that answers at DCL pays nothing for it.
 const PROBE_WAIT_MS = Number(process.env.FIVEDIVE_BROWSER_PROBE_WAIT_MS || 8000);
+// ONE WALL CLOCK FOR THE WHOLE PROBE (DIVE-7648). The steps inside a probe each
+// had their own limit or none (newPage none, goto 20 s, content() none, close
+// none), and `busy` is freed only when the request returns. On exact-swallow
+// (report 680, 2026-11-03) one probe of a signed-in Shopify admin held its
+// group's session for 230-380 s, and google.com and cjdropshipping.com in that
+// group were refused as busy the whole time. Past this the probe answers, its
+// tab is closed without waiting, and the session is free; whatever the tab was
+// still doing is abandoned. Under the 38 s the cold probe's cap allows.
+const PROBE_HARD_MS = Number(process.env.FIVEDIVE_BROWSER_PROBE_HARD_MS || 35000);
+// How long a page that is still navigating gets to reach its next DOM, per look.
+const NAV_SETTLE_MS = Number(process.env.FIVEDIVE_BROWSER_NAV_SETTLE_MS || 5000);
 
 function die(code, msg) { process.stderr.write(`${PROG}: ${msg}\n`); process.exit(code); }
 
@@ -719,6 +730,31 @@ const reOf = (p) => {
   try { return new RegExp(p, 'i'); } catch (e) { return null; }  // bin/browser greps it anyway
 };
 
+// A PAGE THAT IS STILL NAVIGATING HAS NOT ANSWERED YET (DIVE-7648). Shopify's
+// admin redirects admin.shopify.com/ -> /store/<id> and then routes inside the
+// app; a content() that lands in one of those hops throws "Unable to retrieve
+// content because the page is navigating" (or "Execution context was
+// destroyed"), and the probe reported that as a page that did not load. It is
+// "not yet": wait for the next DOM, bounded, and say so with null.
+const NAVIGATING = /page is navigating|Execution context was destroyed/i;
+async function contentOrNull(page, ms) {
+  try { return await page.content(); }
+  catch (e) {
+    if (!NAVIGATING.test(String(e && e.message))) throw e;
+    try { await page.waitForLoadState('domcontentloaded', { timeout: Math.max(1, ms) }); } catch (e2) { /* the next look decides */ }
+    return null;
+  }
+}
+// The same, for a caller that needs a document: a few looks, then the error.
+async function contentSettled(page, ms) {
+  const stop = Date.now() + Math.max(1, ms);
+  for (;;) {
+    const html = await contentOrNull(page, Math.max(1, stop - Date.now()));
+    if (html !== null) return html;
+    if (Date.now() >= stop) throw new Error('the page was still navigating when the wait ran out');
+  }
+}
+
 async function probeRequest(ctx, req, send, end) {
   if (typeof req.url !== 'string' || !/^https?:\/\//.test(req.url)) {
     send({ t: 'err', msg: 'probe needs an http(s) url to load' }); return end(E_NOTHING_RAN);
@@ -726,6 +762,10 @@ async function probeRequest(ctx, req, send, end) {
   const settle = Number(process.env.FIVEDIVE_BROWSER_PROBE_SETTLE_MS || 800);
   const until = (req.until && typeof req.until === 'object') ? req.until : {};
   const positive = reOf(until.logged_in);
+  // WHERE THE PAGE LANDED CAN END THE WAIT TOO (DIVE-7648): an adapter may name
+  // the address a signed-in session lands on. Like the markers, only an early
+  // exit — bin/browser makes the verdict from the final URL it is told.
+  const landed = reOf(until.logged_in_url);
   const marks = [reOf(until.challenge), reOf(until.logged_out), positive].filter(Boolean);
   // THE POSITIVE MARKER IS WHAT MAKES A WAIT TERMINATE, so it is also what
   // permits one. Every request carries a challenge marker (bin/browser has a
@@ -734,41 +774,65 @@ async function probeRequest(ctx, req, send, end) {
   // already had — including the server-rendered adapters that classify on the
   // absence of a login form. Without a logged-in marker this is the old single
   // settle to the millisecond.
-  const deadline = positive
+  const hardMs = Number(req.hard) > 0 ? Math.min(Number(req.hard), PROBE_HARD_MS) : PROBE_HARD_MS;
+  const t0 = Date.now();
+  const left = () => hardMs - (Date.now() - t0);
+  const deadline = (positive || landed)
     ? Math.max(settle, Number(req.wait) > 0 ? Number(req.wait) : PROBE_WAIT_MS)
     : settle;
   const step = Math.min(Number(process.env.FIVEDIVE_BROWSER_PROBE_POLL_MS || 400), Math.max(1, deadline));
-  let page;
-  try {
+  let page, over = false;
+  const urlNow = () => { try { return page.url(); } catch (e) { return ''; } };
+  const said = (html) => (html !== null && marks.some(r => r.test(html))) || (!!landed && landed.test(urlNow()));
+  const work = (async () => {
     page = await ctx.newPage();
-    page.setDefaultTimeout(Number(process.env.FIVEDIVE_BROWSER_PROBE_TIMEOUT || 20000));
-    await page.goto(req.url, { waitUntil: 'domcontentloaded' });
+    if (over) return null;
+    page.setDefaultTimeout(Math.max(1, Math.min(Number(process.env.FIVEDIVE_BROWSER_PROBE_TIMEOUT || 20000), left())));
+    // A REDIRECT THAT INTERRUPTS THE LOAD IS THE LOAD (DIVE-6795's goTo), which
+    // the admin's own hop to /store/<id> can do.
+    await goTo(page, req.url);
     // THE WHOLE DOCUMENT, uncapped, like the cold probe: a challenge banner is
     // as likely to be late in a large DOM as early, and a truncating capture
     // cannot see a marker past the cap. bin/browser greps what comes back.
     await page.waitForTimeout(settle);
-    let html = await page.content();
+    let html = await contentOrNull(page, Math.min(NAV_SETTLE_MS, left()));
     let waited = settle;
     // NEVER `networkidle`: a web app that long-polls never idles, and waiting
     // for it is what made a `read` hang for 150s on a real box. The evidence
     // itself is the signal instead — the first document in which the page has
-    // said something about its login state is the one we answer with.
-    while (waited < deadline && !marks.some(r => r.test(html))) {
-      await page.waitForTimeout(step);
+    // said something about its login state is the one we answer with. A look
+    // that met a navigation (null) is a look that said nothing yet.
+    while (!over && waited < deadline && (html === null || !said(html))) {
+      if (html !== null) await page.waitForTimeout(step);
       waited += step;
-      html = await page.content();
+      html = await contentOrNull(page, Math.min(NAV_SETTLE_MS, left()));
     }
+    if (html === null) html = await contentSettled(page, Math.min(NAV_SETTLE_MS, left()));
+    return html;
+  })();
+  try {
+    const html = await within(Math.max(1, hardMs), work,
+      `the page did not settle within ${Math.round(hardMs / 1000)}s; the probe was stopped and the session freed`);
     // WHERE THE PAGE LANDED (DIVE-5388), for the generic check: a redirect to a
     // sign-in path is a signed-out login whatever the page says. A log line, so
     // it reaches the caller's stderr and never the document it greps.
-    if (req.report_url) send({ t: 'log', line: `5dive-probe-final-url: ${page.url()}` });
+    if (req.report_url) send({ t: 'log', line: `5dive-probe-final-url: ${urlNow()}` });
     send({ t: 'out', data: html.endsWith('\n') ? html : html + '\n' });
     end(0);
   } catch (e) {
+    over = true;
     send({ t: 'err', msg: `could not load ${req.url}: ${e.message}` });
     end(E_FAILED);
   } finally {
-    try { if (page) await page.close(); } catch (e) { /* the tab is going anyway */ }
+    over = true;
+    // The abandoned work may still reject once its tab is gone; that is expected.
+    work.catch(() => {});
+    // NEVER WAIT ON THE CLOSE: a tab whose script never yields can hold close()
+    // as long as it held content(), and the session must be free now.
+    const shut = (p) => { try { Promise.resolve(p.close()).catch(() => {}); } catch (e) { /* going anyway */ } };
+    if (page) shut(page);
+    // A tab newPage() hands over after the deadline is closed when it arrives.
+    else work.finally(() => { if (page) shut(page); }).catch(() => {});
   }
 }
 
@@ -832,7 +896,8 @@ async function renderRequest(ctx, req, send, end) {
       ? await aria.waitForPast(page, String(req.wait_for), inter, { timeoutMs: STEP_TIMEOUT }) : null;
     await page.waitForTimeout(Number(req.wait) || Number(process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS || 1200));
     const buf = await page.screenshot({ fullPage: !!req.full });
-    const html = await page.content();
+    // A client-side redirect mid-render is "not yet", not a failed shot (DIVE-7648).
+    const html = await contentSettled(page, NAV_SETTLE_MS);
     send({ t: 'out', data: JSON.stringify({
       url: req.url,
       png: Buffer.isBuffer(buf) ? buf.toString('base64') : Buffer.from(String(buf)).toString('base64'),
