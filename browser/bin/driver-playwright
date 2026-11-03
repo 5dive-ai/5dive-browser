@@ -563,6 +563,35 @@ async function totpMode(plan) {
   await printAndExit(payload);
 }
 
+// `download` (DIVE-7646): the bytes at one URL, fetched through this profile's
+// own request client so its cookies ride along, written into plan.dir (the
+// caller's 0700 stage: this process IS the caller) with the .manifest.json an
+// act's downloads leave. Prints { ok, name, bytes, type, url } or { ok:false, error }.
+async function downloadMode(plan) {
+  const profile = process.env.FIVEDIVE_BROWSER_PROFILE || plan.profile;
+  if (typeof plan.url !== 'string' || !/^https?:\/\//.test(plan.url)) die(E_NOTHING_RAN, 'download needs an http(s) url');
+  if (typeof plan.dir !== 'string' || !plan.dir.startsWith('/') || !fs.existsSync(plan.dir)) die(E_NOTHING_RAN, 'download needs an absolute directory to write the file into');
+  const ctx = await openProfile(profile);
+  let res;
+  try {
+    assertLease('download');
+    const r = await downloads.fetchFile(ctx, plan.url);
+    if (!r.ok) res = { ok: false, error: r.error };
+    else {
+      const w = { list: [], files: [{ name: r.name, type: r.type, buf: r.buf }] };
+      const [e] = await downloads.save(w, plan.dir);
+      fs.writeFileSync(path.join(plan.dir, '.manifest.json'),
+        JSON.stringify([{ name: e.name, bytes: e.bytes, error: e.error, type: e.type }]), { mode: 0o600 });
+      res = e.error ? { ok: false, error: e.error } : { ok: true, name: e.name, bytes: e.bytes, type: e.type, url: r.url };
+    }
+  } catch (e) {
+    res = { ok: false, error: e.message };
+  } finally {
+    try { await ctx.close(); } catch (e) { /* the file is already on disk */ }
+  }
+  await printAndExit({ ...res, browser_mode: browserMode }, res.ok ? 0 : E_FAILED);
+}
+
 async function writeReport(page, report, pop, { failed = false } = {}) {
   try {
     // AFTER A FAILED STEP NOTHING IS WAITED FOR (DIVE-6778): the run fails whatever
@@ -597,11 +626,11 @@ async function writeReport(page, report, pop, { failed = false } = {}) {
 async function saveDownloads(dl, report) {
   if (!dl) return;
   dl.stop();
-  if (!dl.list.length) return;
+  if (!dl.list.length && !dl.files.length) return;
   try {
     const entries = await downloads.save(dl, report.downloads);
     fs.writeFileSync(path.join(report.downloads, '.manifest.json'),
-      JSON.stringify(entries.map(({ name, bytes, error }) => ({ name, bytes, error }))), { mode: 0o600 });
+      JSON.stringify(entries.map(({ name, bytes, error, type }) => ({ name, bytes, error, type }))), { mode: 0o600 });
   } catch (e) {
     process.stderr.write(`${PROG}: the act started a download that could not be saved: ${e.message}\n`);
   }
@@ -630,6 +659,7 @@ async function main() {
   if (plan.mode === 'snapshot') return await snapshotMode(plan);
   if (plan.mode === 'totp') return await totpMode(plan);
   if (plan.mode === 'read') return await readMode(plan);
+  if (plan.mode === 'download') return await downloadMode(plan);
 
   const steps = Array.isArray(plan.steps) ? plan.steps : null;
   if (!steps || !steps.length) die(E_NOTHING_RAN, 'the plan carries no steps');
@@ -787,9 +817,22 @@ async function main() {
       if (s.op === 'upload' && s.file && typeof s.file.b64 === 'string') {
         s.path = { name: String(s.file.name || 'upload'), mimeType: String(s.file.mimeType || 'application/octet-stream'), buffer: Buffer.from(s.file.b64, 'base64') };
       }
+      let landedFile = false;   // DIVE-7646: a file is no page to judge a landing by
       switch (s.op) {
         case 'goto': {
-          await page.goto(s.url, { waitUntil: 'domcontentloaded' });
+          // A GOTO THAT LANDS ON A FILE HANDS IT OVER (DIVE-7646): a PDF opens in
+          // Chrome's viewer with no download event, so its bytes are kept here; an
+          // attachment starts a real download, which the watch above already has.
+          let resp = null;
+          try { resp = await page.goto(s.url, { waitUntil: 'domcontentloaded' }); }
+          catch (e) {
+            if (!(dl && /Download is starting/.test(String(e && e.message)))) throw e;
+            process.stderr.write(`  ${where}: ${s.url} is a file, and it is downloading\n`);
+            landedFile = true;
+            break;
+          }
+          const kept = await downloads.keepResponse(dl, ctx, resp);
+          if (kept) { process.stderr.write(`  ${where}: ${s.url} is a file (${kept.type || 'attachment'}); it is handed over with the act\n`); landedFile = true; break; }
           const inter = await aria.waitInterstitial(page);   // DIVE-6317
           if (inter) process.stderr.write(`  ${where}: "${inter.title}" ${inter.cleared ? `cleared by itself after ${inter.waited_ms} ms` : `was still there after ${inter.waited_ms} ms`}\n`);
           if (RUN_SETTLE_MS > 0) await page.waitForTimeout(RUN_SETTLE_MS);
@@ -810,7 +853,7 @@ async function main() {
       // WHERE THE GOTO LANDED (DIVE-4991), said every time. While nothing but a
       // goto has run, a redirect stops this cold run here and bin/browser runs the
       // whole plan once more in the served browser; after a click, never.
-      if (s.op === 'goto' && plan.landing) {
+      if (s.op === 'goto' && plan.landing && !landedFile) {
         const land = await aria.checkLanding(page, s.url, plan.landing, { mayRetry: !acted });
         if (land.line) process.stderr.write(land.line + '\n');
         if (land.loginWall) throw new Error(`${where}: ${land.loginWall}`);

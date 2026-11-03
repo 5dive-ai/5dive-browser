@@ -8,6 +8,9 @@ Part of the use-browser skill. Read it before a form, a sign-up, a post or an up
    prints `downloaded: <path> (<name>, <bytes> bytes)`, and the file is in the act's artifact
    directory under `downloads/`, readable by your seat (`--json`: `downloads`). A file over
    100 MB, or still downloading after 2 minutes, is named on stderr and not saved.
+- **To save a PDF or any file at a URL, use `5dive browser download <url>`**: it prints
+   `downloaded: <path> (<name>, <bytes> bytes, <type>)` with the site's login. Never click a PDF
+   viewer's buttons (they time out). A sign-in page instead of the file is refused (exit 75).
 - **A click that opens a popup** (most "Continue with Google" buttons) is followed: `act` prints
    `a popup opened: <host>, now in view`, the steps after it act in the popup, and `page.png`
    and the refs are of it. When the popup closes, the page that opened it is back. In a served

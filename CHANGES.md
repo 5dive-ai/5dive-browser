@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — `browser download` saves a PDF (or any file) at a URL as a real file (DIVE-7646), 1.67.0
+
+An owner wanted Amazon invoice PDFs saved as files for their document archive (box report 677). The browser could show the PDF but could not hand it over. `read` and `snapshot` got an empty page, `shot` got a picture, and clicking the PDF viewer's Download button in an `act` timed out after 30 s.
+
+- **New: `5dive browser download [<site>] <url> [--out=<file|dir/>]`.** It fetches the file with the site's login and saves the original bytes (0600, yours). It prints `downloaded: <path> (<name>, <bytes> bytes, <type>)`. The file goes under the artifacts folder's `downloads/` unless `--out` names a folder or a file. The name comes from the server, made safe.
+- **A sign-in page is not saved as the file.** If the login has lapsed, it stops with "got a sign-in page, not a file" (exit 75). Any other web page, an error status or a file over 100 MB is refused too.
+- **An `act` whose `goto` lands on a PDF now hands it over** with the same `downloaded:` line.
+- Not covered: sites served in input mode (plain Chrome, no automation channel) cannot fetch a file this way.
+
 ### Fixed — a browser behind a SOCKS proxy no longer shows Chrome's «unsupported command-line flag» bar (DIVE-7643), 1.66.5
 
 On exact-swallow (1.66.4), a browser going out through the owner's home exit (`socks5://127.0.0.1:1055`) showed a yellow bar across the top: «You are using an unsupported command-line flag: --host-resolver-rules=…». 5dive did not add that flag; Playwright adds it to every socks5 proxy handed to its `proxy` option. The bar also took height out of every screenshot an agent saw.

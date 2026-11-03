@@ -217,6 +217,12 @@ jobs:
       # with the recording stub, and a live arm in real Chrome against a local page.
       - name: act download harness
         run: bash tests/browser_act_download_unit.sh
+      # DIVE-7646: `browser download` and an act's goto that lands on a PDF. lib arms,
+      # a local site that serves the invoice only with its sign-in cookie, the cold
+      # path on the recording stub (a bare-fetch mutant goes red), and a live arm in
+      # real Chrome. The served half is browser_plugin_unit.sh T49d-g.
+      - name: download harness
+        run: bash tests/browser_download_unit.sh
       # DIVE-6844: a saved login is typed in by name and never shown. Cold act on the
       # recording stub (the transcript arm), root's half through the runner's sudo,
       # and a live sign-in page in real Chrome.

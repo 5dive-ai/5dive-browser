@@ -2488,11 +2488,33 @@ const fakeDownload = (d) => ({
 });
 const fireDownloads = (json) => { if (!json) return;
   for (const d of JSON.parse(json)) for (const fn of (listeners.download || [])) fn(fakeDownload(d)); };
+// DIVE-7646: THE CONTEXT'S REQUEST CLIENT CARRIES THE PROFILE'S COOKIES. The jar is
+// <profile>/.stub-cookies, one name=value a line: the stand-in for Chrome's cookie
+// store. ctx.request.get sends it; a bare fetch() would not, and that is the mutant.
+// PWGOTO_FETCH=1: a goto really loads its URL with the jar, keeps any Set-Cookie
+// (a prior page signing in) and returns the response; PWGOTO_NOBODY=1 is Chrome's
+// PDF viewer, whose navigation will not hand its body back. Unset, goto is inert.
+let profileDir = '';
+const jarFile = () => require('path').join(profileDir, '.stub-cookies');
+const jar = () => { try { return fs.readFileSync(jarFile(), 'utf8').split('\n').filter(Boolean).join('; '); } catch (e) { return ''; } };
+const stubGet = async (url, opts = {}) => {
+  const r = await fetch(url, { headers: jar() ? { cookie: jar() } : {} });
+  const buf = Buffer.from(await r.arrayBuffer());
+  const h = {}; r.headers.forEach((v, k) => { h[k] = v; });
+  for (const c of (typeof r.headers.getSetCookie === 'function' ? r.headers.getSetCookie() : [])) {
+    fs.appendFileSync(jarFile(), c.split(';')[0] + '\n');
+  }
+  return { status: () => r.status, headers: () => h, url: () => r.url,
+    body: async () => { if (opts.nobody) throw new Error('response.body: Response body is unavailable for redirect responses'); return buf; },
+    dispose: async () => {} };
+};
+const request = { get: async (url, o) => { rec({ call: 'request.get', url }); return stubGet(url); } };
 const page = {
   on: (ev, fn) => { (listeners[ev] = listeners[ev] || []).push(fn); },
   off: (ev, fn) => { listeners[ev] = (listeners[ev] || []).filter((f) => f !== fn); },
   setDefaultTimeout: (t) => rec({ call: 'setDefaultTimeout', t }),
-  goto: async (url, o) => { clock = 0; keydowns = 0; lastGoto = url; rec({ call: 'goto', url }); },
+  goto: async (url, o) => { clock = 0; keydowns = 0; lastGoto = url; rec({ call: 'goto', url });
+    if (process.env.PWGOTO_FETCH) return stubGet(url, { nobody: !!process.env.PWGOTO_NOBODY }); },
   fill: async (sel, val) => {
     rec({ call: 'fill', sel, val });
     // PWPREEMPT_FILE: a PERSON arrives mid-run. Writing the lease file from
@@ -2607,6 +2629,7 @@ exports.chromium = {
           proxy: Object.prototype.hasOwnProperty.call(opts, 'proxy') ? opts.proxy : '<absent>',
           display: process.env.DISPLAY || '<none>' });
     headlessLaunch = !!opts.headless;
+    profileDir = profile;
     // PWNOPAGE: THE BROWSER REALLY OPENS AND THEN CANNOT HAND OVER A PAGE.
     // Every other shape here returns a working page, which is exactly why five
     // anchored mutants missed the window between the launch and step one
@@ -2620,7 +2643,7 @@ exports.chromium = {
         close: async () => rec({ call: 'close' }),
       };
     }
-    return { pages: () => [page], newPage: async () => page, close: async () => rec({ call: 'close' }) };
+    return { pages: () => [page], newPage: async () => page, request, close: async () => rec({ call: 'close' }) };
   },
 };
 PWJS
@@ -3764,7 +3787,10 @@ const mkpage = (kind) => { let clock = 0, keydowns = 0, lastGoto = '';
     // never left the page it was on (a download aborts so).
     if (process.env.DPWGOTO_ABORT && !gotoInterrupted) { gotoInterrupted = true;
       if (process.env.DPWGOTO_ABORT === 'stay') lastGoto = null;
-      throw new Error(`page.goto: net::ERR_ABORTED at ${url}`); } },
+      throw new Error(`page.goto: net::ERR_ABORTED at ${url}`); }
+    // DIVE-7646: a URL DPWFETCH names answers the goto too (a PDF the act lands on).
+    if (process.env.DPWFETCH) { let m = {}; try { m = JSON.parse(fs.readFileSync(process.env.DPWFETCH, 'utf8')); } catch (e) { /* none */ }
+      if (m[url]) return dfetch(url); } },
   waitForLoadState: async (state) => { rec({ call: 'waitForLoadState', state, kind }); },
   // DPWHANG_URL: a page whose script never yields, so content() never answers
   // (DIVE-6778, T34i). Unset, content answers as it always did.
@@ -3854,6 +3880,17 @@ const mkpage = (kind) => { let clock = 0, keydowns = 0, lastGoto = '';
   press: async (sel, key) => rec({ call: 'press', sel, key, kind }),
   close: async () => rec({ call: 'pageclose', kind }),
 }; };
+// DIVE-7646: the served browser's request client. DPWFETCH names a FILE (read per
+// request, as DPWDOWNLOAD) mapping a URL to what the site answers:
+// {status, type, disposition, body | file}. A URL it does not name is a 404.
+const dfetch = async (url) => { rec({ call: 'request.get', url, kind: 'ctx' });
+  let map = {}; try { map = JSON.parse(fs.readFileSync(process.env.DPWFETCH, 'utf8')); } catch (e) { /* none */ }
+  const a = map[url] || { status: 404, type: 'text/html', body: 'not found' };
+  const buf = a.file ? fs.readFileSync(a.file) : Buffer.from(a.body || '');
+  const h = { 'content-type': a.type || 'application/octet-stream', 'content-length': String(buf.length) };
+  if (a.disposition) h['content-disposition'] = a.disposition;
+  return { status: () => a.status || 200, headers: () => h, url: () => a.landed || url, body: async () => buf, dispose: async () => {} };
+};
 const first = mkpage('first');
 exports.chromium = {
   launchPersistentContext: async (profile, opts) => {
@@ -3866,7 +3903,7 @@ exports.chromium = {
     if (process.env.DPWSANDBOXFAIL && opts.chromiumSandbox === true) {
       throw new Error('stub: No usable sandbox!');
     }
-    return { pages: () => [first], newPage: async () => mkpage('extra'), close: async () => rec({ call: 'close' }) };
+    return { pages: () => [first], newPage: async () => mkpage('extra'), request: { get: dfetch }, close: async () => rec({ call: 'close' }) };
   },
 };
 DPWJS
@@ -8458,7 +8495,8 @@ tc 'T48h CHANGES.md carries the entry' 'DIVE-5285' "$(cat "$ROOT/CHANGES.md")"
 # tests/browser_act_download_unit.sh.
 mkprofile warmdl.test "$LIVE_DOM" >/dev/null
 DPWDOWNLOAD="$TMP/dpw.download"; : > "$DPWDOWNLOAD"
-dserve warmdl.test DPWDOWNLOAD="$DPWDOWNLOAD"
+DPWFETCH="$TMP/dpw.fetch"; printf '{}' > "$DPWFETCH"   # DIVE-7646, T49d-g
+dserve warmdl.test DPWDOWNLOAD="$DPWDOWNLOAD" DPWFETCH="$DPWFETCH"
 t  'T49 a warm session is up for the download arms' 0 "$RC"
 head -c 2000000 /dev/urandom > "$TMP/t49.bin"
 printf '[{"name":"episode 12.m4a","file":"%s"}]' "$TMP/t49.bin" > "$DPWDOWNLOAD"
@@ -8482,6 +8520,37 @@ t  'T49b a failed download in the served browser: --json names it with the reaso
 dwarm "$BROWSER" act warmdl.test --steps='[{"op":"click","selector":"#download"}]' --out="$TMP/act49c"
 t  'T49c (control) a served click that downloads nothing: rc 0, no downloaded line' '0 no' \
    "$RC $([[ "$OUT" == *downloaded:* ]] && echo yes || echo no)"
+# DIVE-7646: `browser download` through the served browser. The daemon fetches with the
+# context's request client (its cookies) and sends the bytes back as the act's chunk lines;
+# the caller writes them. The cookie arm itself (a bare fetch is refused) is cold, in
+# tests/browser_download_unit.sh, where a real local server checks the cookie.
+jq -n --arg f "$TMP/t49.bin" '{
+  "https://warmdl.test/inv/7.pdf": {type:"application/pdf", disposition:"inline; filename=\"../../Rechnung 7.pdf\"", file:$f},
+  "https://warmdl.test/inv/8.pdf": {type:"text/html; charset=utf-8", landed:"https://warmdl.test/ap/signin",
+     body:"<html><form><input type=\"password\" name=\"p\"></form></html>"}}' > "$DPWFETCH"
+LB49="$(launches)"
+mkdir -p "$TMP/dl49d"
+dwarm "$BROWSER" download warmdl.test "https://warmdl.test/inv/7.pdf" --out="$TMP/dl49d"
+t  'T49d download in the served browser: exits 0' 0 "$RC"
+t  'T49d ...prints downloaded: <path> (<name>, <bytes> bytes, <type>), the climbing name kept inside' \
+   "downloaded: $TMP/dl49d/Rechnung 7.pdf (Rechnung 7.pdf, 2000000 bytes, application/pdf)" "$OUT"
+t  'T49d ...the bytes that crossed the socket are the bytes the site sent, 0600, the calling seat'"'"'s' \
+   "$(sha256sum < "$TMP/t49.bin") 600 $SEAT" \
+   "$(sha256sum < "$TMP/dl49d/Rechnung 7.pdf" 2>/dev/null) $(stat -c '%a %U' "$TMP/dl49d/Rechnung 7.pdf" 2>/dev/null)"
+t  'T49d ...fetched through the context (request.get), in the browser already up, no copy left behind' "yes $LB49 0" \
+   "$(jq -rs 'any(.[]; .call=="request.get" and .url=="https://warmdl.test/inv/7.pdf")|if . then "yes" else "no" end' "$DREC") $(launches) $(find /tmp -maxdepth 3 -name '5dive-dl-*' -user "$SEAT" 2>/dev/null | wc -l)"
+mkdir -p "$TMP/dl49e"
+dwarm "$BROWSER" download warmdl.test "https://warmdl.test/inv/8.pdf" --out="$TMP/dl49e"
+t  'T49e a sign-in page where the file was: exit 75, said so, nothing saved' '75 yes 0' \
+   "$RC $([[ "$ERR" == *"got a sign-in page, not a file"* ]] && echo yes || echo no) $(find "$TMP/dl49e" -type f | wc -l)"
+dwarm "$BROWSER" download warmdl.test "https://warmdl.test/inv/7.pdf"
+dl49="$(sed -n 's/^downloaded: \(.*\) (Rechnung 7\.pdf, 2000000 bytes, application\/pdf)$/\1/p' <<<"$OUT")"
+t  'T49f no --out: under the seat'"'"'s .read-artifacts/<site>.<id>/downloads/' yes \
+   "$([[ "$dl49" == "$FIVEDIVE_BROWSER_PROFILE_ROOT/$SEAT/.read-artifacts/warmdl.test."*/downloads/"Rechnung 7.pdf" && -r "$dl49" ]] && echo yes || echo no)"
+dwarm "$BROWSER" act warmdl.test "https://warmdl.test/orders" --steps='[{"op":"goto","url":"https://warmdl.test/inv/7.pdf"}]' --out="$TMP/act49g"
+t  'T49g an act whose goto lands on the PDF hands it over: rc 0 and the downloaded line' \
+   "0 yes" "$RC $([[ "$OUT" == *"downloaded: $TMP/act49g/downloads/Rechnung 7.pdf (Rechnung 7.pdf, 2000000 bytes, application/pdf)"* ]] && echo yes || echo no)"
+t  'T49g ...with the PDF'"'"'s bytes' "$(sha256sum < "$TMP/t49.bin")" "$(sha256sum < "$TMP/act49g/downloads/Rechnung 7.pdf" 2>/dev/null)"
 env PATH="$SPATH" "$BROWSER" serve warmdl.test --stop >/dev/null 2>&1
 
 # --- T50 a public page keeps its page between acts (DIVE-5817) --------------------------------

@@ -577,6 +577,7 @@ async function serveMode(profile, sock, broker, input) {
         else if (req.op === 'read') await readRequest(ctx, req, send, end);
         else if (req.op === 'plan') await planRequest(ctx, req, send, end);
         else if (req.op === 'totp') await totpRequest(ctx, profile, req, send, end);
+        else if (req.op === 'download') await downloadRequest(ctx, req, send, end);
         else { send({ t: 'err', msg: `unknown op '${req.op}'` }); end(E_NOTHING_RAN); }
       } catch (e) {
         send({ t: 'err', msg: e && e.message ? e.message : String(e) });
@@ -845,6 +846,38 @@ async function renderRequest(ctx, req, send, end) {
     end(E_FAILED);
   } finally {
     try { if (page) await page.close(); } catch (e) { /* the tab is going anyway */ }
+  }
+}
+
+// ---- download: the bytes at one URL (DIVE-7646) ----
+//
+// Fetched through this context's own request client, so the profile's cookies
+// ride along, and sent back as the act's download lines (lib/downloads.cjs
+// stream): this process is the profile's OWNER and never writes a path the
+// caller chose (DIVE-4662). No tab is opened, so a person at the viewer is not
+// navigated away. One line {act_download, i:0, name, bytes, type} then the chunks,
+// or {act_download, i:0, name, error} and exit 1.
+async function downloadRequest(ctx, req, send, end) {
+  if (typeof req.url !== 'string' || !/^https?:\/\//.test(req.url)) {
+    send({ t: 'err', msg: 'download needs an http(s) url' }); return end(E_NOTHING_RAN);
+  }
+  try { assertLease(req, 'download'); } catch (e) { send({ t: 'err', msg: e.message }); return end(E_FAILED); }
+  const r = await downloads.fetchFile(ctx, req.url);
+  if (!r.ok) {
+    send({ t: 'out', data: JSON.stringify({ act_download: true, i: 0, name: downloads.safeName(downloads.nameFrom({}, req.url), new Set()), error: r.error }) + '\n' });
+    return end(E_FAILED);
+  }
+  let dir = null;
+  try {
+    dir = fs.mkdtempSync(path.join(require('os').tmpdir(), '5dive-dl-'));
+    const entries = await downloads.save({ list: [], files: [{ name: r.name, type: r.type, buf: r.buf }] }, dir);
+    downloads.stream(entries, (line) => send({ t: 'out', data: line }));
+    end(entries[0] && entries[0].error ? E_FAILED : 0);
+  } catch (e) {
+    send({ t: 'err', msg: `the file was fetched but could not be handed back: ${e.message}` });
+    end(E_FAILED);
+  } finally {
+    if (dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { /* its TMPDIR is reaped */ } }
   }
 }
 
@@ -1216,6 +1249,7 @@ async function planRequest(ctx, req, send, end) {
       if (s.op === 'upload' && s.file && typeof s.file.b64 === 'string') {
         s.path = { name: String(s.file.name || 'upload'), mimeType: String(s.file.mimeType || 'application/octet-stream'), buffer: Buffer.from(s.file.b64, 'base64') };
       }
+      let landedFile = false;   // DIVE-7646: a file is no page to judge a landing by
       switch (s.op) {
         case 'goto': {
           // THE ACT'S OWN URL DOES NOT RELOAD THE PAGE IT IS ALREADY ON (DIVE-5817).
@@ -1229,7 +1263,17 @@ async function planRequest(ctx, req, send, end) {
             send({ t: 'log', line: `  ${where}: already on ${s.url}; not reloaded, so the page keeps what it holds` });
             break;
           }
-          await goTo(page, s.url);
+          // A GOTO THAT LANDS ON A FILE HANDS IT OVER (DIVE-7646), as the cold driver.
+          let resp = null;
+          try { resp = await goTo(page, s.url); }
+          catch (e) {
+            if (!(dl && /Download is starting/.test(String(e && e.message)))) throw e;
+            send({ t: 'log', line: `  ${where}: ${s.url} is a file, and it is downloading` });
+            landedFile = true;
+            break;
+          }
+          const kept = await downloads.keepResponse(dl, ctx, resp);
+          if (kept) { send({ t: 'log', line: `  ${where}: ${s.url} is a file (${kept.type || 'attachment'}); it is handed over with the act` }); landedFile = true; break; }
           const inter = await aria.waitInterstitial(page);   // DIVE-6317
           if (inter) send({ t: 'log', line: `  ${where}: "${inter.title}" ${inter.cleared ? `cleared by itself after ${inter.waited_ms} ms` : `was still there after ${inter.waited_ms} ms`}` });
           const ms = settleOf(req, RUN_SETTLE_MS);
@@ -1250,7 +1294,7 @@ async function planRequest(ctx, req, send, end) {
       send({ t: 'log', line: `  ${where} ok` });
       // WHERE THE GOTO LANDED (DIVE-4991), said every time, exactly as the cold
       // driver says it. This IS the served browser, so there is nothing to retry in.
-      if (s.op === 'goto' && req.landing) {
+      if (s.op === 'goto' && req.landing && !landedFile) {
         const land = await aria.checkLanding(page, s.url, req.landing);
         if (land.line) send({ t: 'log', line: land.line });
         if (land.loginWall) throw new Error(`${where}: ${land.loginWall}`);
@@ -1347,7 +1391,7 @@ async function sendReport(page, req, send, { failed = false, watch = null, settl
 async function sendDownloads(dl, send) {
   if (!dl) return;
   dl.stop();
-  if (!dl.list.length) return;
+  if (!dl.list.length && !dl.files.length) return;
   let dir = null;
   try {
     dir = fs.mkdtempSync(path.join(require('os').tmpdir(), '5dive-act-dl-'));
@@ -2009,6 +2053,7 @@ async function inputRequest(be, profile, req, send, end, behalf) {
     tree: 'there is no DOM tree to enumerate: read the screenshot (`5dive browser shot`) and act on pixel coordinates',
     snapshot: '`5dive browser snapshot` on an input-mode site returns the screenshot and the window title, not a DOM',
     render: '`5dive browser shot` on an input-mode site returns a screenshot of the live window',
+    download: 'this browser has no request client to fetch a file with; a file the page downloads lands in the browser\'s own download folder',
     plan: 'adapter actions address the page by selector, and input mode has no DOM to resolve a selector in: use `5dive browser act <site> --steps=` with input steps (' + INPUT_VOCAB + ')',
   }[req.op];
   send({ t: 'err', msg: instead
