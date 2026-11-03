@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — `browser download` saves a PDF (or any file) at a URL as a real file (DIVE-7646), 1.67.0
+
+An owner wanted Amazon invoice PDFs saved as files for their document archive (box report 677). The browser could show the PDF but could not hand it over. `read` and `snapshot` got an empty page, `shot` got a picture, and clicking the PDF viewer's Download button in an `act` timed out after 30 s.
+
+- **New: `5dive browser download [<site>] <url> [--out=<file|dir/>]`.** It fetches the file with the site's login and saves the original bytes (0600, yours). It prints `downloaded: <path> (<name>, <bytes> bytes, <type>)`. The file goes under the artifacts folder's `downloads/` unless `--out` names a folder or a file. The name comes from the server, made safe.
+- **A sign-in page is not saved as the file.** If the login has lapsed, it stops with "got a sign-in page, not a file" (exit 75). Any other web page, an error status or a file over 100 MB is refused too.
+- **An `act` whose `goto` lands on a PDF now hands it over** with the same `downloaded:` line.
+- Not covered: sites served in input mode (plain Chrome, no automation channel) cannot fetch a file this way.
+
 ### Fixed — a signed-in Shopify admin reads signed in, and one login check can no longer hold a whole group's browser for minutes (DIVE-7648), 1.66.6
 
 On exact-swallow (report 680, 1.66.5), the owner signed in to Shopify and tapped Done, yet `status`, `shot` and `read` on shopify.com kept answering UNKNOWN for hours, so every acting step refused. The browser was on the store's admin, signed in. And one check from one agent kept the group's browser busy for 4 to 6 minutes, which blocked google.com and cjdropshipping.com in the same group.
