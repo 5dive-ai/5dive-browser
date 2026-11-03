@@ -28,9 +28,11 @@
 #   A  `act` whose goto lands on the PDF: the same downloaded line, the same bytes
 #      A1 the navigation's own body
 #      A2 a viewer that will not give the body back: fetched again through the context
+#      A2b real Chrome's viewer gives back its own page as the body: fetched again
 #   M  MUTANTS
 #      M1 lib fetches with a bare fetch() (no cookie jar): C2 goes red
 #      M2 the driver's goto never keeps the response: A1 goes red
+#      M3 any body is kept, whatever it holds: A2b goes red
 #   L  LIVE, where this machine has Chrome and playwright-core (CI installs it):
 #      L1 in real Chrome an act signs in on one page and its goto lands on the PDF:
 #         the downloaded line, with the bytes the server sent
@@ -205,6 +207,13 @@ arm 'A1c ...with the bytes the server sent, 0600' "$PDFSUM 600" \
 run env PWGOTO_FETCH=1 PWGOTO_NOBODY=1 "$BROWSER" act "$BASE/login" --steps="$GOTO_PDF" --out="$TMP/a2"
 arm 'A2 a viewer that keeps the body: fetched again through the context, same bytes' "0 $PDFSUM" \
   "$RC $(sha256sum < "$TMP/a2/downloads/Rechnung 123.pdf" 2>/dev/null)"
+run env PWGOTO_FETCH=1 PWGOTO_VIEWER=1 "$BROWSER" act "$BASE/login" --steps="$GOTO_PDF" --out="$TMP/a2b"
+arm 'A2b real Chrome'"'"'s viewer: right headers, its own page as the body: fetched again, the server'"'"'s bytes' "0 yes $PDFSUM" \
+  "$RC $(has "downloaded: $TMP/a2b/downloads/Rechnung 123.pdf (Rechnung 123.pdf, $PDFLEN bytes, application/pdf)" "$OUT") $(sha256sum < "$TMP/a2b/downloads/Rechnung 123.pdf" 2>/dev/null)"
+arm 'A2c (lib) a body is the file only when it matches the headers' 'true false false true' "$(node -e '
+const d=require(process.argv[1]); const pdf=Buffer.from("%PDF-1.4 x"), h={"content-type":"application/pdf"};
+console.log(d.bodyIsTheFile(pdf,{...h,"content-length":String(pdf.length)}), d.bodyIsTheFile(Buffer.from("<html></html>"),h),
+  d.bodyIsTheFile(pdf,{...h,"content-length":"99"}), d.bodyIsTheFile(pdf,{...h,"content-length":"99","content-encoding":"gzip"}))' "$LIB")"
 run env PWGOTO_FETCH=1 "$BROWSER" act "$BASE/login" --steps='[{"op":"goto","url":"'"$BASE/page"'"}]' --out="$TMP/a3"
 arm 'A3 (control) a goto to a page hands nothing over' '0 no no' "$RC $(has 'downloaded:' "$OUT") $(ex "$TMP/a3/downloads")"
 
@@ -223,6 +232,13 @@ arm 'M2 (anchor) mutant applied' yes "$(cmp -s "$TMP/mut2/bin/driver-playwright"
 run env PWGOTO_FETCH=1 "$TMP/mut2/bin/browser" act "$BASE/login" --steps="$GOTO_PDF" --out="$TMP/m2"
 arm 'M2 MUTANT (the goto keeps no response): no downloaded line, no file (A1 goes red)' 'no no' \
   "$(has 'downloaded:' "$OUT") $(ex "$TMP/m2/downloads/Rechnung 123.pdf")"
+
+cp -r "$ROOT/browser" "$TMP/mut3"
+sed -i 's|if (bodyIsTheFile(buf, headers)) entry|if (buf \&\& buf.length) entry|' "$TMP/mut3/lib/downloads.cjs"
+arm 'M3 (anchor) mutant applied' yes "$(cmp -s "$TMP/mut3/lib/downloads.cjs" "$LIB" && echo no || echo yes)"
+run env PWGOTO_FETCH=1 PWGOTO_VIEWER=1 "$TMP/mut3/bin/browser" act "$BASE/login" --steps="$GOTO_PDF" --out="$TMP/m3"
+arm 'M3 MUTANT (any body is kept, the it1 code): the viewer'"'"'s page saved, not the server'"'"'s bytes (A2b goes red)' no \
+  "$([[ "$(sha256sum < "$TMP/m3/downloads/Rechnung 123.pdf" 2>/dev/null)" == "$PDFSUM" ]] && echo yes || echo no)"
 
 # ================================================================ L  LIVE
 REAL_CHROME="$(PATH="$REALPATH" command -v google-chrome || PATH="$REALPATH" command -v chromium || true)"

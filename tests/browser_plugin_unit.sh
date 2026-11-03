@@ -2493,7 +2493,9 @@ const fireDownloads = (json) => { if (!json) return;
 // store. ctx.request.get sends it; a bare fetch() would not, and that is the mutant.
 // PWGOTO_FETCH=1: a goto really loads its URL with the jar, keeps any Set-Cookie
 // (a prior page signing in) and returns the response; PWGOTO_NOBODY=1 is Chrome's
-// PDF viewer, whose navigation will not hand its body back. Unset, goto is inert.
+// PDF viewer, whose navigation will not hand its body back; PWGOTO_VIEWER=1 is
+// real Chrome's (CI, DIVE-7646 it2): the right headers, but body() is the viewer's
+// own page, not the server's bytes. Unset, goto is inert.
 let profileDir = '';
 const jarFile = () => require('path').join(profileDir, '.stub-cookies');
 const jar = () => { try { return fs.readFileSync(jarFile(), 'utf8').split('\n').filter(Boolean).join('; '); } catch (e) { return ''; } };
@@ -2505,7 +2507,8 @@ const stubGet = async (url, opts = {}) => {
     fs.appendFileSync(jarFile(), c.split(';')[0] + '\n');
   }
   return { status: () => r.status, headers: () => h, url: () => r.url,
-    body: async () => { if (opts.nobody) throw new Error('response.body: Response body is unavailable for redirect responses'); return buf; },
+    body: async () => { if (opts.nobody) throw new Error('response.body: Response body is unavailable for redirect responses');
+      if (opts.viewer) return Buffer.from('<!doctype html><html><body style="margin:0"><embed type="application/pdf"></body></html>'); return buf; },
     dispose: async () => {} };
 };
 const request = { get: async (url, o) => { rec({ call: 'request.get', url }); return stubGet(url); } };
@@ -2514,7 +2517,7 @@ const page = {
   off: (ev, fn) => { listeners[ev] = (listeners[ev] || []).filter((f) => f !== fn); },
   setDefaultTimeout: (t) => rec({ call: 'setDefaultTimeout', t }),
   goto: async (url, o) => { clock = 0; keydowns = 0; lastGoto = url; rec({ call: 'goto', url });
-    if (process.env.PWGOTO_FETCH) return stubGet(url, { nobody: !!process.env.PWGOTO_NOBODY }); },
+    if (process.env.PWGOTO_FETCH) return stubGet(url, { nobody: !!process.env.PWGOTO_NOBODY, viewer: !!process.env.PWGOTO_VIEWER }); },
   fill: async (sel, val) => {
     rec({ call: 'fill', sel, val });
     // PWPREEMPT_FILE: a PERSON arrives mid-run. Writing the lease file from

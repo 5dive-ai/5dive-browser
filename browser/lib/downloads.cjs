@@ -230,8 +230,22 @@ async function fetchFile(ctx, url, opts = {}) {
   return { ok: true, name: nameFrom(headers, finalUrl), type: type || 'application/octet-stream', buf, url: finalUrl };
 }
 
+// THE NAVIGATION'S BODY IS KEPT ONLY WHEN IT IS THE FILE (DIVE-7646 it2). Real
+// Chrome hands a PDF to its viewer, and what the navigation's body() returns then
+// is not the server's bytes (measured on CI: the right headers, other bytes). So
+// the body must match what the headers declare: its length, where one is given
+// and not compressed, and a PDF's %PDF- header in its first 1024 bytes. Anything
+// else is fetched again through the context, with the same cookies.
+function bodyIsTheFile(buf, headers) {
+  if (!buf || !buf.length) return false;
+  const declared = Number(headers && headers['content-length']);
+  if (!(headers && headers['content-encoding']) && Number.isFinite(declared) && declared > 0 && declared !== buf.length) return false;
+  if (/pdf$/.test(typeOf(headers)) && Buffer.from(buf).subarray(0, 1024).indexOf('%PDF-') < 0) return false;
+  return true;
+}
+
 // A goto that LANDED on a file (DIVE-7646): its bytes go into w.files, for save().
-// The navigation's own body first; a viewer that will not give it up is fetched
+// The navigation's own body when it is the file; otherwise it is fetched
 // again through the context. Returns the entry, or null for an ordinary page.
 async function keepResponse(w, ctx, resp) {
   if (!w || !resp || typeof resp.headers !== 'function') return null;
@@ -242,7 +256,7 @@ async function keepResponse(w, ctx, resp) {
   let entry = null;
   try {
     const buf = await resp.body();
-    if (buf && buf.length) entry = { name: nameFrom(headers, url), type: typeOf(headers), buf: Buffer.from(buf) };
+    if (bodyIsTheFile(buf, headers)) entry = { name: nameFrom(headers, url), type: typeOf(headers), buf: Buffer.from(buf) };
   } catch (e) { /* the viewer kept it; fetched below */ }
   if (!entry) {
     const r = await fetchFile(ctx, url);
@@ -273,4 +287,4 @@ function stream(entries, send) {
   });
 }
 
-module.exports = { safeName, watch, save, stream, nameFrom, isFileResponse, fetchFile, keepResponse, WAIT_MS, MAX_BYTES, CHUNK };
+module.exports = { safeName, watch, save, stream, nameFrom, isFileResponse, bodyIsTheFile, fetchFile, keepResponse, WAIT_MS, MAX_BYTES, CHUNK };
