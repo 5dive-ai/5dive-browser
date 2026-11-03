@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a signed-in Shopify admin reads signed in, and one login check can no longer hold a whole group's browser for minutes (DIVE-7648), 1.66.6
+
+On exact-swallow (report 680, 1.66.5), the owner signed in to Shopify and tapped Done, yet `status`, `shot` and `read` on shopify.com kept answering UNKNOWN for hours, so every acting step refused. The browser was on the store's admin, signed in. And one check from one agent kept the group's browser busy for 4 to 6 minutes, which blocked google.com and cjdropshipping.com in the same group.
+
+- **A page that is still redirecting is "not yet", not "failed".** The check waits for the next page and looks again, inside the same time limit. A screenshot taken mid-redirect is kept too.
+- **Every login check now has one hard limit, 35 s.** When it runs out, the check answers, its tab is closed, and the browser is free for the next request.
+- **Shopify gets 20 s for its admin to draw, and a tab that lands on `admin.shopify.com/store/<id>` reads signed in.** Only a signed-in session is sent there. A Cloudflare check page at that address still reads UNKNOWN. The quick check without a served browser keeps the 8 s budget and the page markers only.
+
 ### Fixed — a browser behind a SOCKS proxy no longer shows Chrome's «unsupported command-line flag» bar (DIVE-7643), 1.66.5
 
 On exact-swallow (1.66.4), a browser going out through the owner's home exit (`socks5://127.0.0.1:1055`) showed a yellow bar across the top: «You are using an unsupported command-line flag: --host-resolver-rules=…». 5dive did not add that flag; Playwright adds it to every socks5 proxy handed to its `proxy` option. The bar also took height out of every screenshot an agent saw.
