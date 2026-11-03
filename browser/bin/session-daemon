@@ -379,14 +379,17 @@ async function serveMode(profile, sock, broker, input) {
   // with, and `proxy set`/`clear` say so rather than moving a live login's IP.
   let viaProxy;
   try { viaProxy = proxy.launchProxy(profile); } catch (e) { die(E_UNAVAILABLE, e.message); }
+  // DIVE-7643: a proxy with no login is a plain --proxy-server arg (lib/proxy.cjs
+  // launchRoute), so Playwright adds no flag that raises Chrome's warning bar.
+  const route = proxy.launchRoute(viaProxy);
   const { chromium } = loadPlaywright();
   const launch = (sandbox) => chromium.launchPersistentContext(profile, {
     headless: false,
     executablePath: chrome,
-    args: launchArgs(sandbox),
+    args: [...launchArgs(sandbox), ...route.args],
     chromiumSandbox: sandbox,
     viewport: null,
-    ...(viaProxy ? { proxy: viaProxy } : {}),
+    ...route.option,
   });
   try {
     ctx = await launch(sandboxWanted());

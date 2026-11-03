@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a browser behind a SOCKS proxy no longer shows Chrome's «unsupported command-line flag» bar (DIVE-7643), 1.66.5
+
+On exact-swallow (1.66.4), a browser going out through the owner's home exit (`socks5://127.0.0.1:1055`) showed a yellow bar across the top: «You are using an unsupported command-line flag: --host-resolver-rules=…». 5dive did not add that flag; Playwright adds it to every socks5 proxy handed to its `proxy` option. The bar also took height out of every screenshot an agent saw.
+
+- **A proxy with no login is now a plain `--proxy-server` setting**, in the served browser and in a cold run, as input mode already did. The page still leaves from the proxy's IP: Chrome's own socks5 looks the name up at the proxy.
+- **A proxy with a login is unchanged** and still goes through Playwright, which answers its password prompt.
+- A browser already open keeps its old launch until it restarts (`5dive browser serve <site> --stop`, then open it again).
+
 ### Fixed — in input mode, a page is read only once it has loaded, so Amazon's error page is no longer returned as a good read (DIVE-7572), 1.66.4
 
 On exact-swallow (report 617, 1.66.3), the Amazon product read came back as a success with the title `amazon.co.jp/dp/B00D81RNDK`. That is the address Chrome shows while a page is still loading; the screenshot showed Amazon's error page with the tab still spinning. The title was read at a fixed 2.5 s, so the stop for Amazon's error page never saw it.

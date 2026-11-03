@@ -5956,6 +5956,40 @@ env PATH="$SPATH" "$BROWSER" serve proxied.test --stop >/dev/null 2>&1
 pxdrv
 t  'T33g ...and neither does the cold one after clear' '"<absent>"' "$(pxlaunch "$PWREC")"
 
+# T33n A SOCKS PROXY WITH NO LOGIN IS A PLAIN --proxy-server ARG (DIVE-7643).
+# Through Playwright's `proxy` option a socks5 proxy makes Playwright add
+# --host-resolver-rules, and a headed Chrome shows its "unsupported command-line
+# flag" bar over the page. Graded on both launches: no `proxy` key reaches
+# Playwright (so it adds nothing), the route is in the args, and no
+# host-resolver flag is anywhere in them. T33d/T33f above keep the other half:
+# an http proxy WITH a login still goes through the option.
+PXSOCKS='socks5://127.0.0.1:1055'
+pxargs() { jq -c 'select(.call=="launch")|.args' "$1" | tail -1; }
+run "$BROWSER" proxy set "$PXSOCKS"
+t  'T33n (setup) a login-less socks5 proxy is accepted' 0 "$RC"
+pxdrv
+t  'T33n a cold launch with a socks5 proxy runs' 0 "$RC"
+t  'T33n ...and hands Playwright NO proxy key (Playwright would add --host-resolver-rules)' '"<absent>"' "$(pxlaunch "$PWREC")"
+tc 'T33n ...the route is a --proxy-server arg' "\"--proxy-server=$PXSOCKS\"" "$(pxargs "$PWREC")"
+tc 'T33n ...localhost keeps going through it, as Playwright'"'"'s option sent it' '"--proxy-bypass-list=<-loopback>"' "$(pxargs "$PWREC")"
+tn 'T33n ...and no host-resolver flag is in the args' 'host-resolver' "$(pxargs "$PWREC")"
+tn 'T33n ...nor --test-type, which would hide the bar by switching off other warnings' 'test-type' "$(pxargs "$PWREC")"
+dserve proxied.test
+t  'T33n serve with a socks5 proxy holds a warm session' 0 "$RC"
+t  'T33n ...the daemon hands Playwright NO proxy key' '"<absent>"' "$(pxlaunch "$DREC")"
+tc 'T33n ...the daemon'"'"'s route is the same --proxy-server arg' "\"--proxy-server=$PXSOCKS\"" "$(pxargs "$DREC")"
+tn 'T33n ...and no host-resolver flag is in the daemon'"'"'s args' 'host-resolver' "$(pxargs "$DREC")"
+env PATH="$SPATH" "$BROWSER" serve proxied.test --stop >/dev/null 2>&1
+# An http proxy with NO login takes the same arg route; one WITH a login is T33d.
+run "$BROWSER" proxy set 'http://proxy.test:8080'
+pxdrv
+t  'T33n a login-less http proxy also hands Playwright no proxy key' '"<absent>"' "$(pxlaunch "$PWREC")"
+tc 'T33n ...and is the same plain arg' '"--proxy-server=http://proxy.test:8080"' "$(pxargs "$PWREC")"
+run "$BROWSER" proxy clear
+pxdrv
+t  'T33n ...and after clear the cold launch has no proxy arg at all' 'no' \
+   "$(grep -q 'proxy-server\|proxy-bypass' <<<"$(pxargs "$PWREC")" && echo yes || echo no)"
+
 printf '%s\n' "$PXURL" | "$BROWSER" proxy set - >"$TMP/.pxo" 2>"$TMP/.pxe"; RC=$?
 t  'T33h `proxy set -` reads the URL from stdin (out of shell history and ps)' 0 "$RC"
 t  'T33h ...and stores the same setting' "$PXURL" "$(cat "$PXFILE" 2>/dev/null)"
