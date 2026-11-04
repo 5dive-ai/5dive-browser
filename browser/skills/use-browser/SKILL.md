@@ -36,9 +36,30 @@ needs nothing connected.
 3. **Verify** with `--expect=<regex>` only on the act that does the job (the save, the send,
    the search whose result you report): the words that prove it, matched on screen for up to
    2 s. A click that only opens a page or a menu needs no `--expect`: what it changed is printed.
-   **A matched `--expect` IS the check:** report and move on, never re-open the page to confirm.
-   Between steps, go by the text and refs the act printed, never the picture. Open the
-   `page.png` once, at the end, only when no `--expect` matched, before you say the job worked.
+   **A matched `--expect` IS the check for that step:** move on, never re-open the page to
+   confirm it. Between steps, go by the text and refs the act printed, never the picture. Open
+   the `page.png` once, at the end, only when no `--expect` matched, before you say the job worked.
+
+## Before you say done: check EVERY part of the job
+
+Agents stop early: right site, one filter missing. So before you report, and before you say
+"not possible" (a captcha or a sign-in is still a hard stop, below):
+
+1. **List every part of the job**: each place, date, number, filter, sort, option, field, the
+   item to open and the fact to report. "Running shoes, size 10, under $80, cheapest first"
+   is four parts.
+2. **Find each part on the page as it is NOW**: the checked box, the filter chip, the sort
+   label, the field's value, the opened item. Use what the last act printed, or one
+   `snapshot --interactive`. A part you set earlier counts only if the page still shows it:
+   a later click can undo it (a price filter that resets the sort, a toggle clicked twice).
+3. **A part not shown: do it now**, then check again. A site's filter has more than one way
+   in: the filter panel, a "More filters" button, the sort menu, the search box, the result
+   page's own fields. Try another way before you call a part impossible.
+4. **Say done only when every part is shown**, or when a part is truly not on this site (say
+   which and why). The page must END on the result: the filtered list, the opened item, the
+   chart drawn, not a menu or a home page.
+5. **Asked for information? Answer with it**: the facts, numbers or names, copied from the
+   page, not "I found the page".
 
 ## Reading pages
 
