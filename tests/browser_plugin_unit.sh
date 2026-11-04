@@ -8989,7 +8989,8 @@ t  'T60i searchbox -> combobox, name and #n kept, is that field' 'combobox/Searc
 t  'T60i NEGATIVE: the #n is kept, never guessed' null "$(fr 'searchbox/Q#3' 'combobox/Q#1' 'combobox/Q#2')"
 t  'T60i NEGATIVE: two field roles answer: none is picked' null "$(fr 'searchbox/Q' 'combobox/Q' 'textbox/Q')"
 t  'T60i NEGATIVE: a button is not a text field' null "$(fr 'button/Q' 'combobox/Q')"
-t  'T60i resolveOrRepick asks it before reflex' 1 "$(grep -c 'const field = fieldRoleMatch(miss.nodes, refBody(from));' "$ROOT/browser/lib/aria.cjs")"
+t  'T60i resolveOrRepick asks it before reflex' 1 "$(grep -c 'const got = await fieldSettle(page, from, miss.nodes' "$ROOT/browser/lib/aria.cjs")"
+t  'T60i ...and fieldSettle asks it' 1 "$(grep -c 'const a = fieldRoleMatch(nodes, refBody(from));' "$ROOT/browser/lib/aria.cjs")"
 t  'T60i ...and its line is one the routine recorder reads' 1 \
    "$(printf 'step 2: ref=searchbox/Q matched nothing; name match picked ref=combobox/Q; retried: ok\n' | \
       sed -nE 's/^ *step ([0-9]+): .* matched nothing; (reflex|name match) picked (ref=.*); retried: ok$/\1\t\3/p' | grep -c 'combobox/Q')"
