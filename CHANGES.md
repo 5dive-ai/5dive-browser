@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — an agent's browser keeps its page between steps again on a seat that shares its Google group with the box (DIVE-7637), 1.67.4
+
+In the DIVE-7487 home bench, every one of the 101 runs of 5dive in Claude Code said "no served browser kept": each step opened its page from scratch in a new Chrome, so a filter or sort an agent had just applied was gone at the next step. It took 16 steps a task where Claude in Chrome took 26, and finished 24 of 100 to its 51.
+
+- **Why:** since 1.64.2 (DIVE-7316) a group kept no browser when any site of it was offered to the box's other seats. Any serve that is not private writes that offer, a landing retry's included, and only `forget` removes it. So one retry on amtrak.com on 10-30 turned kept pages off for every site that seat's Main ever joined.
+- **Now:** the act keeps its private browser for an offered group too. Nothing widens: no socket for other seats, no new offer. A seat that wakes the box login replaces the private browser, as before (DIVE-6334), but no longer while an act is using it: it is told to try again.
+- **Measured** (50 tasks, datacenter IP, Haiku 5.5, against 1.66.1 unfixed): no run keeps a one-off browser any more (0 of 50, was 50 of 50); finished 19 to 15 (p = 0.39, not significant); a run's median time 110 s to 80 s; cost per finished task $0.065 to $0.041. Steps per run did not rise (14.9 tool calls to 14.4), so runs still end early: that part is in the agent's instructions, not this fix.
+- **use-browser skill: check every part of the job before saying done.** A new section has the agent list each part of the task (place, date, filter, sort, field, the item to open, the fact to report), find each one on the page as it is now, do any part not shown (trying another way into a filter before calling it impossible), and end on the result page with the answer copied from it.
+- **Measured with the skill** (same 50 tasks and rig, both arms on this fix, only the skill differs): finished 26 to 19 (10 tasks only with the skill, 3 only without, p = 0.09); the 30 tasks lost at home 14 to 9 (p = 0.13); the 20 controls 12 to 10. Neither gain reaches p < 0.05, and browser calls per run stayed flat (12.0 to 11.1, sign test p = 0.88): the agent checks more but does not take more steps.
+
 ### Fixed — a sign-in window a click opens reaches the agent (DIVE-7680), 1.67.3
 
 On an owner's box (report 690), "Sign up with Google" on Supliful and "Connect Facebook account" in Shopify's Facebook app both reported `popup: null`. The agent never saw the window the click opened, so each connect fell back to the owner.
