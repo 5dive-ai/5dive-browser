@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a sign-in window a click opens reaches the agent (DIVE-7680), 1.67.3
+
+On an owner's box (report 690), "Sign up with Google" on Supliful and "Connect Facebook account" in Shopify's Facebook app both reported `popup: null`. The agent never saw the window the click opened, so each connect fell back to the owner.
+
+- **A window opened from inside an embedded app, or with no link back to its opener, is followed.** The follower also listens for new pages of the browser context during an act and for 10 s after it (`FIVEDIVE_BROWSER_POPUP_LATE_MS`). Tabs the browser opens for itself (a `read`, a new tab) are never taken.
+- **A popup that comes after the act's wait is read next.** A popup that arrives while the act's report is being read becomes the report. One that arrives later is taken before the next read. A `snapshot` with no URL then reads it and says `a popup opened after the last act`. An act that names the page underneath still goes to that page.
+- **One report, one page.** If the page moves between the read and the picture, it is read again, so url, title, refs and `page.png` describe the same page.
+- **Input mode:** a smaller browser window on top of the main one (an OAuth popup) gets the keyboard, and the act says `a popup window opened`. The report's title is the popup's, so the hard stops read it. A second full-size window is not a popup.
+- Nothing new may be clicked. Google's chooser stays under the Google sign-in guard, and Meta's login still stops at a password or a check.
+
 ### Fixed — Connect for one site of a group opens on that site, never on another site's live window (DIVE-7674), 1.67.2
 
 On exact-swallow (report 688, 1.67.0), the owner tapped Connect for business.facebook.com and was shown cjdropshipping.com, signed in, while another seat was using it. Both sites share one browser. CJ had it in input mode (plain Chrome driven through the screen), and Facebook needs the other browser, but Connect took the browser as it was.

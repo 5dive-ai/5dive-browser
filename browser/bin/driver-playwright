@@ -161,6 +161,9 @@ const RUN_SETTLE_MS = Number(
   process.env.FIVEDIVE_BROWSER_RUN_SETTLE_MS
   || process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS
   || 1200);
+// The re-read of a popup that came into view, or a page that moved, during the
+// report (DIVE-7680): its first document has loaded already, so a short settle.
+const POPUP_REREAD_SETTLE_MS = Number(process.env.FIVEDIVE_BROWSER_POPUP_REREAD_SETTLE_MS) || 300;
 
 // ---- THE LEASE, RE-READ BEFORE EVERY STEP (DIVE-4588) -----------------------
 //
@@ -598,12 +601,31 @@ async function writeReport(page, report, pop, { failed = false } = {}) {
     // --expect or --wait-for would find (DIVE-4990), so polling for them only
     // added up to 5 s (--expect) or 30 s (--wait-for) to a verdict already known.
     // The page is still read once, as it is, for the picture and the refs.
-    const after = await aria.pageAfter(page, {
-      settleMs: failed ? Math.min(aria.FAILED_SETTLE_MS, RUN_SETTLE_MS) : RUN_SETTLE_MS, waitFor: failed ? null : (report.wait_for || null), waitTimeoutMs: STEP_TIMEOUT,
+    const readOpts = (ms) => ({
+      settleMs: ms, waitFor: failed ? null : (report.wait_for || null), waitTimeoutMs: STEP_TIMEOUT,
       expect: report.expect || null, expectWaitMs: failed ? 0 : (Number(report.expect_wait_ms) || 0),
       walk: report.tree ? { interactiveOnly: !!report.interactive } : null,
       scope: report.scope || null, expectDoc: !!report.expect_doc,
     });
+    let after = await aria.pageAfter(page, readOpts(failed ? Math.min(aria.FAILED_SETTLE_MS, RUN_SETTLE_MS) : RUN_SETTLE_MS));
+    // ONE REPORT, ONE PAGE (DIVE-7680): a popup that arrived during the settle is
+    // the page in view, so the report is of it (as bin/session-daemon sendReport).
+    if (pop && pop.waiting) {
+      const was = page;
+      try { page = await pop.drain(); } catch (e) { /* the page we have */ }
+      if (page !== was) after = await aria.pageAfter(page, readOpts(POPUP_REREAD_SETTLE_MS));
+    }
+    // ...and a page that moved between the read and the picture is read again,
+    // so url, title, refs and png describe the same page.
+    if (report.shot) {
+      await page.screenshot({ path: report.shot });
+      const moved = aria.movedSince(page, after);
+      if (moved) {
+        process.stderr.write(`  the page moved while it was being read (${moved}); read again so the picture and the page agree\n`);
+        after = await aria.pageAfter(page, readOpts(POPUP_REREAD_SETTLE_MS));
+        await page.screenshot({ path: report.shot });
+      }
+    }
     if (report.html) fs.writeFileSync(report.html, after.html || '', { mode: 0o600 });
     if (report.meta) {
       // browser_mode (DIVE-6392): the mode the steps ran in, as a snapshot records it,
@@ -615,7 +637,6 @@ async function writeReport(page, report, pop, { failed = false } = {}) {
     if (report.tree && after.nodes) {
       fs.writeFileSync(report.tree, JSON.stringify({ url: after.url, title: after.title, nodes: after.nodes }), { mode: 0o600 });
     }
-    if (report.shot) await page.screenshot({ path: report.shot });
   } catch (e) {
     process.stderr.write(`${PROG}: the steps ran but the page could not be re-read afterwards: ${e.message}\n`);
   }
