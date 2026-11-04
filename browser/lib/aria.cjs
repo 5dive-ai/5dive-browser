@@ -876,7 +876,11 @@ function classifyLabel(label) {
 function _labelIn(arg) {
   const el = document.querySelector(arg.sel);
   if (!el) return '';
-  const txt = (n) => n ? [n.getAttribute && n.getAttribute('aria-label'), n.innerText, n.value, n.title]
+  // A field's value is what was typed into it, not its label (DIVE-7670): only a
+  // button-shaped input carries its label in value.
+  const btnValue = (n) => String(n.tagName || '').toLowerCase() === 'input'
+    && /^(submit|button|reset|image)$/i.test(String((n.getAttribute && n.getAttribute('type')) || n.type || ''));
+  const txt = (n) => n ? [n.getAttribute && n.getAttribute('aria-label'), n.innerText, btnValue(n) ? n.value : '', n.title]
     .filter((x) => typeof x === 'string' && x.trim()).join(' ').slice(0, 160) : '';
   if (arg.op !== 'press') return txt(el);
   const form = el.form || (el.closest && el.closest('form'));
@@ -884,6 +888,27 @@ function _labelIn(arg) {
   const sub = form.querySelector('button[type=submit],input[type=submit],button:not([type])');
   return txt(sub) || String(form.getAttribute('action') || '');
 }
+// CLICKING INTO A FIELD ONLY FOCUSES IT (DIVE-7670). Measured on Shopify's
+// abandoned-checkout email editor: a click into the Subject box stopped as a pay,
+// because its label was read as aria-label + VALUE, "Subject Complete your order",
+// and the value is the email's subject line. A click on a text-entry control cannot
+// pay, publish, send or delete, so it has no class. Enter in it still reads the
+// form's submit button. In the page, like _labelIn.
+function _textEntryIn(arg) {
+  var el = null;
+  try { el = arg.sel ? document.querySelector(arg.sel) : null; } catch (e) { el = null; }
+  if (!el) return false;
+  if (el.isContentEditable === true) return true;
+  var tag = String(el.tagName || '').toLowerCase();
+  if (tag === 'textarea') return true;
+  if (tag === 'input') {
+    var t = String((el.getAttribute && el.getAttribute('type')) || el.type || 'text').toLowerCase();
+    return !/^(button|submit|reset|image|checkbox|radio)$/.test(t);
+  }
+  try { return !!(el.matches && el.matches('[contenteditable=""],[contenteditable=true],[contenteditable=plaintext-only],[role=textbox],[role=searchbox],[role=combobox]')); }
+  catch (e) { return false; }
+}
+const TEXT_ENTRY_ROLES = /^(textbox|searchbox|combobox)$/i;
 // Is a plain Enter here a formless composer's send key? In the page, like _labelIn.
 function _composerIn(arg) {
   var el = null;
@@ -998,6 +1023,13 @@ async function stepRisk(page, step, sel) {
       try { composer = (await at.evaluate(_composerIn, { sel: inSel, op: step.op, composerOf: true })) === true; } catch (e) { composer = false; }
       if (composer) { cls = 'send'; label = `${key} in a composer with no form`; }
     }
+  }
+  if (!cls && step.op === 'click') {
+    const role = isRef(step.selector) ? refBody(step.selector).split('>>').pop().trim().split('/')[0] : '';
+    if (TEXT_ENTRY_ROLES.test(role)) return null;
+    let entry = false;
+    try { entry = (await at.evaluate(_textEntryIn, { sel: inSel, op: step.op, textEntryOf: true })) === true; } catch (e) { entry = false; }
+    if (entry) return null;
   }
   if (!cls) {
     const refName = isRef(step.selector) ? refBody(step.selector).replace(/^[^/]*\//, '').replace(/#\d+$/, '') : '';

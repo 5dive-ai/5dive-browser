@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — clicking into a text field no longer stops as a payment (DIVE-7670), 1.67.1
+
+An agent editing a Shopify store's abandoned-checkout email was stopped as if it were paying (box report 686, exit 73, "it would pay or place an order (Subject | Subject Complete your order)"). The click was into the email's Subject box. The guard read the box's label as its name plus what was typed in it, and the subject line said "Complete your order". Because the edit stopped after Edit, Shopify left the email as a draft, switched off.
+
+- **A click on a text field has no risk class.** A text input, a textarea, a contenteditable, or a textbox/searchbox/combobox (by the page or by the ref's role) only takes focus, so the click runs. Checked in the page and inside a frame.
+- **What a field holds is never read as its label.** `value` counts only for a submit/button/reset/image input, where it IS the button's text. "Place order" on a submit input, a "Complete your order" button and a "Subscribe" checkbox still stop.
+- **Enter is unchanged:** in a field inside a form it still reads the form's submit button.
+- use-browser `references/paying.md`: on a stop mid-edit, check the thing opened for editing is still live.
+
 ### Added — `browser download` saves a PDF (or any file) at a URL as a real file (DIVE-7646), 1.67.0
 
 An owner wanted Amazon invoice PDFs saved as files for their document archive (box report 677). The browser could show the PDF but could not hand it over. `read` and `snapshot` got an empty page, `shot` got a picture, and clicking the PDF viewer's Download button in an `act` timed out after 30 s.
