@@ -42,6 +42,10 @@ jobs:
       # waited for, not called missing. A scripted page stub, pure node.
       - name: field swap harness
         run: bash tests/browser_field_swap_unit.sh
+      # DIVE-7722: a no-adapter site's front-page check runs once per site, not
+      # before every page verb. Fake chrome; drives the real 5dive CLI when present.
+      - name: generic check memo harness
+        run: bash tests/browser_generic_memo_unit.sh
       # DIVE-6317: Cloudflare's "Just a moment..." is watched in the same page load
       # before it is a stop. A fake page, pure node.
       - name: interstitial wait harness
