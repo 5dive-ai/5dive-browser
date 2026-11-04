@@ -151,6 +151,10 @@ export FIVEDIVE_BROWSER_WAKE_PRIV="$TMP/no-wake"
 # and probe-all re-measures adapters once a day. Both are graded in
 # tests/browser_reflex_propose_unit.sh; here they would race every probe arm.
 export FIVEDIVE_BROWSER_AUTO_PROPOSE=0 FIVEDIVE_BROWSER_DRIFT_ON_PROBE=0
+# DIVE-7722: these arms grade the per-verb login check itself (its mutants run
+# right after a good call on the same site), so the 30-min memo of its verdict is
+# off here. tests/browser_generic_memo_unit.sh grades the memo.
+export FIVEDIVE_BROWSER_GENERIC_MEMO_TTL=0
 # DIVE-5817: an act on the public profile starts a served browser for it where a
 # daemon can run. The public-page arms here grade the one-off executor, so they keep
 # it off; T50 turns it on and grades the served half.
