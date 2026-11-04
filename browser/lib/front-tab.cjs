@@ -33,4 +33,35 @@ function pick(pages, host, driven) {
   return open.find((p) => onSite(p.url(), host)) || null;
 }
 
-module.exports = { hostOf, onSite, pick };
+// INPUT MODE (DIVE-7674). Plain Chrome has no channel that lists its tabs, so
+// the window used to be shown as it was: Connect for business.facebook.com
+// showed cjdropshipping.com, another login's live session, because CJ's input
+// browser is the group's one window (box report 688). The daemon keeps the one
+// fact it can know, the host it last sent this window to (its start URL, then
+// every goto it typed), in be.lastHost. When that is not the site the person is
+// being shown, one new tab is opened on the site's URL through the keyboard,
+// and it becomes the host on record, so the next Connect opens no second tab.
+// A window last sent to this site is left exactly as it is: a check an agent
+// stopped on (a handoff) must be what the person sees.
+//
+// io: { sleep(ms), keys() (the browser holds the keyboard, or throws),
+//       typeUrl(url) (address bar, url, Return) }. Not awaited for the load:
+// the person must not wait on a slow site, and a tab loading is a tab on it.
+async function inputFront(be, url, io) {
+  const host = hostOf(url);
+  if (be.lastHost && onSite(`https://${be.lastHost}/`, host)) {
+    return { host, moved: false, why: 'the window is on this site already (the last page it was sent to)' };
+  }
+  const was = be.lastHost || '';
+  await io.keys();
+  const before = (await be.x.windowTitle()).window;
+  await be.x.press('ctrl+t');
+  let opened = false;
+  for (let i = 0; i < 20 && !opened; i++) { await io.sleep(100); opened = (await be.x.windowTitle()).window !== before; }
+  if (!opened) return { host, moved: false, was, why: 'no new tab opened, so nothing was loaded' };
+  await io.typeUrl(url);
+  be.lastHost = host;
+  return { host, moved: true, opened: true, was };
+}
+
+module.exports = { hostOf, onSite, pick, inputFront };

@@ -1443,6 +1443,22 @@ async function settleQuiet(page, ms, watch) {   // -> true when it ended quiet, 
 // ship are the instant the toast was on screen. `waitFor` is `--wait-for`, and
 // `walk` adds the refs, so an act leaves the same triple a snapshot does.
 // `scope` (DIVE-4984) narrows the read to one element: `run`'s in-session verify.
+// DID THE PAGE MOVE SINCE IT WAS READ (DIVE-7680)? Box bug 690: an act's report
+// paired a url and title read at one instant with a picture taken later, after
+// the tab had gone on to Google's chooser. The report's url is compared with the
+// page's url once the picture is taken. Returns "<was> -> <now>" when it moved,
+// else null. Only the address counts: a title that changes while the page stays
+// is a page still loading, which the settle already covers.
+function movedSince(page, after) {
+  let now = '';
+  try { now = String(page.url()); } catch (e) { return null; }
+  const was = String((after && after.url) || '');
+  if (!was || !now || was === now) return null;
+  const strip = (u) => u.replace(/#.*$/, '');
+  if (strip(was) === strip(now)) return null;
+  return `${was.slice(0, 120)} -> ${now.slice(0, 120)}`;
+}
+
 async function pageAfter(page, { settleMs = 0, waitFor = null, waitTimeoutMs = 30000,
                                  expect = null, expectWaitMs = 0, pollMs = 250, walk: walkOpts = null,
                                  scope = null, expectDoc = false, watch = null } = {}) {
@@ -1623,7 +1639,7 @@ function render(nodes, { json = false } = {}) {
   }).join('\n');
 }
 
-module.exports = { INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSelector,
+module.exports = { movedSince, INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSelector,
   resolveRefWithin, resolveStepSelector, resolveOrRepick, nameMatches, REPICK_MIN_CONFIDENCE,
   onRef, refind, REFIND_OPS, _markFocusedIn, clickStep, FAILED_SETTLE_MS, COVERED_CLICK_MS,
   requestWatch, settleQuiet,

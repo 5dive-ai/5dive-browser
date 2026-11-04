@@ -14,6 +14,13 @@
 //   closed    the chooser gone  -> "focus=main": with nothing open, keys go to the page
 //   popup     an override-redirect "Open File"-named popup instead of a dialog
 //                               -> "focus=main": menus and popups are not dialogs
+//   oauth     (DIVE-7680) a sign-in popup WINDOW of the browser on top of the main
+//             one ("Sign in - Google Accounts - Google Chrome", smaller, not
+//             transient), with the focus still on the main window, as a click
+//             leaves it -> "focus=dialog popup=Sign in - Google Accounts": keys go
+//             to the window on top
+//   tornoff   a second FULL-SIZE browser window (a tab torn off, not a popup)
+//                               -> "focus=main popup=none"
 //   delete    (DIVE-6775) the chooser up, and a second connection (the daemon's)
 //             closes it with x.closeWindow; this one answers the way GTK does,
 //             by unmapping it on WM_PROTOCOLS/WM_DELETE_WINDOW
@@ -58,6 +65,21 @@ async function win(x, id, geo, name, opts) {
   await win(x, main, [0, 0, 600, 400], 'Ad draft - Google Chrome');
   if (scene === 'chooser') await win(x, dlg, [100, 80, 300, 200], 'Open File', { transientFor: main });
   if (scene === 'popup') await win(x, dlg, [100, 80, 300, 200], 'Open File', { override: true });
+  if (scene === 'oauth' || scene === 'tornoff') {
+    if (scene === 'oauth') await win(x, dlg, [60, 40, 480, 320], 'Sign in - Google Accounts - Google Chrome');
+    else await win(x, dlg, [0, 0, 600, 400], 'Other tab - Google Chrome');
+    await x.focusOn(main, 1000, 'the main window');              // where the click left it
+    let got;
+    try {
+      await x.ensureBrowserFocus(PID, 1000);
+      const r = await x.req(43, 0, null, true), f = r.readUInt32LE(8);
+      got = f === dlg ? 'focus=dialog' : f === main ? 'focus=main' : `focus=0x${f.toString(16)}`;
+    } catch (e) { got = 'threw: ' + e.message; }
+    const pw = typeof x.browserPopup === 'function' ? await x.browserPopup(PID) : null;
+    process.stdout.write(`${got} popup=${pw ? pw.page : 'none'}\n`);
+    x.close();
+    process.exit(0);
+  }
   if (scene === 'delete') {
     await win(x, dlg, [100, 80, 300, 200], 'Open File', { transientFor: main });
     const proto = await x.atom('WM_PROTOCOLS'), del = await x.atom('WM_DELETE_WINDOW');

@@ -837,6 +837,9 @@ else
   arm 'K4 with the chooser up and the focus on the root window, keys go to the CHOOSER, not the page' 'focus=dialog' "$(kd chooser)"
   arm 'K4 ...with it closed, keys go back to the page' 'focus=main' "$(kd closed)"
   arm 'K4 ...and a popup (override-redirect) is not taken for a dialog' 'focus=main' "$(kd popup)"
+  arm 'K8 (DIVE-7680) a sign-in popup window on top, focus still on the page: keys go to the POPUP' \
+    'focus=dialog popup=Sign in - Google Accounts' "$(kd oauth)"
+  arm 'K8 ...and a second full-size browser window is not taken for a popup' 'focus=main popup=none' "$(kd tornoff)"
   arm 'K6 (DIVE-6775) a chooser is closed with no key: WM_DELETE_WINDOW reaches it, and once it answers no dialog is left' \
     'delete=received closed=yes' "$(kd delete)"
   # K5 (DIVE-6704) — the drop, against a fake browser speaking XDND as Chrome does.
