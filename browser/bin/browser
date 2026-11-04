@@ -10161,6 +10161,8 @@ CONNECT_PRIV=(sudo -n /usr/local/bin/5dive browser _connect)
 # with the API, beside the box token). An ask goes to the agent's app chat first.
 CONNECT_CHATONLY_MARK=/etc/5dive/chat-only
 CONNECT_APP_OK=0             # set only in-process by the app path, never from the environment
+CONNECT_VIEW_OK=0            # set only in-process by view-done (DIVE-7675), never from the environment
+CONNECT_MSGS="" CONNECT_LINK_BIND=""
 CONNECT_APP_FG=0             # the harness runs the https set-up in the foreground
 CONNECT_APP_VIEW_TTL=1800    # the link in the chat works once, for 30 minutes
 CONNECT_APP_WHY="" CONNECT_APP_HOST="" CONNECT_APP_EXP=""
@@ -10863,7 +10865,7 @@ _connect_mint() {  # <caller> <site> <kind> <url> <check> <reason> [<ttl> <via>]
 # CONNECT_EXP; returns 1, with the code removed, when Telegram took no message.
 _connect_send() {  # <caller> <site> <kind> <url> <reason> <check 0|1> <chat ids> [again]
   local caller="$1" site="$2" kind="$3" url="$4" reason="$5" check="$6" chats="$7" again="${8:-}"
-  local code f exp label text kb sent=0 o resp
+  local code f exp label text kb sent=0 o resp mid msgs=""
   _connect_mint "$caller" "$site" "$kind" "$url" "$check" "$reason"
   code="$CONNECT_CODE" f="$CONNECT_CODE_FILE" exp="$CONNECT_EXP"
 
@@ -10897,8 +10899,14 @@ _connect_send() {  # <caller> <site> <kind> <url> <reason> <check 0|1> <chat ids
   [[ -n "$again" ]] && text="⏰ The last button expired, so here is a fresh one."$'\n\n'"$text"
   for o in $chats; do
     resp=$(_connect_tg sendMessage --data-urlencode "chat_id=$o" --data-urlencode "text=$text" --data-urlencode "reply_markup=$kb")
-    [[ "$(jq -r '.ok // false' <<<"$resp" 2>/dev/null)" == true ]] && sent=$((sent + 1))
+    [[ "$(jq -r '.ok // false' <<<"$resp" 2>/dev/null)" == true ]] || continue
+    sent=$((sent + 1))
+    # DIVE-7675: where the ask sits in chat. The tap turns this same message into
+    # the link with its Done, so a Done pressed in the viewer can close it there.
+    mid=$(jq -r '.result.message_id // empty' <<<"$resp" 2>/dev/null)
+    [[ "$o" =~ ^-?[0-9]+$ && "$mid" =~ ^[0-9]+$ ]] && msgs+="${msgs:+ }$o:$mid"
   done
+  [[ -n "$msgs" && -f "$f" ]] && ( umask 077; printf 'msgs=%s\n' "$msgs" >> "$f" )
   CONNECT_SENT=$sent CONNECT_EXP=$exp
   (( sent > 0 )) || { rm -f "$f"; return 1; }
 }
@@ -11183,6 +11191,7 @@ _asks_reopen() {  # <site> <seat> <rec>
   local -a at_url=(); local url; url=$(_connect_field "$(_connect_file "$code")" url)
   [[ "$kind" == challenge ]] && _connect_page_ok "$site" "$url" && at_url=("--url=$url")
   ( _connect_view_link "$site" "${at_url[@]}"
+    _connect_view_index "$site" "$CONNECT_LINK_BIND" "$code"
     now=$(date -u +%s)
     # The Done keeps its code and gets its full time again, from this link.
     df=$(_connect_file "$code")
@@ -11664,14 +11673,20 @@ _connect_claim() {  # <caller> <code> <op> <sender>  -> sets CONNECT_SITE; print
   # DIVE-7078: an ask waiting in the owner's login shell is claimed only by root's
   # `asks`, in this process; a button can never claim one, nor `asks` a button's.
   # DIVE-7133: an app-chat ask is claimed only by root's app path, in this process.
-  if [[ "$(_connect_field "$f" via)" == shell ]]; then
+  # DIVE-7675: the Done in the viewer itself. Root reached this code through the
+  # ticket's bind (_connect_view_done), which only the viewer server holds, so it
+  # stands in for the owner's tap on any ask, wherever its chat is.
+  if [[ "$sender" == view ]]; then
+    [[ "$op" == done && "$CONNECT_VIEW_OK" == 1 ]] \
+      || die "$E_PERM" "only the box's own viewer can press Done from the view"
+  elif [[ "$(_connect_field "$f" via)" == shell ]]; then
     [[ "$sender" == shell && "$CONNECT_SHELL_OK" == 1 ]] \
       || die "$E_PERM" "that ask waits in the owner's login shell on this box, not on a button"
   elif [[ "$(_connect_field "$f" via)" == app ]]; then
     [[ "$sender" == app && "$CONNECT_APP_OK" == 1 ]] \
       || die "$E_PERM" "that ask waits in the owner's 5dive app chat, not on a button"
   else
-    [[ "$sender" != shell && "$sender" != app ]] || die "$E_PERM" "that ask is not waiting in this box's login shell or app chat"
+    [[ "$sender" != shell && "$sender" != app && "$sender" != view ]] || die "$E_PERM" "that ask is not waiting in this box's login shell or app chat"
     _connect_is_owner "$caller" "$sender" \
       || die "$E_PERM" "only this seat's paired owner can use that button"
   fi
@@ -11697,6 +11712,10 @@ _connect_claim() {  # <caller> <code> <op> <sender>  -> sets CONNECT_SITE; print
   CONNECT_KIND=$(_connect_field "$claimed" kind)
   CONNECT_URL=$(_connect_field "$claimed" url)
   CONNECT_OWNER=$(_connect_field "$claimed" owner)   # DIVE-6111: an SSH handoff's window seat
+  CONNECT_MSGS=$(_connect_field "$claimed" msgs)     # DIVE-7675: the ask's chat messages
+  # DIVE-7675: a Done used anywhere takes the viewer's way to it along.
+  local vb; vb=$(_connect_field "$claimed" vbind)
+  [[ "$op" == done && "$vb" =~ ^[0-9a-f]{32}$ ]] && rm -f -- "$(_connect_file "view:$(_connect_field "$claimed" site):$vb")"
   CONNECT_CHECK=1; [[ "$(_connect_field "$claimed" check)" == 0 ]] && CONNECT_CHECK=0   # DIVE-6725
   [[ "$CONNECT_KIND" == challenge ]] || CONNECT_KIND=login CONNECT_URL=""
   rm -f "$claimed"
@@ -11789,7 +11808,7 @@ _connect_view_link() {  # <site> [--url=<page>]
     _connect_has_front || die "$E_UNAVAILABLE" "the box's relay did not accept the login link; nothing was sent. This self-hosted box has login links off; its owner can turn them on: sudo 5dive browser login-link"
     die "$E_UNAVAILABLE" "the box's relay did not accept the login link; nothing was sent"
   fi
-  CONNECT_LINK_PATH="$path" CONNECT_LINK_EXP="$exp" CONNECT_LINK_HOST="$host"
+  CONNECT_LINK_PATH="$path" CONNECT_LINK_EXP="$exp" CONNECT_LINK_HOST="$host" CONNECT_LINK_BIND="$bind"
 }
 
 _connect_tap() {  # <caller> <code> <sender>
@@ -11810,7 +11829,9 @@ _connect_tap() {  # <caller> <code> <sender>
   f=$(_connect_file "$done_code")
   ( umask 077; printf 'op=done\nseat=%s\nsite=%s\nexpires_at=%s\nkind=%s\nurl=%s\ncheck=%s\n' \
       "$caller" "$site" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" "$kind" "$CONNECT_URL" "$CONNECT_CHECK" > "$f"
-    [[ "$sender" != shell && "$sender" != app ]] || printf 'via=%s\n' "$sender" >> "$f" )
+    [[ "$sender" != shell && "$sender" != app ]] || printf 'via=%s\n' "$sender" >> "$f"
+    [[ -z "$CONNECT_MSGS" ]] || printf 'msgs=%s\n' "$CONNECT_MSGS" >> "$f" )
+  _connect_view_index "$site" "$CONNECT_LINK_BIND" "$done_code"
   printf 'site=%s\nurl=https://%s%s\nexpires=%s\ndone=%s\nkind=%s\n' \
     "$site" "$host" "$path" "$(date -u -d "@$exp" +%Y-%m-%dT%H:%M:%SZ)" "$done_code" "$kind"
   # DIVE-6725: whether the box saw a check on the page, so the plugin's link
@@ -11902,6 +11923,120 @@ _connect_done() {  # <caller> <code> <sender>
   printf 'site=%s\nstatus_rc=%s\nstatus=%s\n' "$site" "$rc" "$verdict"
 }
 
+# >>> DIVE-7675 Done in the viewer itself
+#
+# lodar, 2026-11-04: "should we add carry on button to our browser viewer? so i
+# dont need to go to chat and click it?" The viewer page gets the chat's Done.
+#
+# THE BINDING IS THE TICKET'S BIND, not the Done code. Root mints a bind for
+# every link (_connect_view_link) and hands it to the viewer server only: shelld
+# on a hosted box, the login-link server on a self-hosted one. Neither the page
+# nor the agent ever holds it. At the tap, root files the Done code under that
+# bind; the viewer server, once it has redeemed the link for a person, passes the
+# bind back here with `_connect view-done`, and only the box seat (the viewer
+# server's user) may. The Done code itself never leaves root.
+#
+# SAME DONE, SAME PATH: _connect_done (revoke, then the stop with its
+# cookie-settle wait, then the probe), then the agent gets the message a chat
+# Done gives it, and the ask's chat message is edited to the verdict with no
+# buttons left on it: one Done, used once, wherever it was pressed. A chat Done
+# pressed later finds its code spent and is refused, as a double tap is.
+#
+# NOT SIGNED IN YET IS NOT A DEAD END. A login that did not take (pressed
+# mid-sign-in by mistake, or the site wanted more) gets a fresh link to the same
+# window at once, with a fresh Done in chat and in the view: the page's "Open it
+# again" is that link. The agent is told, and told to wait.
+
+# The Done file names its index (vbind=), so whichever Done is used first takes
+# the other with it, and a new link under the same Done (asks open) replaces it.
+_connect_view_index() {  # <site> <bind> <done code>
+  local df old
+  [[ "$2" =~ ^[0-9a-f]{32}$ && "$3" =~ ^[0-9a-f]{48}$ ]] || return 0
+  df=$(_connect_file "$3"); [[ -f "$df" ]] || return 0
+  old=$(_connect_field "$df" vbind)
+  [[ "$old" =~ ^[0-9a-f]{32}$ ]] && rm -f -- "$(_connect_file "view:$1:$old")"
+  ( umask 077; printf 'op=view\ndone=%s\nexpires_at=%s\n' "$3" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" \
+      > "$(_connect_file "view:$1:$2")"
+    { grep -v '^vbind=' "$df"; printf 'vbind=%s\n' "$2"; } > "$df.$$" && mv -f -- "$df.$$" "$df" ) || true
+}
+
+# Edit each of the ask's chat messages to <text>; a keyboard only if one is given.
+_connect_view_chat() {  # <seat> <msgs> <text> [<reply_markup json>]
+  local m; local -a kb=()
+  [[ -n "$2" ]] && _connect_channel "$1" || return 0
+  [[ -n "${4:-}" ]] && kb=(--data-urlencode "reply_markup=$4")
+  for m in $2; do
+    [[ "$m" =~ ^(-?[0-9]+):([0-9]+)$ ]] || continue
+    _connect_tg editMessageText --data-urlencode "chat_id=${BASH_REMATCH[1]}" \
+      --data-urlencode "message_id=${BASH_REMATCH[2]}" --data-urlencode "text=$3" "${kb[@]}" >/dev/null || true
+  done
+}
+
+_connect_view_done() {  # <caller> <site> <bind>
+  local caller="$1" site="$2" bind="$3" idx code df seat via kind url check msgs out rc=0
+  local st src chk who text note result again="" kb="" new nf
+  [[ "$caller" == "$BOX_SEAT" ]] || die "$E_PERM" "only the box's own viewer can press Done from the view"
+  _valid_site "$site" && [[ "$bind" =~ ^[0-9a-f]{32}$ ]] || die "$E_USAGE" "_connect view-done <site> <bind>"
+  idx=$(_connect_file "view:$site:$bind")
+  [[ "$(_connect_field "$idx" op)" == view ]] || { printf 'result=gone\n'; return 0; }
+  code=$(_connect_field "$idx" done); rm -f -- "$idx"
+  df=$(_connect_file "${code:-x}")
+  [[ "$code" =~ ^[0-9a-f]{48}$ && "$(_connect_field "$df" op)" == done && "$(_connect_field "$df" site)" == "$site" ]] \
+    || { printf 'result=gone\n'; return 0; }
+  seat=$(_connect_field "$df" seat) via=$(_connect_field "$df" via) msgs=$(_connect_field "$df" msgs)
+  kind=$(_connect_field "$df" kind) url=$(_connect_field "$df" url) check=$(_connect_field "$df" check)
+  [[ "$kind" == challenge ]] || kind=login
+  id -u "$seat" >/dev/null 2>&1 || { printf 'result=gone\n'; return 0; }
+  CONNECT_CALLER="$seat"   # the audit row names the agent that asked, as a tap does
+  out=$( CONNECT_VIEW_OK=1 _connect_done "$seat" "$code" view ) || rc=$?
+  (( rc == 0 )) || { printf 'result=gone\n'; return 0; }
+  st=$(sed -n 's/^status=//p' <<<"$out" | head -1); src=$(sed -n 's/^status_rc=//p' <<<"$out" | head -1)
+  chk=$(sed -n 's/^check=//p' <<<"$out" | head -1)
+  who="${seat#agent-}"
+  # The words are the chat Done's, letter for letter (the telegram plugin's
+  # renderConnectVerdict and connectAgentNote), so the agent cannot tell which
+  # Done the owner pressed and needs no second way to read it.
+  if [[ "$kind" == challenge ]]; then
+    result=carryon
+    if [[ "$chk" == still ]]; then text="⚠️ Thanks. The box still sees a check on $site, so the agent will tell you if it cannot go on."
+    else text="✅ Thanks. The agent is carrying on with $site."; fi
+    note="[browser challenge] The owner tapped Done for $site. The box browser for $site is back in your hands. "
+    if [[ -n "$st" ]]; then note+="What it shows now: $st. "; else note+="The box did not say what the page shows now. "; fi
+    note+="Carry on with the task now, without asking them again: first check what already happened (did the step you were on go through?) so nothing is sent twice, "
+    note+="then re-read the page you were stopped on (5dive browser snapshot <that url>) and continue from that step. "
+    note+="If a check is still on the page, say so once and stop; never try to solve it."
+  else
+    if [[ "$src" == 0 ]]; then result=saved text="✅ $site is connected. The agent can use it now."
+    else result=notyet text="⚠️ $site is not confirmed logged in: ${st:-no verdict}."; fi
+    note="[browser connect] The owner finished logging in to $site. \`5dive browser status $site\` said: ${st:-nothing}"
+  fi
+  # Not signed in yet: the same window again, under a fresh Done (a Telegram ask;
+  # an ask in the login shell or the app chat is asked again from there).
+  if [[ "$result" == notyet && -z "$via" ]]; then
+    new=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'); nf=$(_connect_file "$new")
+    if again=$( _connect_view_link "$site" >/dev/null 2>&1 || exit 1
+                ( umask 077; printf 'op=done\nseat=%s\nsite=%s\nexpires_at=%s\nkind=login\nurl=\ncheck=%s\n' \
+                    "$seat" "$site" "$(( $(date -u +%s) + CONNECT_DONE_TTL ))" "${check:-1}" > "$nf"
+                  [[ -z "$msgs" ]] || printf 'msgs=%s\n' "$msgs" >> "$nf" )
+                _connect_view_index "$site" "$CONNECT_LINK_BIND" "$new"
+                printf 'https://%s%s' "$CONNECT_LINK_HOST" "$CONNECT_LINK_PATH" ); then
+      text+=$'\n\n'"The window is open again: log in there, then tap Done."
+      kb=$(jq -nc --arg t "Done — check ${site}" --arg d "bdone:${new}" '{inline_keyboard:[[{text:$t,callback_data:$d}]]}')
+      note+=". The owner was given the window again to finish; wait for their next Done."
+    else
+      again=""; rm -f -- "$nf"
+    fi
+  fi
+  _connect_view_chat "$seat" "$msgs" "$text" "$kb"
+  [[ "$via" == shell ]] && _connect_shell_drop "$seat" "$site"
+  [[ "$via" == app ]] && _connect_app_drop "$seat" "$site"
+  printf '%s' "$note" | "$SAVED_CLI" agent send "$who" --message-file=- >/dev/null 2>&1 \
+    || printf 'browser: could not message %s; the view is closed and the verdict stands\n' "$who" >&2
+  printf 'result=%s\n' "$result"
+  [[ -z "$again" ]] || printf 'again=%s\n' "$again"
+}
+# <<< DIVE-7675
+
 # `_connect` — the privileged half. It is in the root-kept verb list at the
 # DIVE-4348 drop below: it holds the request codes and the connectord token,
 # and drops to the relay seat itself, only for the browser verbs. Parameters arrive NUL-separated on stdin so
@@ -11927,7 +12062,9 @@ cmd_connect_priv() {
              _connect_done "$CONNECT_CALLER" "${w[1]}" "${w[2]}" ;;
     app-done) (( ${#w[@]} == 2 )) || die "$E_USAGE" "_connect app-done <site>"
              _connect_app_done "$CONNECT_CALLER" "${w[1]}" ;;
-    *) die "$E_USAGE" "_connect: request, challenge, handoff, login-ask, tap, done or app-done" ;;
+    view-done) (( ${#w[@]} == 3 )) || die "$E_USAGE" "_connect view-done <site> <bind>"
+             _connect_view_done "$CONNECT_CALLER" "${w[1]}" "${w[2]}" ;;
+    *) die "$E_USAGE" "_connect: request, challenge, handoff, login-ask, tap, done, app-done or view-done" ;;
   esac
 }
 

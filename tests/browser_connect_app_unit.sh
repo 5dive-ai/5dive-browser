@@ -148,7 +148,8 @@ t  "A3 ... as a question the app can draw" "browser-done-booking.com" "$(jq -r .
 tc "A4 the box browser was served for a person" "serve booking.com --login" "$(cat "$FAKE_LOG")"
 tc "A4 ... and the view lasts 30 minutes" "--ttl=1800" "$(grep '^viewer booking.com' "$FAKE_LOG")"
 t  "A4 the bind went to the login-link server" yes "$([[ -s "$TMP/link/state/binds/booking.com" ]] && echo yes || echo no)"
-t  "A4 no request code is left live (it was tapped at once)" 1 "$(ls "$TMP/req" | grep -cE '^[0-9a-f]{64}$')"
+# The Done, and (DIVE-7675) the viewer's index to it, which is not a request code.
+t  "A4 no request code is left live (it was tapped at once)" 1 "$(for f in "$TMP"/req/*; do [[ "${f##*/}" =~ ^[0-9a-f]{64}$ ]] && ! grep -qx 'op=view' "$f" && echo; done | grep -c '')"
 t  "A4 the body file is gone" "" "$(ls -a "$TMP/req" | grep app-post)"
 t  "A4 nothing waits in the login shell" "" "$(ls "$TMP/asks" 2>/dev/null)"
 REC="$TMP/req/app/$ME.booking.com"

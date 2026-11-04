@@ -21,6 +21,11 @@ the box seat on 127.0.0.1 only, behind a TLS front that forwards it nothing but
                                                to it for the view (DIVE-6646)
   GET  /browser/viewer/<site>/<nonce>/ws/<tok> the websocket, spliced byte for byte
                                                onto the viewer's own loopback bridge
+  POST /browser/viewer/<site>/<nonce>/done/<d> the page's Done (DIVE-7675): root finishes
+                                               the ask through `_connect view-done`
+                                               with the bind this link was redeemed
+                                               under. <d> is one-use and was handed
+                                               only to the page that redeemed it
   GET  /browser/viewer/assets/...              page.js and the box's noVNC files
 
 The ticket's rules (one use, expiry, session bind, sha256-only storage) are all
@@ -49,11 +54,16 @@ PAGE_DIR = os.environ.get("LINK_PAGE_DIR", os.path.join(os.path.dirname(os.path.
 # The redeem command, as argv. The site and the session are appended; the nonce
 # goes on stdin, because viewer-redeem refuses a nonce in argv.
 REDEEM = json.loads(os.environ.get("LINK_REDEEM_CMD", '["/usr/local/bin/5dive", "browser", "viewer-redeem"]'))
+# The viewer's Done (DIVE-7675): root's half, the same grant a Telegram tap uses.
+# Its words ride stdin, NUL-separated, so the bind never sits in the process table.
+DONE = json.loads(os.environ.get("LINK_DONE_CMD", '["sudo", "-n", "/usr/local/bin/5dive", "browser", "_connect"]'))
+DONE_TTL = 7200         # as long as root keeps the ask's Done (CONNECT_DONE_TTL)
 
 SITE = r"[A-Za-z0-9._-]{1,64}"
 NONCE = r"[0-9a-f]{64}"
 RE_PAGE = re.compile(rf"^/browser/viewer/({SITE})/({NONCE})/?$")
 RE_REDEEM = re.compile(rf"^/browser/viewer/({SITE})/({NONCE})/redeem$")
+RE_DONE = re.compile(rf"^/browser/viewer/({SITE})/({NONCE})/done/([0-9a-f]{{64}})$")
 RE_WS = re.compile(rf"^/browser/viewer/({SITE})/({NONCE})/ws/([0-9a-f]{{64}})$")
 RE_ASSET = re.compile(r"^/browser/viewer/assets/(page\.js|viewer-ui\.js|novnc/[A-Za-z0-9._/-]{1,200})$")
 # Debian's novnc package links its vendored libraries out to these.
@@ -64,6 +74,7 @@ TYPES = {".js": "text/javascript", ".mjs": "text/javascript", ".html": "text/htm
          ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".oga": "audio/ogg"}
 
 _tokens = {}            # token -> (site, nonce, "127.0.0.1", port, expires_at)
+_dones = {}             # done handle -> (site, nonce, bind, expires_at)
 _lock = threading.Lock()
 
 # The same layout as the hosted viewer (shelld's viewerPage, DIVE-7223): a 44-px
@@ -93,6 +104,9 @@ PAGE = """<!doctype html>
  #bar button{background:#1f2630;color:inherit;border:1px solid #2e3540;border-radius:6px;padding:1px 12px;
   font:inherit;line-height:19px;cursor:pointer}
  #bar button:disabled{opacity:.45;cursor:default}
+ #bar #done{background:#1d6b41;border-color:#2b8a57;font-weight:600}
+ #done[hidden]{display:none}
+ #msg a{color:#7cc4ff}
  #screen{position:absolute;inset:44px 0 0 0;background:#000}
  #msg{position:absolute;inset:44px 0 0 0;display:grid;place-content:center;text-align:center;padding:24px}
 </style></head>
@@ -101,7 +115,8 @@ PAGE = """<!doctype html>
  <form id="pastebox" hidden><input id="pastein" type="text" autocomplete="off" autocapitalize="off"
   autocorrect="off" spellcheck="false"><button type="submit"></button></form>
  <button id="type" type="button" disabled></button>
- <button id="paste" type="button" disabled></button></div>
+ <button id="paste" type="button" disabled></button>
+ <button id="done" type="button" disabled></button></div>
 <div id="screen"></div>
 <div id="msg">…</div>
 <script type="module" src="/browser/viewer/assets/page.js"></script>
@@ -139,6 +154,8 @@ def sweep():
     with _lock:
         for k in [k for k, v in _tokens.items() if v[4] <= now]:
             del _tokens[k]
+        for k in [k for k, v in _dones.items() if v[3] <= now]:
+            del _dones[k]
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -194,15 +211,21 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.ws(*m.groups())
         self.nf()
 
+    def own_page(self):
+        # Only the page on the link's own origin may spend the link: a form or a
+        # fetch from any other origin carries a different Origin and is refused.
+        return bool(HOST) and self.headers.get("origin") == "https://" + HOST and self.headers.get("x-5dive-viewer") == "1"
+
     def do_POST(self):
+        d = RE_DONE.match(self.path_only())
+        if d:
+            return self.done(*d.groups())
         m = RE_REDEEM.match(self.path_only())
         if not m:
             return self.nf()
         n = int(self.headers.get("content-length") or 0)
         raw = self.rfile.read(min(n, 4096)) if n else b""
-        # Only the page on the link's own origin may spend the link: a form or a
-        # fetch from any other origin carries a different Origin and is refused.
-        if not HOST or self.headers.get("origin") != "https://" + HOST or self.headers.get("x-5dive-viewer") != "1":
+        if not self.own_page():
             return self.send(403, "refused: a login link is redeemed only by its own page\n")
         site, nonce = m.groups()
         b = bind_for(site)
@@ -226,12 +249,40 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.send(403, json.dumps({"error": why}), "application/json")
         sweep()
         tok = secrets.token_hex(32)
+        dtok = secrets.token_hex(32)
         with _lock:
             _tokens[tok] = (site, nonce, "127.0.0.1", int(tm.group(1)), exp)
-        out = {"password": kv["password"], "ws": "/browser/viewer/%s/%s/ws/%s" % (site, nonce, tok)}
+            _dones[dtok] = (site, nonce, bind, time.time() + DONE_TTL)
+        out = {"password": kv["password"], "ws": "/browser/viewer/%s/%s/ws/%s" % (site, nonce, tok),
+               "done": "/browser/viewer/%s/%s/done/%s" % (site, nonce, dtok)}
         for k in ("fit", "screen"):
             if re.fullmatch(r"[0-9]{1,4}x[0-9]{1,4}", kv.get(k, "")):
                 out[k] = kv[k]
+        self.send(200, json.dumps(out), "application/json")
+
+    def done(self, site, nonce, dtok):
+        n = int(self.headers.get("content-length") or 0)
+        if n:
+            self.rfile.read(min(n, 4096))
+        if not self.own_page():
+            return self.send(403, "refused: Done is pressed only on its own page\n")
+        with _lock:
+            d = _dones.pop(dtok, None)          # one use, whatever root answers
+        if not d or d[0] != site or d[1] != nonce or d[3] <= time.time():
+            return self.send(410, json.dumps({"result": "gone"}), "application/json")
+        try:
+            r = subprocess.run(DONE, input="view-done\0%s\0%s\0" % (site, d[2]),
+                               capture_output=True, text=True, timeout=170)
+        except (OSError, subprocess.TimeoutExpired):
+            return self.send(503, json.dumps({"result": "error"}), "application/json")
+        kv = dict(l.split("=", 1) for l in r.stdout.splitlines() if "=" in l)
+        res = kv.get("result", "")
+        if r.returncode != 0 or res not in ("saved", "notyet", "carryon", "gone"):
+            return self.send(503, json.dumps({"result": "error"}), "application/json")
+        out = {"result": res}
+        # The way back in is a link to this same server, for this same site.
+        if res == "notyet" and re.fullmatch(r"https://%s/browser/viewer/%s/[0-9a-f]{64}" % (re.escape(HOST), re.escape(site)), kv.get("again", "")):
+            out["again"] = kv["again"]
         self.send(200, json.dumps(out), "application/json")
 
     def asset(self, rel):
