@@ -2562,6 +2562,9 @@ const page = {
     // DIVE-620: is a plain Enter's target a composer with no form (a chat box)?
     // PWCOMPOSER=1 says it is. The page-side test itself is graded in T46a.
     if (arg && arg.composerOf) { rec({ call: 'composer', sel: arg.sel }); return process.env.PWCOMPOSER === '1'; }
+    // DIVE-7670: is a click's target a text field (a click there only focuses it)?
+    // Unset, it is not; the page-side test itself is graded in browser_pay_checkout_unit F1-F9.
+    if (arg && arg.textEntryOf) { rec({ call: 'textentry', sel: arg.sel }); return process.env.PWTEXTENTRY === '1'; }
     // DIVE-4982: what the risky step will act on. PWPAYLOAD parks what the page
     // shows (recipients, subject...); unset, the page shows nothing readable.
     if (arg && arg.payloadOf) { rec({ call: 'payload', sel: arg.sel, cls: arg.cls });
@@ -3834,6 +3837,7 @@ const mkpage = (kind) => { let clock = 0, keydowns = 0, lastGoto = '';
       rec({ call: 'label', kind });
       try { return fs.readFileSync(process.env.DPWLABEL, 'utf8').trim(); } catch (e) { return ''; }
     }
+    if (arg && arg.textEntryOf) { rec({ call: 'textentry', kind }); return false; }   // DIVE-7670
     // DIVE-4982: the payload, from a FILE for the same reason as the label.
     if (arg && arg.payloadOf) { rec({ call: 'payload', kind, cls: arg.cls });
       try { return JSON.parse(fs.readFileSync(process.env.DPWPAYLOAD, 'utf8')); } catch (e) { return {}; } }

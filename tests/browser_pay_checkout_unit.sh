@@ -12,6 +12,12 @@
 #   P4     the same through stepRisk on a page: the click on "Secure Checkout"
 #          runs, the click on "Pay now" stops with the Total, not the Subtotal.
 #   P5     PRE-FIX: the 1.59.0 table (git show a64e495) stops "Secure Checkout".
+#   F1-F7  DIVE-7670: a click INTO a text field only focuses it, so the field's
+#          typed value is never its label (Shopify's email Subject box held
+#          "Complete your order" and stopped as a pay). A submit input's value
+#          and a button's text still stop; Enter still reads the form's submit.
+#   F8-F9  MUTANTS: with both halves deleted F1 stops again; with the text-entry
+#          check alone deleted, the textarea holding "Buy now" stops again.
 #   H1-H2  a stop that reached no chat names the one gate whose yes approves it
 #          (task need --browser-ask=<id>); a stop sent on Telegram does not.
 #
@@ -58,6 +64,61 @@ if git cat-file -e a64e495:browser/lib/aria.cjs 2>/dev/null || git fetch -q --de
 else
   echo "SKIP P5: a64e495 is not reachable from this checkout"
 fi
+
+# F: DIVE-7670 — clicking into a field is not paying. A small DOM shim: tagName,
+# type, value, innerText, aria-label, contenteditable and role, as the page has them.
+cat > "$TMP/field.js" <<'JS'
+const aria = require(process.argv[2]);
+const mk = (tag, attrs, extra) => Object.assign({ tagName: tag.toUpperCase(),
+  getAttribute: (k) => (k in attrs ? attrs[k] : null), closest: () => null,
+  matches: (q) => q.split(',').some((p) => { const m = p.match(/^\[([a-z-]+)(?:=(?:"([^"]*)"|([^\]]*)))?\]$/);
+    return m ? (m[1] in attrs && (m[2] === undefined && m[3] === undefined ? true : String(attrs[m[1]]) === (m[2] !== undefined ? m[2] : m[3]))) : p === tag; }),
+}, extra);
+const form = { querySelector: () => els['#po'], getAttribute: () => null };
+const els = {
+  '#subj': mk('input', { 'aria-label': 'Subject' }, { type: 'text', value: 'Complete your order', innerText: '' }),
+  '#ta':   mk('textarea', {}, { value: 'Buy now', innerText: 'Buy now' }),
+  '#ce':   mk('div', { contenteditable: 'true' }, { isContentEditable: true, innerText: 'Post this and delete that' }),
+  '#rt':   mk('div', { role: 'textbox', 'aria-label': 'Reply' }, { innerText: 'Send now' }),
+  '#po':   mk('input', { type: 'submit' }, { type: 'submit', value: 'Place order', innerText: '' }),
+  '#btn':  mk('button', {}, { innerText: 'Complete your order' }),
+  '#cb':   mk('input', { type: 'checkbox', 'aria-label': 'Subscribe to news' }, { type: 'checkbox', value: 'on', innerText: '' }),
+  '#mail': mk('input', { 'aria-label': 'Email' }, { type: 'email', value: 'buy@x.test', innerText: '', form }),
+};
+global.document = { querySelector: (s) => els[s] || null, querySelectorAll: () => [],
+  innerText: 'Total USD 60.64', location: { hostname: 'admin.shop.example' } };
+const page = { evaluate: async (fn, arg) => fn(arg) };
+const r = async (sel, op, extra) => { const x = await aria.stepRisk(page, Object.assign({ op, selector: sel }, extra || {}), '#' + sel.replace(/^.*#/, '').replace(/^ref=.*/, 'subj'));
+  return x ? x.cls : 'null'; };
+(async () => {
+  const out = [];
+  for (const id of ['subj', 'ta', 'ce', 'rt']) out.push(await r('#' + id, 'click'));
+  out.push(await r('ref=textbox/Subject', 'click'));
+  for (const id of ['po', 'btn', 'cb']) out.push(await r('#' + id, 'click'));
+  out.push(await r('#mail', 'press', { key: 'Enter' }));
+  console.log(out.join(' '));
+})();
+JS
+F=$(node "$TMP/field.js" "$ARIA")
+read -r f1 f2 f3 f4 f5 f6 f7 f8 f9 <<<"$F"
+t 'F1 a click into the Subject box holding "Complete your order" does not stop' null "$f1"
+t 'F2 ...nor into a textarea holding "Buy now", a contenteditable, or a role=textbox' 'null null null' "$f2 $f3 $f4"
+t 'F3 ...nor a ref click on a textbox, whatever the page says' null "$f5"
+t 'F4 a submit input whose value is "Place order" still stops as pay' pay "$f6"
+t 'F5 a button "Complete your order" still stops as pay' pay "$f7"
+t 'F6 a checkbox is not a text field: "Subscribe to news" still stops' pay "$f8"
+t 'F7 Enter in a field still reads its form'"'"'s submit button ("Place order")' pay "$f9"
+
+# F8 MUTANT: delete the text-entry check (and put value back in the label) — F1 must stop again.
+sed -e 's/if (entry) return null;/if (false) return null;/' -e "s/if (TEXT_ENTRY_ROLES.test(role)) return null;//" \
+    -e 's/btnValue(n) ? n.value : '"''"'/n.value/' "$ARIA" > "$TMP/aria-mutant.cjs"
+t 'F8 (precondition) the mutant differs from the shipped lib' yes "$(cmp -s "$ARIA" "$TMP/aria-mutant.cjs" && echo no || echo yes)"
+M=$(node "$TMP/field.js" "$TMP/aria-mutant.cjs")
+t 'F8 MUTANT: without the fix the Subject box stops as pay again' pay "${M%% *}"
+# F9 MUTANT: fix 1 alone reverted (value still left out): a textarea holding "Buy now" stops again.
+sed -e 's/if (entry) return null;/if (false) return null;/' -e "s/if (TEXT_ENTRY_ROLES.test(role)) return null;//" "$ARIA" > "$TMP/aria-mutant1.cjs"
+M1=$(node "$TMP/field.js" "$TMP/aria-mutant1.cjs"); read -r _ m2 _ <<<"$M1"
+t 'F9 MUTANT: without the text-entry check, the textarea holding "Buy now" stops as pay' pay "$m2"
 
 # H: the stop's last lines, from the function act and run call (_owner_ask_deliver).
 fn=$(sed -n '/^_owner_ask_deliver() {/,/^}/p' "$BROWSER")

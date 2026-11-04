@@ -29,3 +29,7 @@ exits **73** with the ask, a screenshot and an approval id.
   "Continue" is not caught by it — under `careful` that one is on you: if a step will pay, post,
   send or delete, ask first even when `act` does not stop you.
 
+- Clicking into a text field never stops, whatever the field holds (an email subject reading
+  "Complete your order" is not an order). **If an act stops halfway through an edit**, check that
+  what you opened for editing is still live: Shopify turns a live email back into a draft the
+  moment you press Edit, so a stop there leaves the owner's email switched off.
