@@ -240,6 +240,9 @@ const TREE_SETTLE_MS = Number(process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS || 120
 // never yields held a bench read of two stores.bestbuy.com pages for over seven
 // minutes; every call behind it was refused as busy and the job timed out.
 const FAILED_SETTLE_MS = aria.FAILED_SETTLE_MS;
+// The re-read of a page that came into view, or moved, while the report was being
+// read (DIVE-7680): it has loaded its first document already, so a short settle.
+const POPUP_REREAD_SETTLE_MS = Number(process.env.FIVEDIVE_BROWSER_POPUP_REREAD_SETTLE_MS) || 300;
 const READ_PAGE_MS = Number(process.env.FIVEDIVE_BROWSER_READ_PAGE_MS || 40000);
 const within = (ms, p, what) => {
   let timer;
@@ -645,7 +648,7 @@ async function serveMode(profile, sock, broker, input) {
 let driven = null;
 async function pageOf(ctx) {
   if (driven && (driven.isClosed() || !ctx.pages().includes(driven))) driven = null;
-  const p = driven || ctx.pages()[0] || await ctx.newPage();
+  const p = driven || ctx.pages()[0] || popup.mine(await ctx.newPage());
   p.setDefaultTimeout(STEP_TIMEOUT);
   return p;
 }
@@ -679,7 +682,7 @@ async function frontRequest(ctx, input, req, send, end, inUse) {
   let page = frontTab.pick(ctx.pages(), host, driven || ctx.pages()[0]);
   const opened = !page;
   if (opened) {
-    page = await ctx.newPage();
+    page = popup.mine(await ctx.newPage());
     // Not awaited, as the start URL is not: the person must not wait on a slow
     // site, and a tab they can see loading beats a viewer that never opens.
     page.goto(url, { waitUntil: 'domcontentloaded' })
@@ -697,19 +700,35 @@ async function frontRequest(ctx, input, req, send, end, inUse) {
 // it opened in, not in a second load of its URL in the main tab), and any other
 // URL goes to the main tab as before. lib/popup.cjs, shared with the cold loop.
 let front = null;
-async function pageFor(ctx, url) {
+// The popup a read was just handed because it came after the last act (below):
+// it is read where it is, never navigated to the URL the read named.
+let latePopup = null;
+async function pageFor(ctx, url, { read = false } = {}) {
   const base = await pageOf(ctx);
+  latePopup = null;
   if (!front || front.base !== base) {
     if (front) front.stop();
     front = popup.follow(base, { stepTimeout: STEP_TIMEOUT });
   }
+  // A WINDOW THAT CAME AFTER THE LAST ACT'S WAIT (DIVE-7680) is taken now, before
+  // this request picks its page. Box bug 690: Supliful's Google chooser came after
+  // the act's report, and the snapshot with no URL read the sign-up form under it.
+  // A snapshot with no URL names the page the last act reported, which is the
+  // opener: so a READ of the opener's own URL is handed the late popup, the window
+  // on top of it. An act that names that URL still goes to the opener.
+  if (front.waiting) {
+    const before = front.page;
+    front.use({ log: (l) => process.stderr.write(`${PROG}: ${l}\n`) });
+    try { await front.drain(); } catch (e) { /* the page in view is read as it is */ }
+    if (read && front.page !== before && url && sameUrl(base.url(), url)) latePopup = front.page;
+  }
   front.use({});   // the last request's lines go nowhere now; a plan sets its own
-  return front.pageFor(url) || base;
+  return latePopup || front.pageFor(url) || base;
 }
 // A popup still on the URL asked for is not loaded again: a reload of an OAuth
 // window can lose the sign-in it is in the middle of.
 function inPopup(page, url) {
-  return !!front && page !== front.base && sameUrl(page.url(), url);
+  return !!front && page !== front.base && (page === latePopup || sameUrl(page.url(), url));
 }
 
 // ---- the probe, and the thing it un-breaks ---------------------------------
@@ -811,7 +830,7 @@ async function probeRequest(ctx, req, send, end) {
   const urlNow = () => { try { return page.url(); } catch (e) { return ''; } };
   const said = (html) => (html !== null && marks.some(r => r.test(html))) || (!!landed && landed.test(urlNow()));
   const work = (async () => {
-    page = await ctx.newPage();
+    page = popup.mine(await ctx.newPage());
     if (over) return null;
     page.setDefaultTimeout(Math.max(1, Math.min(Number(process.env.FIVEDIVE_BROWSER_PROBE_TIMEOUT || 20000), left())));
     // A REDIRECT THAT INTERRUPTS THE LOAD IS THE LOAD (DIVE-6795's goTo), which
@@ -875,7 +894,7 @@ async function totpRequest(ctx, profile, req, send, end) {
   let page;
   try {
     assertLease(req, 'totp');
-    page = await ctx.newPage();
+    page = popup.mine(await ctx.newPage());
     page.setDefaultTimeout(STEP_TIMEOUT);
     const r = await totp.fill(page, profile, { url: req.url, base: req.host,
       settleMs: Number(process.env.FIVEDIVE_BROWSER_RUN_SETTLE_MS || 1500) });
@@ -909,7 +928,7 @@ async function renderRequest(ctx, req, send, end) {
   let page;
   try {
     assertLease(req, 'render');
-    page = await ctx.newPage();
+    page = popup.mine(await ctx.newPage());
     page.setDefaultTimeout(Number(process.env.FIVEDIVE_BROWSER_STEP_TIMEOUT || STEP_TIMEOUT));
     const w = Number(req.width) || 1280, h = Number(req.height) || 800;
     if (typeof page.setViewportSize === 'function') {
@@ -992,7 +1011,7 @@ async function readRequest(ctx, req, send, end) {
   // THE PAGE THE BROWSER IS ALREADY ON IS READ AS IT IS (DIVE-6778), as snapshot reads
   // it: `snapshot <url>` then `links <url>` loaded the same page a second time.
   let shown = null;
-  try { shown = await pageFor(ctx, urls[0]); } catch (e) { shown = null; }
+  try { shown = await pageFor(ctx, urls[0], { read: true }); } catch (e) { shown = null; }
   const pages = await Promise.all(urls.map(async (url) => {
     let page;
     try {
@@ -1000,7 +1019,7 @@ async function readRequest(ctx, req, send, end) {
         if (shown && (inPopup(shown, url) || isOn(shown, url))) {
           return { url, ok: true, html: await shown.content(), shown: true };
         }
-        page = await ctx.newPage();
+        page = popup.mine(await ctx.newPage());
         page.setDefaultTimeout(Number(process.env.FIVEDIVE_BROWSER_STEP_TIMEOUT || STEP_TIMEOUT));
         // The default settle ends when this tab is quiet (DIVE-6778); a --wait is waited in full.
         const watch = !Number(req.wait) && typeof page.context === 'function' ? aria.requestWatch(page) : null;
@@ -1028,7 +1047,7 @@ async function treeRequest(ctx, req, send, end) {
     send({ t: 'err', msg: 'tree needs an http(s) url to enumerate' }); return end(E_NOTHING_RAN);
   }
   try {
-    const page = await pageFor(ctx, req.url);
+    const page = await pageFor(ctx, req.url, { read: true });
     assertLease(req, 'tree');
     // Not reloaded when the browser is already on it (DIVE-6778), as snapshot.
     const stay = inPopup(page, req.url) || isOn(page, req.url);
@@ -1090,8 +1109,11 @@ async function snapshotRequest(ctx, req, send, end) {
     return end(E_NOTHING_RAN);
   }
   try {
-    const page = await pageFor(ctx, req.url);
+    const page = await pageFor(ctx, req.url, { read: true });
     assertLease(req, 'snapshot');
+    if (page === latePopup) {
+      send({ t: 'log', line: `  a popup opened after the last act: ${popup.hostOf(page.url())}. It is on top of ${popup.hostOf(req.url)}, so this read is of it (${page.url()}).` });
+    }
     // The document's HTTP status, as the cold driver records it (DIVE-6725).
     let resp = null;
     // THE PAGE THE BROWSER IS ALREADY ON IS READ AS IT IS (DIVE-6778), as `act`'s
@@ -1101,7 +1123,9 @@ async function snapshotRequest(ctx, req, send, end) {
     // the page: a typed value, an open menu. No load, so no settle either: the
     // act that left the page here already waited its own.
     const stay = inPopup(page, req.url) || isOn(page, req.url);
-    if (stay) send({ t: 'log', line: `  the browser is already on ${req.url}; read as it is, not reloaded` });
+    // A late popup (DIVE-7680) is read at its own address, not the one the read named.
+    const readAt = page === latePopup ? String(page.url()) : req.url;
+    if (stay) send({ t: 'log', line: `  the browser is already on ${readAt}; read as it is, not reloaded` });
     // The load's settle ends when the page is quiet, as act's does (DIVE-6778).
     const watch = !stay && typeof page.context === 'function' ? aria.requestWatch(page.context()) : null;
     let inter, waited, loading = false;
@@ -1136,7 +1160,7 @@ async function snapshotRequest(ctx, req, send, end) {
       png = Buffer.isBuffer(buf) ? buf.toString('base64') : Buffer.from(String(buf)).toString('base64');
     }
     send({ t: 'out', data: JSON.stringify({
-      url: snap.url || req.url,
+      url: snap.url || readAt,
       title: snap.title || '',
       nodes: snap.nodes || [],
       html_bytes: Buffer.byteLength(snap.html || ''),
@@ -1148,8 +1172,10 @@ async function snapshotRequest(ctx, req, send, end) {
       ...(loading ? { still_loading: true } : {}),
       // A served browser is a headed one (the launch above), recorded as the cold one is.
       browser_mode: 'headed',
+      // The popup this was read from, when it is one (DIVE-7680).
+      ...(front && page !== front.base && front.popup ? { popup: front.popup } : {}),
       ...(resp ? { http_status: resp.status() } : {}),
-      extracted: await extractFor(req, snap.html, req.url),
+      extracted: await extractFor(req, snap.html, snap.url || readAt),
     }) + '\n' });
     end(0);
   } catch (e) {
@@ -1433,16 +1459,32 @@ async function sendReport(page, req, send, { failed = false, watch = null, settl
     // DIVE-4983: the same wait, --expect window and refs the cold driver's report takes,
     // and nothing waited for after a failed step (DIVE-6778, as the cold driver): a
     // step that timed out changed nothing, so its re-read settles 0.3 s, not 1.2 s.
-    const after = await aria.pageAfter(page, {
-      settleMs: failed ? Math.min(FAILED_SETTLE_MS, settleOf(req, RUN_SETTLE_MS)) : settled && req.settle === undefined ? 0 : settleOf(req, RUN_SETTLE_MS), waitFor: failed ? null : (r.wait_for || null), waitTimeoutMs: STEP_TIMEOUT,
+    const readOpts = (ms) => ({
+      settleMs: ms, waitFor: failed ? null : (r.wait_for || null), waitTimeoutMs: STEP_TIMEOUT,
       expect: r.expect || null, expectWaitMs: failed ? 0 : (Number(r.expect_wait_ms) || 0),
       walk: r.tree ? { interactiveOnly: !!r.interactive } : null,
       scope: r.scope || null, expectDoc: !!r.expect_doc, watch,
     });
-    let png = null;
-    if (r.shot) {
-      const buf = await page.screenshot({});
-      png = Buffer.isBuffer(buf) ? buf.toString('base64') : Buffer.from(String(buf)).toString('base64');
+    const shoot = async (pg) => {
+      if (!r.shot) return null;
+      const buf = await pg.screenshot({});
+      return Buffer.isBuffer(buf) ? buf.toString('base64') : Buffer.from(String(buf)).toString('base64');
+    };
+    let after = await aria.pageAfter(page, readOpts(failed ? Math.min(FAILED_SETTLE_MS, settleOf(req, RUN_SETTLE_MS)) : settled && req.settle === undefined ? 0 : settleOf(req, RUN_SETTLE_MS)));
+    // ONE REPORT, ONE PAGE (DIVE-7680): a window that arrived during the settle is
+    // the page in view, so the report is of it; and a page that moved between the
+    // read and the picture is read again, so url, title, refs and png agree.
+    if (front && front.waiting) {
+      const was = page;
+      try { page = await front.drain(); } catch (e) { /* the page we have */ }
+      if (page !== was) after = await aria.pageAfter(page, readOpts(POPUP_REREAD_SETTLE_MS));
+    }
+    let png = await shoot(page);
+    const moved = aria.movedSince(page, after);
+    if (moved) {
+      send({ t: 'log', line: `  the page moved while it was being read (${moved}); read again so the picture and the page agree` });
+      after = await aria.pageAfter(page, readOpts(POPUP_REREAD_SETTLE_MS));
+      png = await shoot(page);
     }
     // WHAT CHANGED SINCE THE AGENT LAST SAW THIS TAB (DIVE-6795), when asked. A
     // scoped re-read is one element's text, not the page's, so it is no look.
@@ -1892,8 +1934,12 @@ const notLoadedMsg = (site, ld) =>
 async function screenOf(be) {
   const png = await be.x.screenshotPNG();
   const t = await be.x.windowTitle();
-  return { drive: 'input', title: t.page, window_title: t.window, width: be.x.width, height: be.x.height,
-    png_b64: png.toString('base64') };
+  // A popup window of the browser on top (DIVE-7680) is the page the input goes
+  // to, so the report names it: its title is the one the hard stops read.
+  const pw = await be.x.browserPopup(be.child.pid).catch(() => null);
+  return { drive: 'input', title: pw ? pw.page : t.page, window_title: pw ? pw.name : t.window,
+    ...(pw ? { popup_window: pw.page || pw.name, opener_title: t.page } : {}),
+    width: be.x.width, height: be.x.height, png_b64: png.toString('base64') };
 }
 
 const INPUT_STEPS = {
@@ -2082,6 +2128,16 @@ async function inputRequest(be, profile, req, send, end, behalf) {
             case 'click': {
               const r = await clickInBrowser(be, s);
               if (r && r.dialog) send({ t: 'log', line: `  ${where}: the browser opened its "${r.dialog}" window, which now has the keyboard (a file chooser: type the file's absolute path and press alt+o (Open; Return can close it with nothing attached), or use an upload{x,y,path} step, or drop{x,y,path} onto the page instead)` });
+              // A click that opened a popup window (DIVE-7680): it takes the keys
+              // from here until it closes, and the output says so.
+              else {
+                const pw = await be.x.browserPopup(be.child.pid).catch(() => null);
+                if (pw && pw.id !== be.popupWin) {
+                  be.popupWin = pw.id;
+                  try { await be.x.focusOn(pw.id, 2000, `the browser's popup window "${pw.page || pw.name}"`); } catch (e) { /* the next key step says so */ }
+                  send({ t: 'log', line: `  ${where}: a popup window opened: "${pw.page || pw.name}". It is on top and now has the keyboard; the steps after this type into it, and when it closes the page under it has the keyboard again.` });
+                } else if (!pw) be.popupWin = 0;
+              }
               break;
             }
             case 'upload': send({ t: 'log', line: `  ${where}: ${await uploadByChooser(be, s)}` }); break;

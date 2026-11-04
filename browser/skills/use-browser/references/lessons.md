@@ -16,6 +16,10 @@ Part of the use-browser skill. Read it before a form, a sign-up, a post or an up
    and the refs are of it. When the popup closes, the page that opened it is back. In a served
    browser the popup stays open: act on its URL, or with no URL, to continue in it. A cold act's popup closes
    with the act.
+- **A popup that opens late, or from inside an embedded app** (a Shopify app's "Connect Facebook")
+   is followed too. If the act's report still shows the page under it, `snapshot` with no URL reads the
+   popup and says `a popup opened after the last act`. In input mode the popup window gets the keys,
+   and the act says `a popup window opened`.
 
 ## On real sites (DIVE-5390)
 

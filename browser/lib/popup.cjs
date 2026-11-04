@@ -23,6 +23,17 @@
 //
 // Both step loops (bin/driver-playwright and bin/session-daemon) use this file,
 // for the reason lib/aria.cjs exists: two copies of one rule drift.
+//
+// A WINDOW THAT IS NOT A `popup` EVENT, AND ONE THAT COMES LATE (DIVE-7680). Box
+// bug 690 (exact-swallow, 1.66.6): Shopify's embedded Facebook app opens Meta's
+// login from inside its cross-origin iframe, and Supliful's "Sign up with Google"
+// window came after the act's wait. Both acts said `popup: null`. A window opened
+// from an out-of-process iframe, or with noopener, can reach Playwright only as a
+// new page of the CONTEXT, so the follower listens there too. It takes a context
+// page while an act runs and for LATE_MS after its last step. Pages this code
+// opens itself (a `read` tab, a new tab) are marked with mine() and never taken. One
+// that arrives after the act's wait is kept, and drain() takes it before the next
+// read. So the snapshot after a late popup reads the popup, not the page under it.
 
 // How long a click or a key press gets to open a popup before the next step, or
 // the re-read, goes on without one. Paid only after a click or a press, and only
@@ -33,6 +44,20 @@ const WAIT_MS = () => {
 };
 // How long a popup gets to load its first page before it is shown as it is.
 const LOAD_MS = () => Number(process.env.FIVEDIVE_BROWSER_POPUP_LOAD_MS) || 15000;
+// How long after an act's last step a new page of the context still counts as a
+// window the act opened (DIVE-7680). A page 'popup' event is taken at any time;
+// this bounds only the context pages, which carry no opener to tie them to the act.
+const LATE_MS = () => {
+  const v = Number(process.env.FIVEDIVE_BROWSER_POPUP_LATE_MS);
+  return Number.isFinite(v) && v >= 0 ? v : 10000;
+};
+
+// Pages this code opened itself (ctx.newPage()): never a window an act opened.
+// The context's 'page' event fires before newPage() resolves, so the follower
+// looks again before it takes one (CTX_DEFER_MS, and in take()).
+const ours = new WeakSet();
+function mine(p) { try { if (p && typeof p === 'object') ours.add(p); } catch (e) { /* not a page */ } return p; }
+const CTX_DEFER_MS = 50;
 
 // The ops that can open a window. fill, type, select and upload do not, in any
 // page measured, and charging them the wait would slow every form.
@@ -76,13 +101,39 @@ function follow(start, opts = {}) {
   const stack = [start];
   const arrived = [];
   const watched = [];
-  let wake = null, settled = false;
-  const onPopup = (p) => { arrived.push(p); if (wake) { const w = wake; wake = null; w(); } };
+  // Every page this follower has seen arrive or found already open: a window
+  // opened the usual way is both a page 'popup' and a context 'page', and is
+  // taken once.
+  const seen = new WeakSet();
+  const see = (p) => { try { seen.add(p); } catch (e) { /* not a page */ } };
+  see(start);
+  let wake = null, settled = false, armUntil = 0;
+  const arrive = (p) => { arrived.push(p); if (wake) { const w = wake; wake = null; w(); } };
+  const onPopup = (p) => { if (seen.has(p)) return; see(p); arrive(p); };
   const watch = (p) => {
     if (!p || typeof p.on !== 'function' || watched.includes(p)) return;
     watched.push(p); p.on('popup', onPopup);
   };
   watch(start);
+  // THE CONTEXT, for the windows no page reports (DIVE-7680).
+  let ctx = null;
+  try { ctx = typeof start.context === 'function' ? start.context() : null; } catch (e) { ctx = null; }
+  if (ctx && typeof ctx.on !== 'function') ctx = null;
+  if (ctx) { try { for (const p of (typeof ctx.pages === 'function' ? ctx.pages() : [])) see(p); } catch (e) { /* none listed */ } }
+  let deferred = 0;   // context pages still inside their CTX_DEFER_MS look
+  const onCtxPage = (p) => {
+    if (!p || seen.has(p) || ours.has(p)) return;
+    const at = Date.now();
+    deferred++;
+    setTimeout(() => {
+      deferred--;
+      if (seen.has(p) || ours.has(p)) return;
+      if (at > armUntil) { see(p); return; }   // not during an act: a tab someone else opened
+      see(p); arrive(p);
+    }, CTX_DEFER_MS);
+  };
+  if (ctx) ctx.on('page', onCtxPage);
+  const arm = () => { armUntil = Date.now() + LATE_MS(); };
   const top = () => stack[stack.length - 1];
 
   // A popup that closed hands the view back to the page that opened it.
@@ -94,6 +145,7 @@ function follow(start, opts = {}) {
   };
 
   const take = async (p) => {
+    if (ours.has(p)) return;
     if (isClosed(p)) {
       log(`a popup opened (${hostOf(urlOf(p))}) and closed again by itself; still on ${hostOf(urlOf(top()))}`);
       return;
@@ -102,6 +154,7 @@ function follow(start, opts = {}) {
     // loading is still the window the click opened, and is shown as it is.
     try { if (typeof p.waitForLoadState === 'function') await p.waitForLoadState('domcontentloaded', { timeout: LOAD_MS() }); }
     catch (e) { /* shown as it is */ }
+    if (ours.has(p)) return;   // a tab this code opened, known by now
     if (isClosed(p)) {
       log(`a popup opened (${hostOf(urlOf(p))}) and closed again by itself; still on ${hostOf(urlOf(top()))}`);
       return;
@@ -129,6 +182,7 @@ function follow(start, opts = {}) {
     // that was done in 0.3 s. A click's window.open fires in its handler; one that
     // waits on a request first keeps that request in flight, so the page is not quiet.
     async sync(lastOp, quiet = null) {
+      arm();
       dropClosed();
       const ms = OPENS.has(lastOp) ? WAIT_MS() : 0;
       let calm = false;
@@ -140,7 +194,22 @@ function follow(start, opts = {}) {
         });
         clearTimeout(timer); wake = null;
       }
+      // A context page still being looked at (it may be a tab this code opened)
+      // is waited for: a quiet page must not end the wait before it is decided.
+      if (deferred > 0) await new Promise((r) => setTimeout(r, CTX_DEFER_MS + 10));
       settled = calm && !arrived.length;
+      while (arrived.length) await take(arrived.shift());
+      dropClosed();
+      arm();   // the late window runs from the act's last look, not its first
+      return top();
+    },
+    // A window that arrived after the last sync (its wait had ended) is still
+    // waiting here; the act's report and a served browser's next read take it.
+    get waiting() { return arrived.length > 0; },
+    // Take every window that has arrived, with no wait (DIVE-7680): the read
+    // after a late popup is the popup. Returns the page in view.
+    async drain() {
+      dropClosed();
       while (arrived.length) await take(arrived.shift());
       dropClosed();
       return top();
@@ -162,8 +231,10 @@ function follow(start, opts = {}) {
         try { (p.off || p.removeListener).call(p, 'popup', onPopup); } catch (e) { /* gone */ }
       }
       watched.length = 0;
+      if (ctx) { try { (ctx.off || ctx.removeListener).call(ctx, 'page', onCtxPage); } catch (e) { /* gone */ } }
+      armUntil = 0;
     },
   };
 }
 
-module.exports = { follow, OPENS, hostOf, originOf, WAIT_MS };
+module.exports = { follow, mine, OPENS, hostOf, originOf, WAIT_MS, LATE_MS };
