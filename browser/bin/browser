@@ -5244,7 +5244,7 @@ VIEWER_TTL_MIN=60
 # before it refuses. Starting them is not the same moment as them listening.
 VIEWER_BRIDGE_WAIT_S=10
 # How long the viewer waits for the site's tab to come forward (DIVE-7257).
-VIEWER_FRONT_S="${FIVEDIVE_BROWSER_VIEWER_FRONT_S:-5}"
+VIEWER_FRONT_S="${FIVEDIVE_BROWSER_VIEWER_FRONT_S:-8}"  # an input-mode front types a URL (DIVE-7674)
 
 _serve_pidfile()  { echo "$1/.5dive-serve"; }
 # ---- the session daemon (DIVE-4621) ----------------------------------------
@@ -5742,10 +5742,33 @@ cmd_serve() {
       ! _serve_running "$dir" >/dev/null \
         || die "$E_UNAVAILABLE" "$site is served in the automated browser and it did not stop, so it cannot be re-served in input mode. Try again, or: 5dive browser serve $site --stop"
       printf '%s: %s is set to input mode; re-serving it as plain Chrome driven through the screen.\n' "$PROG" "$site" >&2
+    elif (( login && ! input )) && [[ "$(_kv "$(_serve_pidfile "$dir")" drive)" == input ]]; then
+      # A PERSON'S VIEW OF THIS SITE OPENS ON THIS SITE (DIVE-7674, box report
+      # 688). The group's one Chrome is in input mode for another site of the
+      # group (CJ), and this site's login (Facebook) needs the other browser.
+      # This used to fall through to "already serving": the owner's viewer for
+      # business.facebook.com showed cjdropshipping.com, another login's live
+      # session, while another seat was driving it. Now it is refused by name
+      # while anybody is in it, and otherwise re-served the way THIS site needs,
+      # on this site's URL, as a page verb's switch is (GAP-6 below).
+      local other lbusy; other=$(_kv "$(_serve_pidfile "$dir")" site); [[ -n "$other" && "$other" != "$site" ]] || other="another site of its group"
+      if lbusy=$(_serve_busy "$dir"); then
+        die "$E_UNAVAILABLE" "the browser $site shares with $other is in use right now ($lbusy). Nothing was switched and nothing is shown, so nobody sees $other instead of $site and nobody is typed over. Try again in a minute."
+      fi
+      ( _SERVE_SWAP=1 cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
+      ! _serve_running "$dir" >/dev/null \
+        || die "$E_UNAVAILABLE" "the browser $site shares with $other is in input mode and did not stop, so it cannot be opened on $site. Nothing is shown; try again, or: 5dive browser serve $site --stop"
+      printf '%s: the browser %s shares was in input mode for %s; re-serving it on %s for a person to sign in.\n' "$PROG" "$site" "$other" "$site" >&2
     elif (( plain )) && _daemon_live "$dir"; then
       # The daemon is holding the profile, and Chrome allows one instance per
       # --user-data-dir: stop it (gracefully — that is how the profile is
       # written out) and serve again below, plain.
+      # NEVER UNDER ANOTHER SITE'S CALL (DIVE-7674): a group's automated browser
+      # held for another of its sites is not stopped while that call holds it.
+      local pother pbusy; pother=$(_kv "$(_serve_pidfile "$dir")" site)
+      if [[ -n "$pother" && "$pother" != "$site" ]] && pbusy=$(_serve_busy "$dir"); then
+        die "$E_UNAVAILABLE" "the browser $site shares with $pother is in use right now ($pbusy). Nothing was switched and nothing is shown. Try again in a minute."
+      fi
       ( _SERVE_SWAP=1 cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
       ! _serve_running "$dir" >/dev/null \
         || die "$E_UNAVAILABLE" "$site is served by the session daemon and it did not stop, so it cannot be re-served as plain Chrome for a login. Nothing was changed; try again, or: 5dive browser serve $site --stop"
@@ -5887,8 +5910,8 @@ cmd_serve() {
     fi
   fi
   if [[ -n "$dpid" ]]; then
-    ( umask 077; printf 'display=%s\nxvfb_pid=%s\ndaemon_pid=%s\nsock=%s\nstarted_at=%s\n' \
-        "$disp" "$xpid" "$dpid" "$dsock" "$(date -u +%s)" > "$(_serve_pidfile "$dir")"
+    ( umask 077; printf 'display=%s\nxvfb_pid=%s\ndaemon_pid=%s\nsock=%s\nstarted_at=%s\nsite=%s\n' \
+        "$disp" "$xpid" "$dpid" "$dsock" "$(date -u +%s)" "$site" > "$(_serve_pidfile "$dir")"
       (( input )) && printf 'drive=input\n' >> "$(_serve_pidfile "$dir")"
       (( private )) && printf 'private=1\n' >> "$(_serve_pidfile "$dir")" )
     (( private )) || _rv_offer_write "$(_seat)" "$site" "$( (( input )) && printf input)"
@@ -5948,8 +5971,8 @@ cmd_serve() {
     die "$E_UNAVAILABLE" "chrome exited immediately (status $crc) — $site is NOT being served, and no display was left behind. Chrome said: $why$(_crash_note "$why" "$crc")"
   fi
 
-  ( umask 077; printf 'display=%s\nxvfb_pid=%s\nchrome_pid=%s\nstarted_at=%s\n' \
-      "$disp" "$xpid" "$cpid" "$(date -u +%s)" > "$(_serve_pidfile "$dir")"
+  ( umask 077; printf 'display=%s\nxvfb_pid=%s\nchrome_pid=%s\nstarted_at=%s\nsite=%s\n' \
+      "$disp" "$xpid" "$cpid" "$(date -u +%s)" "$site" > "$(_serve_pidfile "$dir")"
     (( plain )) && printf 'login=1\n' >> "$(_serve_pidfile "$dir")" )
   if (( plain )); then
     printf 'serving %s on :%s (plain Chrome for a person to sign in — no automation control; the next agent command after the view ends starts the warm session again)\n' "$site" "$disp"

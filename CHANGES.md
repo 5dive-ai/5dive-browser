@@ -8,7 +8,7 @@ that file stays where it is.
 
 ## Unreleased
 
-### Fixed — an agent's browser keeps its page between steps again on a seat that shares its Google group with the box (DIVE-7637), 1.67.2
+### Fixed — an agent's browser keeps its page between steps again on a seat that shares its Google group with the box (DIVE-7637), 1.67.4
 
 In the DIVE-7487 home bench, every one of the 101 runs of 5dive in Claude Code said "no served browser kept": each step opened its page from scratch in a new Chrome, so a filter or sort an agent had just applied was gone at the next step. It took 16 steps a task where Claude in Chrome took 26, and finished 24 of 100 to its 51.
 
@@ -17,6 +17,25 @@ In the DIVE-7487 home bench, every one of the 101 runs of 5dive in Claude Code s
 - **Measured** (50 tasks, datacenter IP, Haiku 5.5, against 1.66.1 unfixed): no run keeps a one-off browser any more (0 of 50, was 50 of 50); finished 19 to 15 (p = 0.39, not significant); a run's median time 110 s to 80 s; cost per finished task $0.065 to $0.041. Steps per run did not rise (14.9 tool calls to 14.4), so runs still end early: that part is in the agent's instructions, not this fix.
 - **use-browser skill: check every part of the job before saying done.** A new section has the agent list each part of the task (place, date, filter, sort, field, the item to open, the fact to report), find each one on the page as it is now, do any part not shown (trying another way into a filter before calling it impossible), and end on the result page with the answer copied from it.
 - **Measured with the skill** (same 50 tasks and rig, both arms on this fix, only the skill differs): finished 26 to 19 (10 tasks only with the skill, 3 only without, p = 0.09); the 30 tasks lost at home 14 to 9 (p = 0.13); the 20 controls 12 to 10. Neither gain reaches p < 0.05, and browser calls per run stayed flat (12.0 to 11.1, sign test p = 0.88): the agent checks more but does not take more steps.
+
+### Fixed — a sign-in window a click opens reaches the agent (DIVE-7680), 1.67.3
+
+On an owner's box (report 690), "Sign up with Google" on Supliful and "Connect Facebook account" in Shopify's Facebook app both reported `popup: null`. The agent never saw the window the click opened, so each connect fell back to the owner.
+
+- **A window opened from inside an embedded app, or with no link back to its opener, is followed.** The follower also listens for new pages of the browser context during an act and for 10 s after it (`FIVEDIVE_BROWSER_POPUP_LATE_MS`). Tabs the browser opens for itself (a `read`, a new tab) are never taken.
+- **A popup that comes after the act's wait is read next.** A popup that arrives while the act's report is being read becomes the report. One that arrives later is taken before the next read. A `snapshot` with no URL then reads it and says `a popup opened after the last act`. An act that names the page underneath still goes to that page.
+- **One report, one page.** If the page moves between the read and the picture, it is read again, so url, title, refs and `page.png` describe the same page.
+- **Input mode:** a smaller browser window on top of the main one (an OAuth popup) gets the keyboard, and the act says `a popup window opened`. The report's title is the popup's, so the hard stops read it. A second full-size window is not a popup.
+- Nothing new may be clicked. Google's chooser stays under the Google sign-in guard, and Meta's login still stops at a password or a check.
+
+### Fixed — Connect for one site of a group opens on that site, never on another site's live window (DIVE-7674), 1.67.2
+
+On exact-swallow (report 688, 1.67.0), the owner tapped Connect for business.facebook.com and was shown cjdropshipping.com, signed in, while another seat was using it. Both sites share one browser. CJ had it in input mode (plain Chrome driven through the screen), and Facebook needs the other browser, but Connect took the browser as it was.
+
+- **Connect now switches the shared browser to the site asked for, on that site's page**, when nobody is using it.
+- **When somebody is using it, Connect is refused in plain words** ("the browser business.facebook.com shares with cjdropshipping.com is in use right now … Try again in a minute"). Nothing is shown and nothing is stopped. This also covers a seat with no proxy, whose Connect used to stop the other site's browser mid-step.
+- **When both sites use input mode**, the viewer opens the site asked for in a new tab if the window was last sent to another site. A window already on the site is left as it is, so a person called in for a check still sees that check.
+- Not covered: a person who moved the window to another site by hand is not tracked; the window is judged by the last page an agent or Connect sent it to.
 
 ### Fixed — clicking into a text field no longer stops as a payment (DIVE-7670), 1.67.1
 

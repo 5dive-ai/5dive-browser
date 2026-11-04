@@ -302,6 +302,36 @@ class X11 {
     return best;
   }
 
+  // ---- a popup window of the browser (DIVE-7680) ---------------------------
+  // Box bug 690: a click opened Google's or Meta's sign-in in its OWN browser
+  // window. With no window manager nothing gives a new window the keyboard, and
+  // browserWindow() (the largest) and browserDialog() (a file chooser, which skips
+  // every other "… - Google Chrome" window) both kept input on the window under
+  // it. So the popup showed in the screenshot and every key went behind it.
+  // This finds it: the topmost viewable browser window that is not the main one,
+  // not override-redirect (menus are), titled like a browser window, and smaller
+  // than the main window (a second full-size window is a tab torn off, not a
+  // popup). Returns {id, name, page} or null.
+  async browserPopup(pid) {
+    const main = await this.browserWindow(pid);
+    if (!main) return null;
+    const area = main.g.w * main.g.h;
+    const kids = await this.children(this.root);
+    for (let i = kids.length - 1; i >= 0; i--) {      // topmost first
+      const w = kids[i];
+      if (w === main.id) continue;
+      const a = await this.attrs(w);
+      if (!a.viewable || a.override) continue;
+      if (!(await this.isBrowserWindow(w, pid))) continue;
+      const name = (await this.prop(w, '_NET_WM_NAME', 'UTF8_STRING')) || (await this.prop(w, 'WM_NAME', 'STRING'));
+      if (!/ [-–—] (Google Chrome|Chromium)/.test(name || '')) continue;   // a dialog is browserDialog's
+      let g; try { g = await this.geometry(w); } catch (e) { continue; }
+      if (g.w * g.h >= area) continue;
+      return { id: w, name, page: name.replace(/ [-–—] (Google Chrome|Chromium)(?: [^-–—]*)?$/, '') };
+    }
+    return null;
+  }
+
   // ---- whose window is it -------------------------------------------------
   // WHY THIS EXISTS (DIVE-5287, quinn's rejection). XTEST input is delivered by
   // the X server to whichever window has the keyboard focus (keys) or is under
@@ -425,6 +455,9 @@ class X11 {
     // An open dialog of the browser takes the keys, not the page behind it.
     const dlg = await this.browserDialog(pid);
     if (dlg) return this.focusOn(dlg.id, waitMs, `the browser's "${dlg.name || 'dialog'}" window`);
+    // ...and so does a popup window it opened, a sign-in window on top (DIVE-7680).
+    const pw = await this.browserPopup(pid);
+    if (pw) return this.focusOn(pw.id, waitMs, `the browser's popup window "${pw.page || pw.name}"`);
     let t = await this.keyboardTarget(pid);
     if (t.browser) return t.browser;
     const main = (await this.windowTitle()).id;

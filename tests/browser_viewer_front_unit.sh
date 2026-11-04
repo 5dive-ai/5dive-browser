@@ -13,8 +13,8 @@
 #         opens nothing, navigates nothing
 #      S2 the agent's next act lands in that same tab (pageOf follows it)
 #      S3 no tab on the site: one new tab on its URL, in front; the others untouched
-#      S4 input mode: nothing moves, and it says why (read in the source: it
-#         needs a real window)
+#      S4 input mode: handed to inputFront before any tab is touched (read in
+#         the source: it needs a real window; DIVE-7674)
 #      S5 a request with no http(s) url is refused, nothing moves
 #   E  end to end: two sites in one group, `viewer-redeem` through the real
 #      bin/browser and daemon
@@ -129,9 +129,12 @@ arm 'S3 no tab on the site: one new tab, on its url, in front' "0 1 1 1@https://
 arm 'S3 ...the Play tab untouched' "$PLAY https://bing.com/" "$(tabs_of s3)"
 
 # Input mode needs a real window on an X display, so this one is read in the
-# source: its branch answers before any page is touched.
-arm 'S4 input mode: frontRequest answers moved:false, and why, before it touches a tab' 1 \
-  "$(awk '/^async function frontRequest\(/{p=1} p&&/if \(input\) \{ out\(\{ host, moved: false, why: .input mode/{i=NR} p&&/frontTab\.pick\(/{k=NR} p&&/^}/{p=0} END{print (i && k > i) ? 1 : 0}' "$DAEMON")"
+# source: its branch answers before any Playwright page is touched. Since
+# DIVE-7674 it opens the site in a new tab when the window was last sent to
+# another site (lib/front-tab.cjs inputFront, graded in
+# browser_connect_group_view_unit.sh).
+arm 'S4 input mode: frontRequest hands it to inputFront, before it touches a Playwright tab' 1 \
+  "$(awk '/^async function frontRequest\(/{p=1} p&&/if \(input\) \{/{i=NR} p&&/frontTab\.inputFront\(/{f=NR} p&&/frontTab\.pick\(/{k=NR} p&&/^}/{p=0} END{print (i && f > i && k > f) ? 1 : 0}' "$DAEMON")"
 
 o=$(node "$DAEMON" call "$TMP/s1.sock" <<<'{"op":"front","url":"javascript:alert(1)"}' 2>&1); rc=$?
 arm 'S5 a front with no http(s) url is refused (nothing ran), nothing moves' "70 1" "$rc $(front_of s1)"

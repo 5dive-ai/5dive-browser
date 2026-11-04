@@ -152,6 +152,10 @@ jobs:
       # group's browser is held the other way for another site (fake daemon).
       - name: group status harness
         run: bash tests/browser_group_status_unit.sh
+      # DIVE-7674 (report 688): Connect for one site of a group opens on that
+      # site, and never switches a browser another call is using (fake daemon).
+      - name: connect group view harness
+        run: bash tests/browser_connect_group_view_unit.sh
       - name: act upload harness
         run: bash tests/browser_act_upload_unit.sh
       - name: input paste harness
