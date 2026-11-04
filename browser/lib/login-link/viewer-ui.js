@@ -25,8 +25,18 @@ export const TEXT = {
     title: 'log in',
     opening: 'Opening the login screen…',
     spent: 'This login link cannot be used any more. Ask your agent for a new one.',
-    closed: 'The login screen is closed. When you are done, tap Done in Telegram.',
+    closed: 'The login screen is closed. If you are finished, tap Done.',
     password: 'The login screen asked for a password it was not given. Ask your agent for a new link.',
+    done: 'Done',
+    doneTitle: 'Finished? Your agent checks the sign-in and carries on',
+    checking: 'Checking the sign-in…',
+    saved: 'Saved. Your agent is carrying on.',
+    carryOn: 'Done. Your agent is carrying on.',
+    notYet: 'Not signed in yet.',
+    notYetAsk: 'Not signed in yet. Ask your agent for a new link.',
+    openAgain: 'Open it again',
+    doneGone: 'This sign-in is already finished. Check your chat.',
+    doneFailed: 'Could not finish from here. Tap Done in your chat.',
   },
   ru: {
     note: 'Войдите здесь. Окно одноразовое — если его закрыть, просмотр закончится.',
@@ -39,8 +49,18 @@ export const TEXT = {
     title: 'вход',
     opening: 'Открываем окно входа…',
     spent: 'Эта ссылка для входа больше не работает. Попросите агента прислать новую.',
-    closed: 'Окно входа закрыто. Когда закончите, нажмите Done в Telegram.',
+    closed: 'Окно входа закрыто. Если вы закончили, нажмите «Готово».',
     password: 'Окну входа не хватило пароля. Попросите агента прислать новую ссылку.',
+    done: 'Готово',
+    doneTitle: 'Закончили? Агент проверит вход и продолжит',
+    checking: 'Проверяем вход…',
+    saved: 'Сохранено. Агент продолжает.',
+    carryOn: 'Готово. Агент продолжает.',
+    notYet: 'Вход ещё не выполнен.',
+    notYetAsk: 'Вход ещё не выполнен. Попросите агента прислать новую ссылку.',
+    openAgain: 'Открыть снова',
+    doneGone: 'Этот вход уже завершён. Загляните в чат.',
+    doneFailed: 'Отсюда завершить не удалось. Нажмите Done в чате.',
   },
 };
 
@@ -148,4 +168,37 @@ export function wireBar(doc, rfb, t, clipboard, win = doc.defaultView) {
       clearTimeout(timer.id);
     },
   };
+}
+
+// The bar's Done (DIVE-7675): the chat's Done, pressed in the view itself. Root
+// answers with one word; this turns it into the one plain line the owner reads,
+// and "not signed in yet" carries the fresh link back into the same window.
+export function doneResult(t, j) {
+  const r = j && j.result;
+  if (r === 'saved') return { line: t.saved, final: true };
+  if (r === 'carryon') return { line: t.carryOn, final: true };
+  if (r === 'notyet') return j.again ? { line: t.notYet, again: j.again, final: true } : { line: t.notYetAsk, final: true };
+  if (r === 'gone') return { line: t.doneGone, final: true };
+  return { line: t.doneFailed, final: false };
+}
+
+// Labels Done and wires it to press(), which resolves to root's answer. show(line,
+// again) puts the line (and the way back in) where the screen was. A press that
+// reached root is spent; only one that never did may be pressed again.
+export function wireDone(doc, t, press, show) {
+  const btn = doc.getElementById('done');
+  btn.textContent = t.done; btn.title = t.doneTitle;
+  if (!press) { btn.hidden = true; return { connect() {}, pressed: () => false }; }
+  let pressed = false;
+  btn.addEventListener('click', async () => {
+    if (pressed) return;
+    pressed = true; btn.disabled = true;
+    show(t.checking);
+    let j = null;
+    try { j = await press(); } catch (e) { j = null; }
+    const r = doneResult(t, j);
+    show(r.line, r.again);
+    if (!r.final) { pressed = false; btn.disabled = false; }
+  });
+  return { connect() { if (!pressed) btn.disabled = false; }, pressed: () => pressed };
 }

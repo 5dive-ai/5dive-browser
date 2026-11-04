@@ -12,14 +12,23 @@
 // site, a line of help, Type and Paste (viewer-ui.js), the box's screen below it.
 // The size sent with the redeem is the area under the bar, the one the screen is
 // drawn in.
-import { TEXT, pickText, wireBar } from './viewer-ui.js';
+import { TEXT, pickText, wireBar, wireDone } from './viewer-ui.js';
 
 const BAR = 44;
 const t = pickText(navigator.languages);
 document.documentElement.lang = t === TEXT.ru ? 'ru' : 'en';
 document.title = document.getElementById('site').textContent + ' — ' + t.title;
 const msg = document.getElementById('msg');
-const say = (s) => { msg.textContent = s; msg.style.display = 'grid'; };
+const say = (s, again) => {
+  msg.textContent = s;
+  if (again) {
+    // DIVE-7675: not signed in yet, so a fresh link to the same window.
+    const a = document.createElement('a');
+    a.href = again; a.textContent = t.openAgain;
+    msg.append(document.createElement('br'), a);
+  }
+  msg.style.display = 'grid';
+};
 say(t.opening);
 const base = location.pathname.replace(/\/+$/, '');
 let r;
@@ -61,7 +70,13 @@ if (!r || !r.ok || !j.ws || !j.password) {
   j.password = '';
   rfb.scaleViewport = true;
   const bar = wireBar(document, rfb, t, navigator.clipboard);
-  rfb.addEventListener('connect', () => bar.connect());
-  rfb.addEventListener('disconnect', () => { bar.disconnect(); say(t.closed); });
+  // DIVE-7675: the chat's Done, here. Root closes this view when it runs, so the
+  // disconnect that follows must not cover the answer with "closed".
+  const done = wireDone(document, t, j.done ? async () => {
+    const d = await fetch(j.done, { method: 'POST', cache: 'no-store', headers: { 'x-5dive-viewer': '1' } });
+    return d.json();
+  } : null, say);
+  rfb.addEventListener('connect', () => { bar.connect(); done.connect(); });
+  rfb.addEventListener('disconnect', () => { bar.disconnect(); if (!done.pressed()) say(t.closed); });
   rfb.addEventListener('credentialsrequired', () => say(t.password));
 }

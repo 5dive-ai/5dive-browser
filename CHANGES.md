@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — Done in the viewer itself (DIVE-7675), 1.68.0
+
+lodar: «should we add carry on button to our browser viewer? so i dont need to go to chat and click it?» The login view now has a green **Done** in its top bar, next to Type and Paste. It does exactly what the chat's Done does, and the chat's Done stays.
+
+- **Same Done, same path.** Root closes the view, stops the browser with its cookie-settle wait, probes the login, and tells the agent in the same words as a chat Done. The ask's chat message is edited to the verdict with no buttons left, so a later chat Done is refused like a double tap.
+- **The owner reads one line:** "Saved. Your agent is carrying on.", "Done. Your agent is carrying on." (a check or a hand-off), or "Not signed in yet." with **Open it again**: a fresh link to the same window, and a fresh Done in chat. The agent is told to wait for it.
+- **Reached through the ticket's bind, never the Done code.** Root files the Done under the bind it minted for the link, which only the viewer server holds (shelld on a hosted box, the login-link server here). `_connect view-done <site> <bind>` answers only the box seat, once. The page holds a one-use handle on its own server and nothing else.
+- Self-hosted: the login-link server's `POST …/done/<handle>` and the bar's button (`viewer-ui.js` `wireDone`). The hosted bar is shelld's (5dive-api, same row).
+- `tests/browser_connect_view_done_unit.sh`: root's half (V/N/C), then end to end from the page's button through the real server; the button with its click handler cut out is the control, and nothing reaches the agent.
 ### Fixed — an Amazon page the browser is refused is read over plain HTTP (DIVE-7688), 1.67.5
 
 On the owner's box (report 617), every amazon.co.jp product and search snapshot stopped with Amazon's error page. A bisect there ran the input-mode browser on a copy of the owner's profile and on an empty one, behind his relay and on the box IP, and without his Amazon cookies: every arm was refused, except an empty profile's first page. A plain HTTP read of the same pages worked on both routes.
