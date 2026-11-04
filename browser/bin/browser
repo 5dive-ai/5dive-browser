@@ -669,11 +669,14 @@ _adapter_dirs() {
 # naming the read-only package directory there is how a customer's hand-written
 # adapter came to be in the place an upgrade deletes.
 _adapter_path() {
-  local d b; b="$(_site_base "$1")"
+  # The list is read whole, never through `| head` or an early return out of `< <(...)`:
+  # either closes the pipe while _adapter_dirs is still printing, and its next printf dies
+  # of SIGPIPE with "write error: Broken pipe" on stderr (DIVE-7675's flaky C1 arm).
+  local d b dirs; b="$(_site_base "$1")"; dirs="$(_adapter_dirs)"
   while IFS= read -r d; do
     [[ -f "$d/$b.json" ]] && { printf '%s\n' "$d/$b.json"; return 0; }
-  done < <(_adapter_dirs)
-  printf '%s\n' "$(_adapter_dirs | head -1)/$b.json"
+  done <<<"$dirs"
+  printf '%s\n' "${dirs%%$'\n'*}/$b.json"
 }
 
 _valid_site() {

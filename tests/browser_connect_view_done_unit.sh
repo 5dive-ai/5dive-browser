@@ -145,6 +145,10 @@ export FIVEDIVE_BROWSER_SAVED_CLI="$TMP/fake-5dive" SENT_LOG="$TMP/sent.log" FIV
 WHO="${ME#agent-}"
 
 priv() { printf '%s\0' "$@" | "$BROWSER" _connect; }
+# view-done's answer is its stdout, the way shelld reads it (/^result=/m on stdout only), so the
+# exact-match arms take stdout alone; stderr goes to its own file (DIVE-7675 iteration 3: a stray
+# "Broken pipe" on stderr failed C1 through 2>&1). V3 checks its stderr refusal on purpose.
+vd() { priv view-done "$@" 2>"$TMP/vd.err"; }
 reset() { : >"$TMP/stub.log"; : >"$FAKE_LOG"; : >"$SENT_LOG"; rm -f "$TMP"/ctl.{broken,snapclear}; }
 last_code() { jq -r 'select(.path|test("sendMessage")) | .form.reply_markup' "$TMP/stub.log" | tail -1 | jq -r '.inline_keyboard[0][0].callback_data' | sed 's/^bconn://'; }
 last_bind() { jq -r 'select(.path=="/shell/browser-viewer-bind") | .body' "$TMP/stub.log" | tail -1 | jq -r .bind; }
@@ -164,16 +168,16 @@ t  "V0 ... the bind went to the viewer server" 1 "$([[ "$BIND" =~ ^[0-9a-f]{32}$
 tn "V0 ... and the bind is NOT in what the tap prints (the chat sees that)" "$BIND" "$out"
 tc "V1 the Done code remembers its chat message" "msgs=$OWNER:7" "$(cat "$(printf '%s/%s' "$TMP/req" "$(printf '%s' "$DONE" | sha256sum | cut -d' ' -f1)")")"
 : >"$FAKE_LOG"
-out=$(priv view-done booking.com "$(printf 'b%.0s' $(seq 32))" 2>&1); rc=$?
+out=$(vd booking.com "$(printf 'b%.0s' $(seq 32))"); rc=$?
 t  "V2 a bind this link was not minted under finishes nothing" "0 result=gone" "$rc $out"
 t  "V2 ... and nothing was run" "" "$(cat "$FAKE_LOG")"
-out=$(priv view-done example.org "$BIND" 2>&1); rc=$?
+out=$(vd example.org "$BIND"); rc=$?
 t  "V2 ... nor the right bind for another site" "0 result=gone" "$rc $out"
 out=$(FIVEDIVE_BROWSER_BOX_SEAT=some-other-seat priv view-done booking.com "$BIND" 2>&1); rc=$?
 t  "V3 only the box seat (the viewer server's user) may press it" 77 "$rc"
 tc "V3 ... and says so" "only the box's own viewer" "$out"
 t  "V3 ... the agent was not told" "" "$(cat "$SENT_LOG")"
-out=$(priv view-done booking.com "$BIND" 2>&1); rc=$?
+out=$(vd booking.com "$BIND"); rc=$?
 t  "V4 the viewer's Done, with the link's bind: signed in" "0 result=saved" "$rc $out"
 t  "V4 ... the chat Done's path: revoke -> stop -> probe" "viewer-revoke booking.com|serve booking.com --stop|status booking.com" "$(paste -sd'|' "$FAKE_LOG")"
 t  "V4 ... the agent gets the chat Done's message, word for word" "ARGS agent send $WHO --message-file=-|$CHAT_NOTE" "$(paste -sd'|' "$SENT_LOG")"
@@ -185,7 +189,7 @@ out=$(priv done "$DONE" "$OWNER" 2>&1); rc=$?
 t  "V6 the chat's Done no longer acts" 77 "$rc"
 tc "V6 ... it is spent" "not live" "$out"
 : >"$SENT_LOG"
-out=$(priv view-done booking.com "$BIND" 2>&1); rc=$?
+out=$(vd booking.com "$BIND"); rc=$?
 t  "V7 a second press finishes nothing" "0 result=gone" "$rc $out"
 t  "V7 ... and the agent is not told twice" "" "$(cat "$SENT_LOG")"
 
@@ -196,7 +200,7 @@ out=$(priv tap "$(last_code)" "$OWNER" 2>&1); DONE=$(sed -n 's/^done=//p' <<<"$o
 out=$(priv done "$DONE" "$OWNER" 2>&1); rc=$?
 t  "V8 the chat Done still works as before" 0 "$rc"
 : >"$FAKE_LOG"
-out=$(priv view-done booking.com "$BIND" 2>&1); rc=$?
+out=$(vd booking.com "$BIND"); rc=$?
 t  "V8 ... and the viewer's Done after it finishes nothing" "0 result=gone" "$rc $out"
 t  "V8 ... runs nothing" "" "$(cat "$FAKE_LOG")"
 
@@ -205,7 +209,7 @@ reset
 "$BROWSER" connect-request booking.com --reason="r" >/dev/null 2>&1
 out=$(priv tap "$(last_code)" "$OWNER" 2>&1); DONE=$(sed -n 's/^done=//p' <<<"$out"); BIND=$(last_bind)
 : >"$TMP/ctl.broken"; : >"$TMP/stub.log"
-out=$(priv view-done booking.com "$BIND" 2>&1); rc=$?
+out=$(vd booking.com "$BIND"); rc=$?
 tc "N1 a login that did not take: not signed in yet" "result=notyet" "$out"
 AGAIN=$(sed -n 's/^again=//p' <<<"$out")
 t  "N1 ... with a way back in: a fresh link to the box" 1 "$([[ "$AGAIN" =~ ^https://box\.example\.5dive\.ai/browser/viewer/booking\.com/[0-9a-f]{64}$ ]] && echo 1)"
@@ -217,7 +221,7 @@ NEW=$(jq -r '.reply_markup' <<<"$E" | jq -r '.inline_keyboard[0][0].callback_dat
 t  "N2 ... and carries a fresh Done" 1 "$([[ "$NEW" =~ ^[0-9a-f]{48}$ && "$NEW" != "$DONE" ]] && echo 1)"
 tc "N3 the agent is told, and told to wait" "wait for their next Done" "$(cat "$SENT_LOG")"
 rm -f "$TMP/ctl.broken"; : >"$SENT_LOG"
-out=$(priv view-done booking.com "$BIND2" 2>&1)
+out=$(vd booking.com "$BIND2")
 t  "N4 the viewer's Done on the new link finishes it" "result=saved" "$out"
 out=$(priv done "$NEW" "$OWNER" 2>&1); rc=$?
 t  "N4 ... and then the chat's fresh Done is spent too (one Done)" 77 "$rc"
@@ -227,7 +231,7 @@ reset
 : >"$TMP/ctl.snapclear"
 "$BROWSER" connect-request futuretools.io --challenge --url=https://futuretools.io/tools >/dev/null 2>&1
 out=$(priv tap "$(last_code)" "$OWNER" 2>&1); BIND=$(last_bind); : >"$SENT_LOG"
-out=$(priv view-done futuretools.io "$BIND" 2>&1)
+out=$(vd futuretools.io "$BIND")
 t  "C1 a challenge Done from the viewer: carrying on" "result=carryon" "$out"
 tc "C1 ... the agent gets the chat Done's challenge note" "[browser challenge] The owner tapped Done for futuretools.io. The box browser for futuretools.io is back in your hands. What it shows now:" "$(cat "$SENT_LOG")"
 t  "C1 ... and the chat says so" "✅ Thanks. The agent is carrying on with futuretools.io." "$(edits | jq -r .text)"
