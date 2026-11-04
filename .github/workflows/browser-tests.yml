@@ -283,6 +283,35 @@ jobs:
           test "$(jq -r .name browser/.claude-plugin/plugin.json)" = browser
           test "$(jq -r '.plugins[]|select(.name=="browser")|.source' .claude-plugin/marketplace.json)" = ./browser
 
+  # DIVE-7725: THE SPEED GATE. Two releases slowed every step on every box and
+  # only a 100-task bench found them, days later: a new browser per act (1.64.2
+  # .. 1.67.3) and a sign-in check per command (.. 1.68.1). One task, six steps,
+  # the real daemon and Chrome, on a local site set up the way a box has it (in
+  # the Google group, offered to the box, no adapter). Red if a step after the
+  # first opens a browser or runs a sign-in check, or a step is over budget.
+  # Its own job and check name, `speed-gate`, so main can require it. The two
+  # negative controls run the same gate on the two shipped regressions and must
+  # come out red, each on its own criterion: a gate that cannot see them is red.
+  speed-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: pinned playwright-core
+        run: npm install --prefix browser --no-audit --no-fund
+      - name: let the fixture site listen on 443 (the sign-in check loads https://<site>/)
+        run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
+      - name: speed gate on this tree
+        run: bash tests/browser_speed_gate.sh
+      - name: negative control, 1.66.1 (a new browser every act) must be red on keep
+        if: success() || failure()
+        run: bash tests/browser_speed_gate.sh --tree=3cda809 --expect-red=keep
+      - name: negative control, 1.67.4 (a sign-in check every command) must be red on signin
+        if: success() || failure()
+        run: bash tests/browser_speed_gate.sh --tree=ccec1c6 --expect-red=signin
+
   # DIVE-5335: THE NUMBERS. A fixed routine on a real site, run 1 (snapshot +
   # act) against runs 2 and 3 (replay), with real Chrome and the pinned
   # playwright-core; plus full vs --delta re-reads. The table lands in the job
