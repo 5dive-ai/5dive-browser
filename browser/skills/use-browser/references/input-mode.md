@@ -60,6 +60,11 @@ A site's own **error page** is different: the stop says the site **refused this 
 「ご迷惑をおかけしています！」 is one. Don't hand it over and don't retry in a loop: tell your owner
 Amazon refused the read, and use another source for that page or try again later.
 
+On Amazon, `snapshot <url>` usually does not stop there: when the browser is refused, it reads
+the same page over plain HTTP through your route, signed out, and exits 0 with a `page.md` you
+can read (`read_by: http` in `page.meta.json`). The login in the browser is not used, so cart,
+orders and anything signed-in still need the screen. Only the stop above means neither worked.
+
 A page that **did not finish loading** (exit 76) was not read: its title was still its address
 when the wait ran out. The screenshot shows how far it got. Try once more a minute later; if it
 still does not load, say so rather than reading the screenshot as the page.

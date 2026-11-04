@@ -396,6 +396,72 @@ o=$("$BROWSER" act tiktok.com --steps='[{"op":"press","key":"Enter"}]' --out="$T
 rm -f "$TMP/fake.rc"
 arm 'R5b ...same for act' '75 no' "$rc $(yn grep -q 'browser handoff' <<<"$o")"
 
+# R5c (DIVE-7688) — a refused browser read is retried over plain HTTP, through the
+# seat's own route, signed out, when the adapter says "fetch_when_refused": true.
+# A fake curl records its config (stdin) and argv and answers from files.
+cat > "$TMP/fake-curl" <<FCURL
+#!/usr/bin/env bash
+cat > "$TMP/curl.cfg"; printf '%s\n' "\$@" > "$TMP/curl.argv"; echo x >> "$TMP/curl.calls"
+o=""; while ((\$#)); do [[ \$1 == -o ]] && { o=\$2; shift; }; shift; done
+cp "$TMP/curl.html" "\$o"
+u=\$(sed -n 's/^url = "\(.*\)"\$/\1/p' "$TMP/curl.cfg")
+printf '%s %s' "\$(cat "$TMP/curl.code")" "\$(cat "$TMP/curl.eff" 2>/dev/null || echo "\$u")"
+FCURL
+chmod +x "$TMP/fake-curl"; export FIVEDIVE_BROWSER_CURL="$TMP/fake-curl"
+page_html() { printf '<!doctype html><html><head><title>%s</title></head><body><main><h1>%s</h1><p>Organic Uji matcha from Kyoto, stone-ground, 30 g. Whisk with hot water for a bright green tea.</p><p>Price 1,280 yen. Ships from Japan.</p></main></body></html>' "$1" "$1" > "$TMP/curl.html"; }
+calls() { [[ -f "$TMP/curl.calls" ]] && wc -l < "$TMP/curl.calls" || echo 0; }
+jq '.probe.refused_when_title_matches = "ご迷惑をおかけしています" | .fetch_when_refused = true' "$TMP/tiktok.keep" > "$TMP/ad/tiktok.com.json"
+printf 'socks5://127.0.0.1:1055\n' > "$TMP/pr/$SEAT/.5dive-proxy"; chmod 600 "$TMP/pr/$SEAT/.5dive-proxy"
+prof_sum() { (cd "$TMP/pr/$SEAT/tiktok.com" && find . -type f ! -name '.5dive-*' ! -name '.s.*' -print0 | sort -z | xargs -0r sha256sum | sha256sum | cut -c1-16); }
+p0=$(prof_sum)
+page_html 'Banneren Tea Organic Matcha 30g'; echo 200 > "$TMP/curl.code"; rm -f "$TMP/curl.eff"
+echo 74 > "$TMP/fake.rc"
+o=$("$BROWSER" snapshot tiktok.com https://www.tiktok.com/dp/B00D81RNDK --out="$TMP/snapF" 2>&1); rc=$?
+arm 'R5c a refused snapshot is read over plain HTTP: rc 0 and the page'"'"'s title' '0 yes' \
+  "$rc $(yn grep -q 'title: Banneren Tea Organic Matcha 30g' <<<"$o")"
+arm 'R5c ...with page.md, and the browser'"'"'s error screen kept as browser-refused.png' 'yes yes' \
+  "$(yn grep -q 'Uji matcha' "$TMP/snapF/page.md") $(yn test -s "$TMP/snapF/browser-refused.png")"
+arm 'R5c ...and the meta says how it was read, and that it was signed out' 'http false' \
+  "$(jq -r .read_by "$TMP/snapF/page.meta.json") $(jq -r .signed_in "$TMP/snapF/page.meta.json")"
+arm 'R5c ...through the seat'"'"'s proxy (socks names resolved through it), given on stdin' \
+  'proxy = "socks5h://127.0.0.1:1055"' "$(grep '^proxy' "$TMP/curl.cfg")"
+arm 'R5c ...with no cookie read or written, and no URL or proxy on argv' 'no no' \
+  "$(yn grep -qE -- '^(-b|-c|--cookie|--cookie-jar)$' "$TMP/curl.argv") $(yn grep -qE 'tiktok|1055' "$TMP/curl.argv")"
+arm 'R5c ...and the browser profile is byte-for-byte untouched' "$p0" "$(prof_sum)"
+o=$("$BROWSER" snapshot tiktok.com https://www.tiktok.com/dp/B00D81RNDK --json --out="$TMP/snapJ" 2>/dev/null); rc=$?
+arm 'R5c --json says read_by http' '0 http' "$rc $(jq -r .read_by <<<"$o" 2>/dev/null)"
+page_html 'ご迷惑をおかけしています！'; n0=$(calls)
+o=$("$BROWSER" snapshot tiktok.com https://www.tiktok.com/dp/B00D81RNDK --out="$TMP/snapE" 2>&1); rc=$?
+arm 'R5c the plain read getting the same error page is still the stop (75), named' '75 yes' "$rc $(yn grep -q 'same error page' <<<"$o")"
+page_html 'Just a moment...'
+o=$("$BROWSER" snapshot tiktok.com https://www.tiktok.com/dp/B00D81RNDK --out="$TMP/snapR" 2>&1); rc=$?
+arm 'R5c ...a check on the plain read too (75)' '75 yes' "$rc $(yn grep -q 'security check ("Just a moment...")' <<<"$o")"
+page_html 'Banneren Tea Organic Matcha 30g'; echo 503 > "$TMP/curl.code"
+o=$("$BROWSER" snapshot tiktok.com https://www.tiktok.com/dp/B00D81RNDK --out="$TMP/snap5" 2>&1); rc=$?
+arm 'R5c ...an HTTP error on the plain read (75)' '75 yes' "$rc $(yn grep -q 'HTTP 503' <<<"$o")"
+echo 200 > "$TMP/curl.code"; echo 'https://evil.example/dp/x' > "$TMP/curl.eff"
+o=$("$BROWSER" snapshot tiktok.com https://www.tiktok.com/dp/B00D81RNDK --out="$TMP/snapX" 2>&1); rc=$?
+arm 'R5c ...a redirect off the site (75)' '75 yes' "$rc $(yn grep -q 'off tiktok.com' <<<"$o")"
+rm -f "$TMP/curl.eff"; n0=$(calls)
+printf 'not a proxy\n' > "$TMP/pr/$SEAT/.5dive-proxy"
+o=$("$BROWSER" snapshot tiktok.com https://www.tiktok.com/dp/B00D81RNDK --out="$TMP/snapP" 2>&1); rc=$?
+arm 'R5c an unparseable proxy setting is no fallback: 75, and nothing is fetched around it' "75 yes $n0" \
+  "$rc $(yn grep -q 'cannot be parsed' <<<"$o") $(calls)"
+printf 'socks5://127.0.0.1:1055\n' > "$TMP/pr/$SEAT/.5dive-proxy"
+o=$("$BROWSER" snapshot tiktok.com --out="$TMP/snapN" 2>&1); rc=$?
+arm 'R5c a snapshot with no URL is not retried (75)' "75 $n0" "$rc $(calls)"
+# NEGATIVE CONTROL: the same refusal on an adapter that does not opt in stays the stop.
+jq '.probe.refused_when_title_matches = "ご迷惑をおかけしています"' "$TMP/tiktok.keep" > "$TMP/ad/tiktok.com.json"
+o=$("$BROWSER" snapshot tiktok.com https://www.tiktok.com/dp/B00D81RNDK --out="$TMP/snapO" 2>&1); rc=$?
+arm 'R5c without "fetch_when_refused" the refusal stays the stop (75), nothing fetched' "75 $n0" "$rc $(calls)"
+rm -f "$TMP/fake.rc"
+jq '.probe.refused_when_title_matches = "ご迷惑をおかけしています" | .fetch_when_refused = true' "$TMP/tiktok.keep" > "$TMP/ad/tiktok.com.json"
+o=$("$BROWSER" snapshot tiktok.com https://www.tiktok.com/dp/B00D81RNDK --out="$TMP/snapOK" 2>&1); rc=$?
+arm 'R5c a browser read that is NOT refused never fetches' "0 $n0" "$rc $(calls)"
+cp "$TMP/tiktok.keep" "$TMP/ad/tiktok.com.json"; rm -f "$TMP/pr/$SEAT/.5dive-proxy"; unset FIVEDIVE_BROWSER_CURL
+arm 'R1c the shipped amazon.co.jp adapter opts into the plain-HTTP retry (DIVE-7688)' true \
+  "$(jq -r .fetch_when_refused "$ROOT/browser/adapters/amazon.co.jp.json")"
+
 # R14 (DIVE-5740) — the upload step. The chooser types as the BROWSER's user, so
 # the path is checked as the caller before anything is sent.
 n0=$(reqs input)

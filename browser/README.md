@@ -1074,6 +1074,13 @@ Then:
   a stop too, but not a challenge (DIVE-7528). The daemon answers 74 with `refused: true`, and the
   command exits 75 saying the site refused the read, with **no** handoff advice: the page has
   nothing on it for a person to clear. Amazon's 「ご迷惑をおかけしています！」 is one.
+- An adapter with `"fetch_when_refused": true` (amazon.co.jp) turns that stop on `snapshot <url>`
+  into a **plain-HTTP read of the same page** (DIVE-7688): the serving seat's proxy (socks names
+  resolved through it; a proxy file that cannot be read or parsed is no fallback), a Chrome user
+  agent, no cookie read or written, so the profile and its login are untouched. It exits 0 with
+  `page.md`, `page.meta.json` (`read_by: "http"`, `signed_in: false`) and the browser's screen as
+  `browser-refused.png`. Not HTTP 200, a redirect off the site, or the same error page or a check
+  on the plain read keeps the stop (75).
 - A typed address is read only once it has **loaded** (DIVE-7572): the title is no longer the
   address Chrome shows while a page has no title of its own (at least 2.5 s, at most
   `FIVEDIVE_BROWSER_INPUT_LOAD_WAIT_MS`, default 20 s). A page that never loads exits **76**

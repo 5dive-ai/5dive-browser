@@ -5778,6 +5778,11 @@ cmd_serve() {
       # THE OWNER'S SERVE IS NOT ANSWERED BY AN ACT'S PRIVATE ONE (DIVE-6334). An
       # act keeps its page in a browser only this seat can reach; a deliberate
       # `serve` is what offers a login to the box, so it replaces that one.
+      # NEVER UNDER AN ACT THAT HOLDS IT (DIVE-7637): since an offered group keeps
+      # its page too, a seat waking the box login can arrive mid-act; it waits.
+      local pbusy; if pbusy=$(_serve_busy "$dir"); then
+        die "$E_UNAVAILABLE" "$site is held by an act's own browser that is in use right now ($pbusy); not replacing it under that act. Try again when it is free (--wait queues for an agent)."
+      fi
       ( _SERVE_SWAP=1 cmd_serve "$site" --stop >/dev/null 2>&1 ) || true
       ! _serve_running "$dir" >/dev/null \
         || die "$E_UNAVAILABLE" "$site is held by an act's own browser and it did not stop, so it cannot be served for the box. Try again, or: 5dive browser serve $site --stop"
@@ -7881,11 +7886,22 @@ _policy_log() {  # <site> <stderr-file> <page> <screenshot>
 # such a seat no act and no snapshot ever kept a browser: each step was a one-off
 # Chrome, ~40% slower per step (v4 bench, 1.58.2: "started a served browser" 196
 # times; every 1.64.1 run on the same seat: 0), and nothing said so. But a group
-# lives in the seat's OWN store, so it is this seat's to hold. What is not is a
-# group whose login this seat offers to the box (the box seat's Main): only a
-# deliberate serve holds that one, and an act says so instead of returning in
-# silence. A second site of the group finds the same daemon through its link (the
-# pidfile is the group's), so it does not open the profile again.
+# lives in the seat's OWN store, so it is this seat's to hold. A second site of
+# the group finds the same daemon through its link (the pidfile is the group's),
+# so it does not open the profile again.
+#
+# EVEN WHEN THIS SEAT OFFERS THE GROUP TO THE BOX (DIVE-7637). 1.64.2 to 1.66.4
+# kept no browser for a group with any site offered, and an offer is written by
+# EVERY serve that is not private, a landing retry's included, and is removed
+# only by `forget`. So one retry on amtrak.com, once, turned kept pages off for
+# every site the box seat's Main ever joined: 101 of 101 5dive runs in the
+# DIVE-7487 home bench said "no served browser kept", each act opened its page
+# from scratch, the filters an act had just applied were gone at the next one,
+# and the agent gave up (16 steps a task against 26-28 for the leaders). The act
+# keeps the PRIVATE browser here as for any group. That widens nothing: no
+# socket for other seats, no new offer. A seat that wants the offered login
+# wakes the owner's serve, which replaces a private one (DIVE-6334) once no act
+# holds the browser, and an act's next call lands in that served one.
 # FIVEDIVE_BROWSER_ACT_KEEP=0 turns off the logged-in half,
 # FIVEDIVE_BROWSER_PUBLIC_KEEP=0 the public one.
 _act_keep_page() {  # <site> <url>; runs with the lease held, before _page_open
@@ -7896,16 +7912,6 @@ _act_keep_page() {  # <site> <url>; runs with the lease held, before _page_open
   else
     [[ "${FIVEDIVE_BROWSER_ACT_KEEP:-1}" == 1 ]] || return 0
     (( ! _SITE_BROKERED )) || return 0
-    local g s
-    if g=$(_site_group "$_SITE_DIR"); then
-      for s in $(_group_sites "$g"); do
-        if [[ -f "$(_rv_offer "$(_seat)" "$s")" ]]; then
-          printf '%s: no served browser kept for %s: it shares %s'"'"'s browser, which this seat offers to the box'"'"'s other seats (%s), and only a deliberate serve holds that one. This act runs in a one-off browser and the next act opens the page again.\n' \
-            "$PROG" "$1" "$(_group_name "$g")" "$s" >&2
-          return 0
-        fi
-      done
-    fi
     [[ "$(_site_drive "$1")" == cdp ]] || return 0
     kind="$1"; priv=--private
   fi
@@ -12596,6 +12602,83 @@ _input_refused_title() {
   printf '%s\n' "$m"
 }
 
+# A REFUSED BROWSER READ IS RETRIED OVER PLAIN HTTP, THROUGH THE SAME ROUTE (DIVE-7688).
+# Measured on exact-swallow (report 617, 2026-11-04): Amazon served its error page
+# to the input-mode Chrome in every arm of a bisect, with the owner's profile or an
+# empty one, behind his residential relay or on the box IP, with or without his
+# Amazon cookies; only an EMPTY profile's first page ever loaded. A plain HTTP GET
+# with a Chrome user agent read the same /dp/ and /s? pages on both routes. So the
+# browser itself is refused, and nothing in the profile or the IP turns it off.
+# An adapter opts in with "fetch_when_refused": true. Only `snapshot <url>` falls
+# back, only on the daemon's 74 (the site's own error page), and:
+#   - THROUGH THE ROUTE THE BROWSER USES: the serving seat's proxy, never around it.
+#     A proxy file this seat cannot read or parse is no fallback (fail closed), and
+#     so is a brokered browser whose owner's route this seat cannot see.
+#   - SIGNED OUT, AND THE PROFILE IS NEVER OPENED: no cookie is read or written, so
+#     the owner's login in that profile stays exactly as it was.
+#   - The answer is held to the same stops: not HTTP 200, a redirect off the site,
+#     or a title that is the error page or a check -> still the stop (75).
+_input_fetch_ok() {
+  local a; a="$(_adapter_path "$1")"
+  [[ -f "$a" ]] && jq -e '.fetch_when_refused == true' "$a" >/dev/null 2>&1
+}
+_INPUT_FETCH_UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'
+_cfg_q() { local s="${1//\\/\\\\}"; printf '"%s"' "${s//\"/\\\"}"; }   # a curl --config string
+# _input_fetch <site> <url> <out-dir> <browser-title>: rc 0 with page.html, page.md and
+# page.meta.json in <out>; rc 1 with the reason in _FETCH_WHY, and <out> left alone.
+_FETCH_WHY=""
+_input_fetch() {
+  local site="$1" url="$2" out="$3" btitle="$4" pf px="" stage got code eff host
+  if (( _SITE_BROKERED )); then
+    pf="$PROFILE_ROOT/$_SITE_OWNER/$_PROXY_FILE_NAME"
+    [[ -x "$PROFILE_ROOT/$_SITE_OWNER" ]] || { _FETCH_WHY="the browser is served by the '$_SITE_OWNER' seat, whose route this seat cannot read"; return 1; }
+  else
+    pf="$(_proxy_file)"
+  fi
+  if [[ -e "$pf" ]]; then
+    [[ -r "$pf" ]] || { _FETCH_WHY="this seat's proxy setting cannot be read, and the page is never read around it"; return 1; }
+    px=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$pf" | grep -v -e '^$' -e '^#' | head -1)
+    if [[ -n "$px" ]]; then
+      [[ "$px" =~ $_PROXY_RE ]] || { _FETCH_WHY="this seat's proxy setting cannot be parsed, and the page is never read around it"; return 1; }
+      # Chrome resolves names through a socks proxy; so does this read.
+      case "$px" in socks5://*) px="socks5h://${px#socks5://}" ;; socks4://*) px="socks4a://${px#socks4://}" ;; esac
+    fi
+  fi
+  stage=$(mktemp -d "$out/.fetch.XXXXXXXX") || { _FETCH_WHY="no room to stage the read"; return 1; }
+  # The URL and the proxy (which may carry a password) go on curl's stdin, never argv.
+  got=$( { printf 'url = %s\n' "$(_cfg_q "$url")"; [[ -n "$px" ]] && printf 'proxy = %s\n' "$(_cfg_q "$px")"; } \
+    | "${FIVEDIVE_BROWSER_CURL:-curl}" --config - -sS -L --max-redirs 5 --proto '=http,https' --proto-redir '=http,https' \
+        --max-time 30 --max-filesize 20000000 --compressed -A "$_INPUT_FETCH_UA" \
+        -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
+        -H 'Accept-Language: ja,en-US;q=0.8,en;q=0.7' \
+        -o "$stage/page.html" -w '%{http_code} %{url_effective}' 2>/dev/null) || got=""
+  code="${got%% *}"; eff="${got#* }"
+  if [[ "$code" != 200 || ! -s "$stage/page.html" ]]; then
+    rm -rf -- "$stage"; _FETCH_WHY="the plain read got no page either (HTTP ${code:-none})"; return 1
+  fi
+  host="${eff#*://}"; host="${host%%/*}"; host="${host%%\?*}"; host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
+  if ! _shot_host_ok "$site" "$host"; then
+    rm -rf -- "$stage"; _FETCH_WHY="the plain read was sent off $site (to $host)"; return 1
+  fi
+  local extra; extra=$(jq -nc --arg u "$url" --arg b "$btitle" \
+    '{drive:"input", read_by:"http", url_requested:$u, browser_refused_title:$b, signed_in:false,
+      note:"the browser was refused (the site served its own error page), so this page was read over plain HTTP through the same route, signed out. No cookie was read or written."}')
+  if ! ( _derive_capture "$stage" "$eff" "" http-fetch "$extra" ) >/dev/null 2>&1; then
+    rm -rf -- "$stage"; _FETCH_WHY="the plain read's page could not be turned into text"; return 1
+  fi
+  local t r c; t=$(jq -r '.title // ""' "$stage/page.meta.json"); r="$(_input_refused_title "$site")"; c="$(_input_challenge_title "$site")"
+  if [[ -n "$r" ]] && grep -qiE -- "$r" <<<"$t"; then
+    rm -rf -- "$stage"; _FETCH_WHY="the plain read got the same error page (\"$t\")"; return 1
+  fi
+  if grep -qiE -- "$c" <<<"$t"; then
+    rm -rf -- "$stage"; _FETCH_WHY="the plain read got a security check (\"$t\")"; return 1
+  fi
+  [[ -f "$out/page.png" ]] && mv -f -- "$out/page.png" "$out/browser-refused.png"
+  mv -f -- "$stage/page.html" "$stage/page.md" "$stage/page.meta.json" "$out/"
+  rm -rf -- "$stage"
+  return 0
+}
+
 # Open an input-mode site for a verb: the profile, a live input daemon, and
 # (unless <purpose> is empty) the lease. The owner's own seat starts the serve
 # if nothing holds the profile; a brokered seat has it started as the owner, on
@@ -12766,6 +12849,20 @@ cmd_input_verb() {  # <verb> <site> [<url>] [flags]
   else
     out="$(_read_output_dir "$site" "$out" "$_SITE_DIR")"
     _input_write "$ans" "$out/page.png" "$out/page.meta.json" || die "$E_UNAVAILABLE" "the $site browser answered without an image. Nothing was written."
+    # DIVE-7688: the browser was refused; read the same page over plain HTTP, same route.
+    if [[ "$rc" == 74 && -n "$url" ]] && _input_fetch_ok "$site"; then
+      if _input_fetch "$site" "$url" "$out" "$title"; then
+        title=$(jq -r '.title // ""' "$out/page.meta.json")
+        printf '%s: %s refused the browser (its error page), so the page was read over plain HTTP through this seat'"'"'s route, signed out.\n' "$PROG" "$site" >&2
+        if (( json )); then jq -c --arg d "$out" '. + {dir:$d, md:($d + "/page.md")}' "$out/page.meta.json"
+        else
+          printf 'snapshot of %s (read over plain HTTP, signed out: the browser was refused)\n  %s/page.md\n  %s/page.meta.json\n  %s/browser-refused.png (what the browser got)\n  title: %s\n' \
+            "$site" "$out" "$out" "$out" "$title"
+        fi
+        return 0
+      fi
+      printf '%s: the plain-HTTP retry did not help: %s.\n' "$PROG" "$_FETCH_WHY" >&2
+    fi
     if (( json )); then jq -c --arg d "$out" '. + {dir:$d, png:($d + "/page.png")}' "$out/page.meta.json"
     else
       printf 'snapshot of %s (input mode — a screenshot and the page title; there is no DOM, no tree.json, no page.md)\n  %s/page.png\n  %s/page.meta.json\n  title: %s\n' \
