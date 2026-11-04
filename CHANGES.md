@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — Connect for one site of a group opens on that site, never on another site's live window (DIVE-7674), 1.67.2
+
+On exact-swallow (report 688, 1.67.0), the owner tapped Connect for business.facebook.com and was shown cjdropshipping.com, signed in, while another seat was using it. Both sites share one browser. CJ had it in input mode (plain Chrome driven through the screen), and Facebook needs the other browser, but Connect took the browser as it was.
+
+- **Connect now switches the shared browser to the site asked for, on that site's page**, when nobody is using it.
+- **When somebody is using it, Connect is refused in plain words** ("the browser business.facebook.com shares with cjdropshipping.com is in use right now … Try again in a minute"). Nothing is shown and nothing is stopped. This also covers a seat with no proxy, whose Connect used to stop the other site's browser mid-step.
+- **When both sites use input mode**, the viewer opens the site asked for in a new tab if the window was last sent to another site. A window already on the site is left as it is, so a person called in for a check still sees that check.
+- Not covered: a person who moved the window to another site by hand is not tracked; the window is judged by the last page an agent or Connect sent it to.
+
 ### Fixed — clicking into a text field no longer stops as a payment (DIVE-7670), 1.67.1
 
 An agent editing a Shopify store's abandoned-checkout email was stopped as if it were paying (box report 686, exit 73, "it would pay or place an order (Subject | Subject Complete your order)"). The click was into the email's Subject box. The guard read the box's label as its name plus what was typed in it, and the subject line said "Complete your order". Because the edit stopped after Edit, Shopify left the email as a draft, switched off.
