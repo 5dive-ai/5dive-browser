@@ -56,6 +56,9 @@ function safeName(suggested, taken) {
 // is common). Returns the list it fills and a stop().
 function watch(ctx, page) {
   const seen = [];
+  // Files a goto landed ON (DIVE-7646): a PDF Chrome shows in its viewer fires no
+  // download event, so keepResponse() puts its bytes here and save() writes them.
+  const files = [];
   const pages = new Set();
   const onDownload = (d) => seen.push(d);
   const add = (p) => {
@@ -68,6 +71,7 @@ function watch(ctx, page) {
   if (ctx && typeof ctx.on === 'function') ctx.on('page', onPage);
   return {
     list: seen,
+    files,
     stop() {
       for (const p of pages) { try { (p.off || p.removeListener).call(p, 'download', onDownload); } catch (e) { /* gone */ } }
       if (ctx && typeof ctx.off === 'function') { try { ctx.off('page', onPage); } catch (e) { /* gone */ } }
@@ -124,7 +128,142 @@ async function save(w, dir, opts = {}) {
       if (typeof d.delete === 'function') { try { await d.delete(); } catch (e) { /* already gone */ } }
     }
   }
+  for (const f of (w.files || [])) {
+    const name = safeName(f.name, taken);
+    if (f.error) { out.push({ name, error: f.error }); continue; }
+    const bytes = f.buf.length;
+    if (bytes > max) {
+      const cap = max >= 1048576 ? `${Math.round(max / 1048576)} MB` : `${max} bytes`;
+      out.push({ name, bytes, error: `${bytes} bytes is over the limit an act hands over (${cap}, FIVEDIVE_BROWSER_DOWNLOAD_MAX_MB)` });
+      continue;
+    }
+    const file = path.join(dir, name);
+    try {
+      fs.writeFileSync(file, f.buf, { mode: 0o600, flag: 'wx' });
+      out.push({ name, bytes, file, ...(f.type ? { type: f.type } : {}) });
+    } catch (e) {
+      out.push({ name, error: `it could not be written: ${e.message}` });
+    }
+  }
   return out;
+}
+
+// ============================================================================
+// A FILE AT A URL (DIVE-7646). Chrome opens a PDF in its own viewer: no download
+// event fires, the page's DOM is an empty <body>, and the viewer's Download
+// button lives in an extension Playwright cannot drive (a 30 s timeout). So the
+// bytes are fetched through the context's own request client, which carries the
+// profile's cookies: the logged-in invoice comes back, not the sign-in page.
+// A bare fetch() would carry none, and that is the mutant the harness keeps red.
+
+// What the server said the file is called, else the URL's last segment. Always
+// passed through safeName() by whoever writes it.
+function nameFrom(headers, url) {
+  const cd = String((headers && headers['content-disposition']) || '');
+  let m = cd.match(/filename\*\s*=\s*([^']*)'[^']*'([^;]+)/i);
+  if (m) { try { return decodeURIComponent(m[2].trim().replace(/^"|"$/g, '')); } catch (e) { /* fall through */ } }
+  m = cd.match(/filename\s*=\s*"([^"]*)"/i) || cd.match(/filename\s*=\s*([^;]+)/i);
+  if (m && m[1].trim()) return m[1].trim();
+  try {
+    const seg = new URL(url).pathname.split('/').filter(Boolean).pop() || '';
+    return decodeURIComponent(seg);
+  } catch (e) { return ''; }
+}
+
+const typeOf = (headers) => String((headers && headers['content-type']) || '').split(';')[0].trim().toLowerCase();
+
+// A response that IS a file, as opposed to a page: a PDF, or anything the server
+// marks as an attachment. A goto that lands on one hands its bytes over.
+function isFileResponse(headers) {
+  return /^application\/(x-)?pdf$/.test(typeOf(headers))
+    || /^\s*attachment\b/i.test(String((headers && headers['content-disposition']) || ''));
+}
+
+// A web page where a file was asked for. A sign-in page is the common case (the
+// session lapsed, or the URL needs a login this profile does not hold), and it
+// is named as one, because "saved invoice.pdf" holding a login form is the
+// failure this guards against.
+function pageNotFile(body, finalUrl) {
+  const head = Buffer.isBuffer(body) ? body.subarray(0, 200000).toString('utf8') : String(body || '');
+  const signin = /type\s*=\s*["']?password/i.test(head)
+    || /\/(login|signin|sign-in|sign_in|ap\/signin|auth|sso|oauth)\b/i.test(String(finalUrl || ''));
+  return signin
+    ? 'got a sign-in page, not a file: the session for this site has lapsed or the link needs a login this profile does not hold. Nothing was saved.'
+    : 'got a web page, not a file. Nothing was saved. To read a page use browser read; browser download is for a PDF or another file at a URL.';
+}
+
+// GET <url> through the context's own request client (the profile's cookies ride
+// along). Never throws: { ok:true, name, type, buf, url } or { ok:false, error }.
+async function fetchFile(ctx, url, opts = {}) {
+  const max = opts.maxBytes || MAX_BYTES;
+  const timeout = opts.timeoutMs || WAIT_MS;
+  if (!ctx || !ctx.request || typeof ctx.request.get !== 'function') {
+    return { ok: false, error: 'this browser has no request client, so nothing was fetched' };
+  }
+  let r;
+  try { r = await ctx.request.get(url, { timeout, failOnStatusCode: false }); }
+  catch (e) { return { ok: false, error: `could not fetch ${url}: ${String(e && e.message || e).split('\n')[0]}` }; }
+  const headers = (typeof r.headers === 'function' ? r.headers() : r.headers) || {};
+  const status = typeof r.status === 'function' ? r.status() : r.status;
+  const finalUrl = (typeof r.url === 'function' ? r.url() : r.url) || url;
+  const type = typeOf(headers);
+  const declared = Number(headers['content-length']);
+  const capWords = max >= 1048576 ? `${Math.round(max / 1048576)} MB` : `${max} bytes`;
+  if (declared > max) {
+    try { if (typeof r.dispose === 'function') await r.dispose(); } catch (e) { /* gone */ }
+    return { ok: false, error: `the file is ${declared} bytes, over the ${capWords} a download hands over (FIVEDIVE_BROWSER_DOWNLOAD_MAX_MB). Nothing was saved.` };
+  }
+  let buf;
+  try { buf = await r.body(); } catch (e) { return { ok: false, error: `the server answered but the body could not be read: ${String(e && e.message || e).split('\n')[0]}` }; }
+  try { if (typeof r.dispose === 'function') await r.dispose(); } catch (e) { /* gone */ }
+  if (!Buffer.isBuffer(buf)) buf = Buffer.from(buf || '');
+  if (status < 200 || status > 299) {
+    const lapsed = status === 401 || status === 403 ? ' (the sign-in may have lapsed)' : '';
+    return { ok: false, status, error: `the server answered ${status}${lapsed}, not a file. Nothing was saved.` };
+  }
+  if (/^(text\/html|application\/xhtml\+xml)$/.test(type) && !/^\s*attachment\b/i.test(String(headers['content-disposition'] || ''))) {
+    return { ok: false, status, error: pageNotFile(buf, finalUrl) };
+  }
+  if (buf.length > max) {
+    return { ok: false, error: `the file is ${buf.length} bytes, over the ${capWords} a download hands over (FIVEDIVE_BROWSER_DOWNLOAD_MAX_MB). Nothing was saved.` };
+  }
+  return { ok: true, name: nameFrom(headers, finalUrl), type: type || 'application/octet-stream', buf, url: finalUrl };
+}
+
+// THE NAVIGATION'S BODY IS KEPT ONLY WHEN IT IS THE FILE (DIVE-7646 it2). Real
+// Chrome hands a PDF to its viewer, and what the navigation's body() returns then
+// is not the server's bytes (measured on CI: the right headers, other bytes). So
+// the body must match what the headers declare: its length, where one is given
+// and not compressed, and a PDF's %PDF- header in its first 1024 bytes. Anything
+// else is fetched again through the context, with the same cookies.
+function bodyIsTheFile(buf, headers) {
+  if (!buf || !buf.length) return false;
+  const declared = Number(headers && headers['content-length']);
+  if (!(headers && headers['content-encoding']) && Number.isFinite(declared) && declared > 0 && declared !== buf.length) return false;
+  if (/pdf$/.test(typeOf(headers)) && Buffer.from(buf).subarray(0, 1024).indexOf('%PDF-') < 0) return false;
+  return true;
+}
+
+// A goto that LANDED on a file (DIVE-7646): its bytes go into w.files, for save().
+// The navigation's own body when it is the file; otherwise it is fetched
+// again through the context. Returns the entry, or null for an ordinary page.
+async function keepResponse(w, ctx, resp) {
+  if (!w || !resp || typeof resp.headers !== 'function') return null;
+  let headers;
+  try { headers = resp.headers(); } catch (e) { return null; }
+  if (!isFileResponse(headers)) return null;
+  const url = typeof resp.url === 'function' ? resp.url() : '';
+  let entry = null;
+  try {
+    const buf = await resp.body();
+    if (bodyIsTheFile(buf, headers)) entry = { name: nameFrom(headers, url), type: typeOf(headers), buf: Buffer.from(buf) };
+  } catch (e) { /* the viewer kept it; fetched below */ }
+  if (!entry) {
+    const r = await fetchFile(ctx, url);
+    entry = r.ok ? { name: r.name, type: r.type, buf: r.buf } : { name: nameFrom(headers, url), error: r.error };
+  }
+  w.files.push(entry);
+  return entry;
 }
 
 // The served path's wire shape: one metadata line per download, then its bytes as
@@ -133,6 +272,7 @@ function stream(entries, send) {
   entries.forEach((e, i) => {
     const meta = { act_download: true, i, name: e.name };
     if (e.bytes != null) meta.bytes = e.bytes;
+    if (e.type) meta.type = e.type;
     if (e.error) meta.error = e.error;
     send(JSON.stringify(meta) + '\n');
     if (e.error || !e.file) return;
@@ -147,4 +287,4 @@ function stream(entries, send) {
   });
 }
 
-module.exports = { safeName, watch, save, stream, WAIT_MS, MAX_BYTES, CHUNK };
+module.exports = { safeName, watch, save, stream, nameFrom, isFileResponse, bodyIsTheFile, fetchFile, keepResponse, WAIT_MS, MAX_BYTES, CHUNK };

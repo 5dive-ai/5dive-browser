@@ -54,6 +54,8 @@ needs nothing connected.
 - `snapshot --interactive` prints every ref (up to 300) and a small page's text; `cat page.md`
   only for a big one. `snapshot _public` with no URL reads the page the browser is on.
 - `links <url>` gives a page's links, `shot <url>` a picture of it.
+- **To save a PDF or any file at a URL, use `download <url>`**, never the PDF viewer's buttons.
+  It prints `downloaded: <path> (…)`. `--out=<dir>/` or `--out=<file>` chooses where.
 
 ## Paying, posting, sending and deleting are the owner's call
 

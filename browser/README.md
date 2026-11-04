@@ -58,7 +58,14 @@ verdict (`--json`: `downloads`). The served browser runs as the profile's owner,
 bytes back over the socket in base64 chunks and the caller writes them, as `snapshot` does. A
 download over `FIVEDIVE_BROWSER_DOWNLOAD_MAX_MB` (100) or unfinished after
 `FIVEDIVE_BROWSER_DOWNLOAD_WAIT_MS` (120000) is cancelled or dropped, and named on stderr with the
-reason. **Publishing, sending and deleting run and are logged by default, while paying stops
+reason. **A file at a URL is saved with `download` (DIVE-7646):** Chrome shows a PDF in its viewer,
+which fires no `download` event and whose buttons Playwright cannot click, so `download <site> <url>
+[--out=<file|dir/>]` fetches the URL through the site's own browser context (its cookies ride
+along; `lib/downloads.cjs` `fetchFile`), by the road a read takes (the served browser over the
+socket, else the one-shot driver), and prints `downloaded: <path> (<name>, <bytes> bytes, <type>)`.
+A sign-in page instead of the file exits 75 and saves nothing; any other web page, a non-2xx or a
+file over the cap exits 69. A `goto` in `act` that lands on a PDF (or an attachment) hands it over
+the same way. Input-mode sites have no request client and refuse it. **Publishing, sending and deleting run and are logged by default, while paying stops
 for the owner's approval (standard, DIVE-5148); under the owner's `careful` all four stop
 before the step** (exit 73): the executor
 reads the live element's label (`lib/aria.cjs` `stepRisk`, shared by both step loops), and a kind
@@ -407,6 +414,13 @@ without a scheduled probe the agent finds out **mid-publish**. So:
   An adapter with no positive marker is untouched — one look, classified on the negative alone —
   because without something to terminate on, waiting only adds a chrome launch to reach the same
   answer.
+- **A slow single-page app can name a longer wait and the address a signed-in session lands on**
+  (DIVE-7648): `probe.wait_ms` replaces the 8000 ms for that adapter's served probe, and
+  `probe.logged_in_when_url_matches` reads `authenticated` from the served probe's final URL when
+  the page shows no logged-out marker, no challenge marker and no bot-check title. Shopify's admin
+  uses both. Every served probe also has one hard deadline (`FIVEDIVE_BROWSER_PROBE_HARD_MS`,
+  default 35000): past it the probe answers, its tab is closed, and the session is free again. A
+  page that is mid-redirect when it is read is looked at again, not reported as a failed load.
 - **A served profile is probed through its session daemon, or not at all.** Chrome allows one
   instance per profile directory, so a probe launched at a profile `serve` is holding is handed
   off to the running browser and returns an empty document. With a session daemon (a 0700 unix

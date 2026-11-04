@@ -271,6 +271,12 @@ usage() {
 
                                       # the owner saved, never shown to you
                                       # (names: sudo 5dive secret saved ls).
+  5dive browser download <url> [--out=<file|dir>]
+                                      # save the FILE at a URL (a PDF invoice, a
+                                      # statement, a CSV) with the site's login, as
+                                      # the original bytes. Never click a PDF
+                                      # viewer's buttons: give download its URL. An
+                                      # act whose goto lands on a PDF saves it too.
   5dive browser snapshot <url> --delta  # after the first full snapshot: only what
                                       # changed (refs, text), and no page.png when
                                       # under 1% of its pixels moved.
@@ -2485,6 +2491,24 @@ _site_logged_in_marker() {
   local a; a="$(_adapter_path "$1")"
   [[ -f "$a" ]] && jq -r '.probe.logged_in_when_dom_matches // empty' "$a"
 }
+# WHERE A SIGNED-IN SESSION LANDS, AND HOW LONG ITS PAGE TAKES (DIVE-7648).
+# Shopify's admin is drawn by a single-page app that took longer than the 8 s
+# budget on exact-swallow (report 680) before its signed-in marker reached the
+# DOM, while the tab already sat at admin.shopify.com/store/<id>, an address only
+# a signed-in session is sent to. `logged_in_when_url_matches` lets the served
+# probe read that address; `wait_ms` gives one slow app a longer wait without
+# making every adapter pay it. Both optional; absent, the probe is unchanged.
+LANDED_BOT_CHECK_TITLE='<title>[^<]*(just a moment|verifying your connection|attention required|checking your browser)'
+_site_logged_in_url() {
+  local a; a="$(_adapter_path "$1")"
+  [[ -f "$a" ]] && jq -r '.probe.logged_in_when_url_matches // empty' "$a"
+}
+_site_probe_wait_ms() {
+  local a w; a="$(_adapter_path "$1")"
+  [[ -f "$a" ]] || return 0
+  w=$(jq -r '.probe.wait_ms // empty' "$a" 2>/dev/null)
+  [[ "$w" =~ ^[0-9]{1,5}$ ]] && echo "$w"
+}
 # THERE IS DELIBERATELY NO BYPASS BEHIND THIS. It classifies, names a human, and
 # stops. Decided 2026-09-07: "if a platform presents a security challenge, the
 # executor stops and requests human action rather than attempting to bypass it."
@@ -2934,6 +2958,7 @@ _probe() {
   # So an adapter with no `logged_in_when_dom_matches` probes exactly once, as
   # it always did.
   local positive; positive=$(_site_logged_in_marker "$site")
+  local landed; landed=$(_site_logged_in_url "$site")
   local challenge; challenge=$(_site_challenge_marker "$site")
   # THE GENERIC CHECK (DIVE-4943 scope 2), and only for a page verb's gate: with no
   # adapter, the one thing we can still recognise is a page that is VISIBLY a
@@ -2945,10 +2970,14 @@ _probe() {
     generic=1; marker="$GENERIC_SIGNIN_MARKER"
   fi
   local dom; dom=$(mktemp) || { echo "UNKNOWN (probe did not load)"; return 0; }
-  local total="${FIVEDIVE_BROWSER_PROBE_WAIT_MS:-8000}" poll="${FIVEDIVE_BROWSER_PROBE_POLL_MS:-400}"
+  # An adapter's own wait (DIVE-7648) is spent in the served browser's one tab;
+  # the cold loop below launches a Chrome per look, so it keeps the box budget.
+  local awaitms=""; (( warm )) && awaitms=$(_site_probe_wait_ms "$site")
+  local total="${FIVEDIVE_BROWSER_PROBE_WAIT_MS:-$awaitms}" poll="${FIVEDIVE_BROWSER_PROBE_POLL_MS:-400}"
+  total="${total:-8000}"
   [[ "$total" =~ ^[0-9]{1,7}$ ]] || total=8000
   [[ "$poll"  =~ ^[1-9][0-9]{0,6}$ ]] || poll=400
-  local rc waited=0 verdict=""
+  local rc waited=0 verdict="" landed_at=""
   # A PROFILE HELD BY A FORGOTTEN PROBE (DIVE-5375): see _reap_stale_probe. A
   # second Chrome at a held profile exits at once with an empty document, so
   # without this every probe after a wedged one reads UNKNOWN until a person
@@ -2961,8 +2990,9 @@ _probe() {
       # the verdict below is still made HERE, by grep, on the document it sends
       # back. Two regex engines must never both be allowed to decide a login.
       _daemon_call "$dir" "$(jq -nc --arg u "$url" --arg o "$marker" --arg i "$positive" \
-            --arg c "$challenge" --argjson w "$total" \
-            '{op:"probe", url:$u, wait:$w, until:{logged_out:$o, logged_in:$i, challenge:$c}, report_url:true}')" \
+            --arg c "$challenge" --arg l "$landed" --argjson w "$total" \
+            '{op:"probe", url:$u, wait:$w, until:({logged_out:$o, logged_in:$i, challenge:$c}
+              + (if $l == "" then {} else {logged_in_url:$l} end)), report_url:true}')" \
           >"$dom" 2>"$dom.err"
       rc=$?
     else
@@ -2982,6 +3012,18 @@ _probe() {
     fi
     if [[ -n "$marker" ]] && grep -qiE "$marker" "$dom"; then verdict=expired; break; fi
     if [[ -n "$positive" ]] && grep -qiE "$positive" "$dom"; then verdict=authenticated; break; fi
+    # THE ADDRESS A SIGNED-IN SESSION LANDS ON (DIVE-7648), served probe only (the
+    # cold one is not told where it landed). Reached only when neither the
+    # logged-out marker nor ANY challenge marker is in the page — an unconfirmed
+    # challenge candidate is not evidence of a login either.
+    # Nor a page titled as a bot check: Shopify's Cloudflare page ("Verifying your
+    # connection...", tests/fixtures/dive-7079) matches no challenge marker at all,
+    # and an address alone must never certify the page in front of it.
+    if [[ -n "$landed" ]] && (( warm )) && ! grep -qiE "$challenge" "$dom" \
+       && ! grep -qiE "$LANDED_BOT_CHECK_TITLE" "$dom"; then
+      local lurl; lurl=$(sed -n 's/^5dive-probe-final-url: //p' "$dom.err" 2>/dev/null | tail -1)
+      if [[ -n "$lurl" ]] && grep -qiE "$landed" <<<"$lurl"; then verdict=authenticated landed_at="$lurl"; break; fi
+    fi
     # Nothing yet. A warm probe has already spent the whole budget inside the
     # daemon; a cold one buys another look, and only when a positive marker
     # makes "not yet" a state distinct from "logged in".
@@ -3083,7 +3125,7 @@ _probe() {
       _stamp "$dir" expired; echo "session expired — human action required${gwhy:+ (generic check: $gwhy)}"; return 1 ;;
     authenticated)
       _signed_in_note "$dir" "$via"
-      _stamp "$dir" authenticated; echo "authenticated (${gwhy:+generic check: $gwhy; }checked $(date -u +%Y-%m-%dT%H:%MZ))"; return 0 ;;
+      _stamp "$dir" authenticated; echo "authenticated (${gwhy:+generic check: $gwhy; }${landed_at:+the page landed on $landed_at; }checked $(date -u +%Y-%m-%dT%H:%MZ))"; return 0 ;;
   esac
   # NO MARKER, NO VERDICT. `authenticated` is a claim about a LOGIN, and the only
   # evidence for it here is the adapter's logged-out marker failing to match. With
@@ -3103,7 +3145,7 @@ _probe() {
     echo "unconfirmed (no adapter for $site; checked $(date -u +%Y-%m-%dT%H:%MZ))$(_pending_note "$site")"
     return 0
   fi
-  if [[ -z "$marker" && -z "$positive" ]]; then
+  if [[ -z "$marker" && -z "$positive" && -z "$landed" ]]; then
     _stamp "$dir" unknown
     _maybe_propose "$site" "$dir"
     echo "UNKNOWN (no adapter for $site — the page loaded, but nothing here can tell logged-in from logged-out; write $(_adapter_path "$site") with probe.logged_out_when_dom_matches)$(_pending_note "$site")"
@@ -3114,7 +3156,7 @@ _probe() {
   # a logged-in page looks like and the page never showed it inside the budget,
   # the honest answer is that we could not read the state — never `authenticated`
   # by elimination, which is exactly the inference a single-page app breaks.
-  if [[ -n "$positive" ]]; then
+  if [[ -n "$positive" || -n "$landed" ]]; then
     _stamp "$dir" unknown
     echo "UNKNOWN (the page never showed either the signed-in or the signed-out marker within ${total}ms — the state could not be read; acting verbs stay refused)"
     return 0
@@ -8598,6 +8640,131 @@ _act_session() {  # <site> <steps-file> <approved> <shot> <settle> <report> <all
   return "$rc"
 }
 
+# ======================================================= download (DIVE-7646)
+#
+# THE FILE AT A URL, SAVED. Chrome opens a PDF in its own viewer: `read` and
+# `snapshot` got an empty <body>, `shot` a picture, and an act clicking the
+# viewer's Download button timed out (the viewer is an extension Playwright
+# cannot drive). Box bug 677: an owner's Amazon invoices, wanted as real files.
+# So the bytes are fetched through the site's logged-in browser context
+# (lib/downloads.cjs fetchFile: the profile's cookies ride along), by the same
+# road a read takes: the served browser when one is up (the bytes come back over
+# the socket, DIVE-5751's trade), else the one-shot driver as this seat. A web
+# page where a file was expected (the sign-in page, most often) is refused and
+# nothing is saved. The file lands 0600, owned by this seat, under
+# .read-artifacts/<site>.<id>/downloads/ unless --out names a directory or a file.
+cmd_download() {
+  local site="" url="" out="" json=0 target_dir="" target_file=""
+  while (($#)); do
+    case "$1" in
+      --out=*) out="${1#*=}" ;;
+      --json) json=1 ;;
+      -h|--help)
+        printf '%s download [<site>] <url> [--out=<file|dir>] [--json]\n' "$PROG"
+        printf '  Saves the file at <url> (a PDF invoice, a statement, a CSV) with this site'"'"'s login, as the original bytes.\n'
+        printf '  Prints: downloaded: <path> (<name>, <bytes> bytes, <content-type>). Refuses a sign-in page or any web page: nothing is saved.\n'
+        printf '  --out=<dir> (an existing directory, or one ending in /) saves under the file'"'"'s own name; any other --out is the file'"'"'s exact path, never overwritten.\n'
+        printf '  Do not click a PDF viewer'"'"'s buttons with act; give its URL to download. A link whose href is the file works the same way.\n'
+        return 0 ;;
+      -*) die "$E_USAGE" "unknown flag: $1" ;;
+      *) if [[ -z "$site" ]]; then site="$1"; elif [[ -z "$url" ]]; then url="$1"; else die "$E_USAGE" "unexpected argument: $1 (one url per download)"; fi ;;
+    esac
+    shift
+  done
+  [[ -n "$site" && -n "$url" ]] || die "$E_USAGE" "usage: 5dive browser download [<site>] <url> [--out=<file|dir>] [--json]"
+  _valid_site "$site" || die "$E_USAGE" "'$site' is not a usable profile name"
+  command -v jq >/dev/null 2>&1 || die "$E_UNAVAILABLE" "jq is required to read what the browser sent back"
+  # WHERE IT GOES, decided before anything opens: a refusal here leaves nothing behind.
+  if [[ -n "$out" ]]; then
+    if [[ -d "$out" || "$out" == */ ]]; then
+      target_dir="${out%/}"; [[ -n "$target_dir" ]] || target_dir=/
+      [[ -d "$target_dir" ]] || (umask 077; mkdir -p -- "$target_dir") || die "$E_UNAVAILABLE" "cannot create $target_dir"
+      [[ -w "$target_dir" ]] || die "$E_USAGE" "$target_dir is not a directory this seat can write"
+    else
+      [[ ! -e "$out" && ! -L "$out" ]] || die "$E_USAGE" "$out already exists; name a new file, or a directory to save into"
+      local parent; parent="$(dirname -- "$out")"
+      [[ -d "$parent" && -w "$parent" ]] || die "$E_USAGE" "cannot write $out: $parent is not a directory this seat can write"
+      target_file="$out"
+    fi
+  fi
+
+  _PG_WARM=1; _PG_PURPOSE="download"
+  _page_open "$site" "$url"
+  local dir="$_PG_DIR" chrome="$_PG_CHROME" resolved profile_resolved
+  # Never into the browser profile: a file written there is browser state (as --out for read).
+  profile_resolved="$(realpath -m -- "$dir")"
+  resolved="$(realpath -m -- "${target_file:-${target_dir:-/nonexistent-5dive}}")"
+  case "$resolved/" in "$profile_resolved/"*) die "$E_PERM" "--out must not be the browser profile or live beneath it; choose a place outside $profile_resolved" ;; esac
+  local artifacts=""
+  if [[ -z "$target_file" && -z "$target_dir" ]]; then
+    artifacts="$(_read_output_dir "$site" "" "$dir")" || exit $?
+  fi
+
+  _READ_STAGE="$(mktemp -d /tmp/5dive-browser-read.XXXXXXXX)" || die "$E_UNAVAILABLE" "cannot stage the download"
+  trap '_read_cleanup' EXIT
+  local stage="$_READ_STAGE" drc=0 rj=""
+  (umask 077; mkdir -- "$stage/downloads") || die "$E_UNAVAILABLE" "cannot stage the download"
+  if (( _SITE_BROKERED )) || _daemon_live "$dir"; then
+    _daemon_call "$dir" "$(jq -nc --arg u "$url" --argjson l "$(_daemon_lease_json)" '{op:"download", url:$u} + $l')" \
+      >"$stage/daemon.out" 2>"$stage/err" || drc=$?
+    if grep -q "unknown op 'download'" "$stage/err" 2>/dev/null; then
+      die "$E_UNAVAILABLE" "the $site browser running now started before browser download existed, so it cannot fetch a file. Stop it and run this again (the next command starts it fresh, still logged in): 5dive browser serve $site --stop"
+    fi
+    _act_downloads_unpack "$stage/daemon.out" "$stage/downloads"
+  else
+    local driver="${FIVEDIVE_BROWSER_DRIVER:-$_SELF_DIR/driver-playwright}"
+    [[ -n "$driver" && -x "$driver" ]] || die "$E_UNAVAILABLE" "download runs through the executor, and there is none at $driver"
+    rj=$(FIVEDIVE_BROWSER_PROFILE="$dir" FIVEDIVE_BROWSER_CHROME="$(command -v "$chrome" 2>/dev/null || printf '%s' "$chrome")" \
+         FIVEDIVE_BROWSER_LEASE="$(_lease_meta "$_LEASE_DIR")" FIVEDIVE_BROWSER_LEASE_TOKEN="$_LEASE_TOKEN" \
+         "$driver" <<<"$(jq -nc --arg p "$dir" --arg u "$url" --arg d "$stage/downloads" '{profile:$p, mode:"download", url:$u, dir:$d}')" \
+         2>"$stage/err") || drc=$?
+    if [[ ! -s "$stage/downloads/.manifest.json" ]] && jq -e '.ok == false and (.error | type == "string")' <<<"$rj" >/dev/null 2>&1; then
+      jq -c '[{name:"", error}]' <<<"$rj" > "$stage/downloads/.manifest.json"
+    fi
+  fi
+  _shot_restore
+  _lease_release
+
+  local m="$stage/downloads/.manifest.json" name bytes type err
+  if [[ ! -s "$m" ]]; then
+    cat -- "$stage/err" >&2 2>/dev/null
+    die "$E_UNAVAILABLE" "the browser gave back no file for $url (it exited $drc; its own reason is above). Nothing was saved."
+  fi
+  name=$(jq -r '.[0].name // ""' "$m"); bytes=$(jq -r '.[0].bytes // 0' "$m")
+  type=$(jq -r '.[0].type // "application/octet-stream"' "$m"); err=$(jq -r '.[0].error // ""' "$m")
+  if [[ -n "$err" ]]; then
+    if (( json )); then jq -nc --arg u "$url" --arg e "$err" '{ok:false, url:$u, error:$e}'; fi
+    [[ "$err" == "got a sign-in page"* ]] && die "$E_COLD" "$err"
+    die "$E_UNAVAILABLE" "$err"
+  fi
+  _act_download_name_ok "$name" && [[ -f "$stage/downloads/$name" ]] \
+    || die "$E_UNAVAILABLE" "the browser named a file it did not hand over (${name:-no name}). Nothing was saved."
+  local got; got=$(stat -c %s -- "$stage/downloads/$name")
+  [[ "$got" == "$bytes" ]] || die "$E_UNAVAILABLE" "$name arrived cut ($got of $bytes bytes). Nothing was saved."
+
+  local dest stem ext k=2 into
+  if [[ -n "$target_file" ]]; then
+    dest="$target_file"
+  else
+    into="${target_dir:-$artifacts/downloads}"
+    [[ -d "$into" ]] || (umask 077; mkdir -p -- "$into") || die "$E_UNAVAILABLE" "cannot create $into"
+    dest="$into/$name"; stem="${name%.*}"; ext=""; [[ "$name" == *.* ]] && ext=".${name##*.}"
+    while [[ -e "$dest" || -L "$dest" ]]; do dest="$into/$stem-$k$ext"; k=$((k+1)); done
+  fi
+  install -m 00600 -- "$stage/downloads/$name" "$dest" || die "$E_UNAVAILABLE" "cannot write $dest"
+  dest="$(realpath -- "$dest")"
+  if (( json )); then
+    jq -nc --arg p "$dest" --arg n "$name" --argjson b "$bytes" --arg t "$type" --arg u "$url" \
+      '{ok:true, path:$p, name:$n, bytes:$b, type:$t, url:$u}'
+  else
+    printf 'downloaded: %s (%s, %s bytes, %s)\n' "$dest" "$name" "$bytes" "$type"
+  fi
+  _READ_STAGE=""
+  rm -rf -- "$stage"
+  trap - EXIT
+  return 0
+}
+
 # ====================================================== downloads (DIVE-5751)
 #
 # A FILE A STEP DOWNLOADS REACHES THE SEAT THAT ASKED. Before this, an export
@@ -8613,7 +8780,7 @@ _act_session() {  # <site> <steps-file> <approved> <shot> <settle> <report> <all
 _act_downloads_unpack() {  # <daemon-payload-file> <dir>
   local pf="$1" dir="$2" i name bytes got
   [[ -s "$pf" ]] && grep -qF '"act_download":true' "$pf" || return 0
-  jq -c 'select(type=="object" and .act_download==true) | {i, name, bytes, error}' "$pf" 2>/dev/null > "$dir/.meta.jsonl" || return 0
+  jq -c 'select(type=="object" and .act_download==true) | {i, name, bytes, error, type}' "$pf" 2>/dev/null > "$dir/.meta.jsonl" || return 0
   while IFS=$'\t' read -r i name bytes; do
     [[ "$i" =~ ^[0-9]+$ ]] && _act_download_name_ok "$name" || continue
     jq -r --argjson i "$i" 'select(type=="object" and .act_download_chunk==true and .i==$i) | .b64' "$pf" 2>/dev/null \
@@ -8625,7 +8792,7 @@ _act_downloads_unpack() {  # <daemon-payload-file> <dir>
         'if .i==$i then .error=$w else . end' "$dir/.meta.jsonl" > "$dir/.meta.tmp" && mv -f -- "$dir/.meta.tmp" "$dir/.meta.jsonl"
     fi
   done < <(jq -r 'select(.error == null) | [.i, .name, (.bytes // 0)] | @tsv' "$dir/.meta.jsonl" 2>/dev/null)
-  jq -sc 'map({name, bytes, error})' "$dir/.meta.jsonl" > "$dir/.manifest.json" 2>/dev/null
+  jq -sc 'map({name, bytes, error} + (if .type then {type} else {} end))' "$dir/.meta.jsonl" > "$dir/.manifest.json" 2>/dev/null
   rm -f -- "$dir/.meta.jsonl"
 }
 
@@ -8640,10 +8807,12 @@ _act_download_name_ok() { [[ -n "$1" && "$1" != .* && "$1" != */* && "$1" != *$'
 #   downloaded: <path> (<name>, <bytes> bytes)
 _ACT_DLS='[]'
 _act_downloads_publish() {  # <stage-downloads-dir> <out-dir>
-  local dir="$1" out="$2" name bytes err dest stem ext k arr="[]"
+  local dir="$1" out="$2" name bytes err type dest stem ext k arr="[]"
   _ACT_DLS='[]'
   [[ -s "$dir/.manifest.json" ]] || return 0
-  while IFS=$'\t' read -r name bytes err; do
+  # IFS tab is whitespace, so an empty field would collapse: type is "-" when absent.
+  while IFS=$'\t' read -r name bytes type err; do
+    [[ "$type" == - ]] && type=""
     if ! _act_download_name_ok "$name"; then continue; fi
     if [[ -n "$err" || ! -f "$dir/$name" ]]; then
       printf '%s: a step downloaded %s, and it was NOT saved: %s\n' "$PROG" "$name" "${err:-the file is missing}" >&2
@@ -8657,12 +8826,13 @@ _act_downloads_publish() {  # <stage-downloads-dir> <out-dir>
     stem="${name%.*}"; ext=""; [[ "$name" == *.* ]] && ext=".${name##*.}"
     while [[ -e "$dest" ]]; do dest="$out/downloads/$stem-$k$ext"; k=$((k+1)); done
     install -m 00600 -- "$dir/$name" "$dest" || continue
-    arr=$(jq -c --arg p "$dest" --arg n "$name" --argjson b "$bytes" '. + [{path:$p, name:$n, bytes:$b}]' <<<"$arr")
-  done < <(jq -r '.[] | [.name, (.bytes // 0 | tostring), (.error // "")] | @tsv' "$dir/.manifest.json" 2>/dev/null)
+    arr=$(jq -c --arg p "$dest" --arg n "$name" --argjson b "$bytes" --arg t "$type" \
+      '. + [{path:$p, name:$n, bytes:$b} + (if $t == "" then {} else {type:$t} end)]' <<<"$arr")
+  done < <(jq -r '.[] | [.name, (.bytes // 0 | tostring), (.type // "-"), (.error // "")] | @tsv' "$dir/.manifest.json" 2>/dev/null)
   _ACT_DLS="$arr"
 }
 _act_downloads_say() {
-  jq -r '.[] | select(.path) | "downloaded: \(.path) (\(.name), \(.bytes) bytes)"' <<<"$_ACT_DLS" 2>/dev/null
+  jq -r '.[] | select(.path) | "downloaded: \(.path) (\(.name), \(.bytes) bytes\(if .type then ", " + .type else "" end))"' <<<"$_ACT_DLS" 2>/dev/null
 }
 
 # ======================================================= routines (DIVE-5335)
@@ -12738,7 +12908,7 @@ case "${1:-}" in
 esac
 
 case "${1:-}" in
-  read|links|shot|snapshot|tree|act)
+  read|links|shot|snapshot|tree|act|download)
     if [[ "${2:-}" =~ ^https?:// ]]; then
       _v="$1"; _u="$2"; shift 2
       _r="$(_route_site "$_u")" || exit $?
@@ -12779,7 +12949,7 @@ _public_for_named() {  # _public_for_named <site> <url> -> 0 to open it in the p
   [[ "$(_route_site "$url" 2>/dev/null)" == "$PUBLIC_SITE" ]]
 }
 case "${1:-}" in
-  read|links|shot|snapshot|tree|act)
+  read|links|shot|snapshot|tree|act|download)
     if [[ -n "${2:-}" && "${2:-}" != -* && "${3:-}" =~ ^https?:// ]] && _public_for_named "$2" "$3" \
        && _g="$(_page_join_default "$2")"; then
       _page_joined_say "$2" "$_g"     # DIVE-7076: the profile is now the group's link
@@ -12797,7 +12967,7 @@ esac
 # A HOST FOR A PROFILE NAME (DIVE-6247): `read mail.google.com <url>` and
 # `status mail.google.com` use the google.com login (_host_profile).
 case "${1:-}" in
-  read|links|shot|snapshot|tree|act|status)
+  read|links|shot|snapshot|tree|act|download|status)
     if [[ -n "${2:-}" && "${2:-}" != -* && ! "${2:-}" =~ ^https?:// ]] && _r="$(_host_profile "$2")"; then
       printf '%s: no %s profile of its own; the %s login answers for %s, so it is used.\n' "$PROG" "$2" "$_r" "$2" >&2
       _v="$1"; shift 2
@@ -12808,7 +12978,7 @@ esac
 # DIVE-7237: the page verbs, and only they, re-serve a group's browser the way
 # their site needs (_drive_fit).
 case "${1:-}" in
-  shot|snapshot|act|tree|read|links|run|capture|replay|handoff) _DRIVE_FIT=1 ;;
+  shot|snapshot|act|tree|read|links|download|run|capture|replay|handoff) _DRIVE_FIT=1 ;;
 esac
 
 # INPUT MODE TAKES THE PAGE VERBS (DIVE-5287). After the URL routing above, so
@@ -12848,6 +13018,7 @@ case "${1:-}" in
   propose) shift; cmd_propose "$@" ;;
   adapters) shift; cmd_adapters "$@" ;;
   read)  shift; cmd_read  "$@" ;;
+  download) shift; cmd_download "$@" ;;
   snapshot) shift; cmd_snapshot "$@" ;;
   act)   shift; cmd_act "$@" ;;
   replay) shift; cmd_replay "$@" ;;

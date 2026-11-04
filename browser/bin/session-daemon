@@ -247,6 +247,17 @@ const within = (ms, p, what) => {
 // (DIVE-4794). Spent only while NOTHING is known — the loop returns the instant
 // any marker matches — so an adapter that answers at DCL pays nothing for it.
 const PROBE_WAIT_MS = Number(process.env.FIVEDIVE_BROWSER_PROBE_WAIT_MS || 8000);
+// ONE WALL CLOCK FOR THE WHOLE PROBE (DIVE-7648). The steps inside a probe each
+// had their own limit or none (newPage none, goto 20 s, content() none, close
+// none), and `busy` is freed only when the request returns. On exact-swallow
+// (report 680, 2026-11-03) one probe of a signed-in Shopify admin held its
+// group's session for 230-380 s, and google.com and cjdropshipping.com in that
+// group were refused as busy the whole time. Past this the probe answers, its
+// tab is closed without waiting, and the session is free; whatever the tab was
+// still doing is abandoned. Under the 38 s the cold probe's cap allows.
+const PROBE_HARD_MS = Number(process.env.FIVEDIVE_BROWSER_PROBE_HARD_MS || 35000);
+// How long a page that is still navigating gets to reach its next DOM, per look.
+const NAV_SETTLE_MS = Number(process.env.FIVEDIVE_BROWSER_NAV_SETTLE_MS || 5000);
 
 function die(code, msg) { process.stderr.write(`${PROG}: ${msg}\n`); process.exit(code); }
 
@@ -379,14 +390,17 @@ async function serveMode(profile, sock, broker, input) {
   // with, and `proxy set`/`clear` say so rather than moving a live login's IP.
   let viaProxy;
   try { viaProxy = proxy.launchProxy(profile); } catch (e) { die(E_UNAVAILABLE, e.message); }
+  // DIVE-7643: a proxy with no login is a plain --proxy-server arg (lib/proxy.cjs
+  // launchRoute), so Playwright adds no flag that raises Chrome's warning bar.
+  const route = proxy.launchRoute(viaProxy);
   const { chromium } = loadPlaywright();
   const launch = (sandbox) => chromium.launchPersistentContext(profile, {
     headless: false,
     executablePath: chrome,
-    args: launchArgs(sandbox),
+    args: [...launchArgs(sandbox), ...route.args],
     chromiumSandbox: sandbox,
     viewport: null,
-    ...(viaProxy ? { proxy: viaProxy } : {}),
+    ...route.option,
   });
   try {
     ctx = await launch(sandboxWanted());
@@ -574,6 +588,7 @@ async function serveMode(profile, sock, broker, input) {
         else if (req.op === 'read') await readRequest(ctx, req, send, end);
         else if (req.op === 'plan') await planRequest(ctx, req, send, end);
         else if (req.op === 'totp') await totpRequest(ctx, profile, req, send, end);
+        else if (req.op === 'download') await downloadRequest(ctx, req, send, end);
         else { send({ t: 'err', msg: `unknown op '${req.op}'` }); end(E_NOTHING_RAN); }
       } catch (e) {
         send({ t: 'err', msg: e && e.message ? e.message : String(e) });
@@ -715,6 +730,31 @@ const reOf = (p) => {
   try { return new RegExp(p, 'i'); } catch (e) { return null; }  // bin/browser greps it anyway
 };
 
+// A PAGE THAT IS STILL NAVIGATING HAS NOT ANSWERED YET (DIVE-7648). Shopify's
+// admin redirects admin.shopify.com/ -> /store/<id> and then routes inside the
+// app; a content() that lands in one of those hops throws "Unable to retrieve
+// content because the page is navigating" (or "Execution context was
+// destroyed"), and the probe reported that as a page that did not load. It is
+// "not yet": wait for the next DOM, bounded, and say so with null.
+const NAVIGATING = /page is navigating|Execution context was destroyed/i;
+async function contentOrNull(page, ms) {
+  try { return await page.content(); }
+  catch (e) {
+    if (!NAVIGATING.test(String(e && e.message))) throw e;
+    try { await page.waitForLoadState('domcontentloaded', { timeout: Math.max(1, ms) }); } catch (e2) { /* the next look decides */ }
+    return null;
+  }
+}
+// The same, for a caller that needs a document: a few looks, then the error.
+async function contentSettled(page, ms) {
+  const stop = Date.now() + Math.max(1, ms);
+  for (;;) {
+    const html = await contentOrNull(page, Math.max(1, stop - Date.now()));
+    if (html !== null) return html;
+    if (Date.now() >= stop) throw new Error('the page was still navigating when the wait ran out');
+  }
+}
+
 async function probeRequest(ctx, req, send, end) {
   if (typeof req.url !== 'string' || !/^https?:\/\//.test(req.url)) {
     send({ t: 'err', msg: 'probe needs an http(s) url to load' }); return end(E_NOTHING_RAN);
@@ -722,6 +762,10 @@ async function probeRequest(ctx, req, send, end) {
   const settle = Number(process.env.FIVEDIVE_BROWSER_PROBE_SETTLE_MS || 800);
   const until = (req.until && typeof req.until === 'object') ? req.until : {};
   const positive = reOf(until.logged_in);
+  // WHERE THE PAGE LANDED CAN END THE WAIT TOO (DIVE-7648): an adapter may name
+  // the address a signed-in session lands on. Like the markers, only an early
+  // exit — bin/browser makes the verdict from the final URL it is told.
+  const landed = reOf(until.logged_in_url);
   const marks = [reOf(until.challenge), reOf(until.logged_out), positive].filter(Boolean);
   // THE POSITIVE MARKER IS WHAT MAKES A WAIT TERMINATE, so it is also what
   // permits one. Every request carries a challenge marker (bin/browser has a
@@ -730,41 +774,65 @@ async function probeRequest(ctx, req, send, end) {
   // already had — including the server-rendered adapters that classify on the
   // absence of a login form. Without a logged-in marker this is the old single
   // settle to the millisecond.
-  const deadline = positive
+  const hardMs = Number(req.hard) > 0 ? Math.min(Number(req.hard), PROBE_HARD_MS) : PROBE_HARD_MS;
+  const t0 = Date.now();
+  const left = () => hardMs - (Date.now() - t0);
+  const deadline = (positive || landed)
     ? Math.max(settle, Number(req.wait) > 0 ? Number(req.wait) : PROBE_WAIT_MS)
     : settle;
   const step = Math.min(Number(process.env.FIVEDIVE_BROWSER_PROBE_POLL_MS || 400), Math.max(1, deadline));
-  let page;
-  try {
+  let page, over = false;
+  const urlNow = () => { try { return page.url(); } catch (e) { return ''; } };
+  const said = (html) => (html !== null && marks.some(r => r.test(html))) || (!!landed && landed.test(urlNow()));
+  const work = (async () => {
     page = await ctx.newPage();
-    page.setDefaultTimeout(Number(process.env.FIVEDIVE_BROWSER_PROBE_TIMEOUT || 20000));
-    await page.goto(req.url, { waitUntil: 'domcontentloaded' });
+    if (over) return null;
+    page.setDefaultTimeout(Math.max(1, Math.min(Number(process.env.FIVEDIVE_BROWSER_PROBE_TIMEOUT || 20000), left())));
+    // A REDIRECT THAT INTERRUPTS THE LOAD IS THE LOAD (DIVE-6795's goTo), which
+    // the admin's own hop to /store/<id> can do.
+    await goTo(page, req.url);
     // THE WHOLE DOCUMENT, uncapped, like the cold probe: a challenge banner is
     // as likely to be late in a large DOM as early, and a truncating capture
     // cannot see a marker past the cap. bin/browser greps what comes back.
     await page.waitForTimeout(settle);
-    let html = await page.content();
+    let html = await contentOrNull(page, Math.min(NAV_SETTLE_MS, left()));
     let waited = settle;
     // NEVER `networkidle`: a web app that long-polls never idles, and waiting
     // for it is what made a `read` hang for 150s on a real box. The evidence
     // itself is the signal instead — the first document in which the page has
-    // said something about its login state is the one we answer with.
-    while (waited < deadline && !marks.some(r => r.test(html))) {
-      await page.waitForTimeout(step);
+    // said something about its login state is the one we answer with. A look
+    // that met a navigation (null) is a look that said nothing yet.
+    while (!over && waited < deadline && (html === null || !said(html))) {
+      if (html !== null) await page.waitForTimeout(step);
       waited += step;
-      html = await page.content();
+      html = await contentOrNull(page, Math.min(NAV_SETTLE_MS, left()));
     }
+    if (html === null) html = await contentSettled(page, Math.min(NAV_SETTLE_MS, left()));
+    return html;
+  })();
+  try {
+    const html = await within(Math.max(1, hardMs), work,
+      `the page did not settle within ${Math.round(hardMs / 1000)}s; the probe was stopped and the session freed`);
     // WHERE THE PAGE LANDED (DIVE-5388), for the generic check: a redirect to a
     // sign-in path is a signed-out login whatever the page says. A log line, so
     // it reaches the caller's stderr and never the document it greps.
-    if (req.report_url) send({ t: 'log', line: `5dive-probe-final-url: ${page.url()}` });
+    if (req.report_url) send({ t: 'log', line: `5dive-probe-final-url: ${urlNow()}` });
     send({ t: 'out', data: html.endsWith('\n') ? html : html + '\n' });
     end(0);
   } catch (e) {
+    over = true;
     send({ t: 'err', msg: `could not load ${req.url}: ${e.message}` });
     end(E_FAILED);
   } finally {
-    try { if (page) await page.close(); } catch (e) { /* the tab is going anyway */ }
+    over = true;
+    // The abandoned work may still reject once its tab is gone; that is expected.
+    work.catch(() => {});
+    // NEVER WAIT ON THE CLOSE: a tab whose script never yields can hold close()
+    // as long as it held content(), and the session must be free now.
+    const shut = (p) => { try { Promise.resolve(p.close()).catch(() => {}); } catch (e) { /* going anyway */ } };
+    if (page) shut(page);
+    // A tab newPage() hands over after the deadline is closed when it arrives.
+    else work.finally(() => { if (page) shut(page); }).catch(() => {});
   }
 }
 
@@ -828,7 +896,8 @@ async function renderRequest(ctx, req, send, end) {
       ? await aria.waitForPast(page, String(req.wait_for), inter, { timeoutMs: STEP_TIMEOUT }) : null;
     await page.waitForTimeout(Number(req.wait) || Number(process.env.FIVEDIVE_BROWSER_TREE_SETTLE_MS || 1200));
     const buf = await page.screenshot({ fullPage: !!req.full });
-    const html = await page.content();
+    // A client-side redirect mid-render is "not yet", not a failed shot (DIVE-7648).
+    const html = await contentSettled(page, NAV_SETTLE_MS);
     send({ t: 'out', data: JSON.stringify({
       url: req.url,
       png: Buffer.isBuffer(buf) ? buf.toString('base64') : Buffer.from(String(buf)).toString('base64'),
@@ -842,6 +911,38 @@ async function renderRequest(ctx, req, send, end) {
     end(E_FAILED);
   } finally {
     try { if (page) await page.close(); } catch (e) { /* the tab is going anyway */ }
+  }
+}
+
+// ---- download: the bytes at one URL (DIVE-7646) ----
+//
+// Fetched through this context's own request client, so the profile's cookies
+// ride along, and sent back as the act's download lines (lib/downloads.cjs
+// stream): this process is the profile's OWNER and never writes a path the
+// caller chose (DIVE-4662). No tab is opened, so a person at the viewer is not
+// navigated away. One line {act_download, i:0, name, bytes, type} then the chunks,
+// or {act_download, i:0, name, error} and exit 1.
+async function downloadRequest(ctx, req, send, end) {
+  if (typeof req.url !== 'string' || !/^https?:\/\//.test(req.url)) {
+    send({ t: 'err', msg: 'download needs an http(s) url' }); return end(E_NOTHING_RAN);
+  }
+  try { assertLease(req, 'download'); } catch (e) { send({ t: 'err', msg: e.message }); return end(E_FAILED); }
+  const r = await downloads.fetchFile(ctx, req.url);
+  if (!r.ok) {
+    send({ t: 'out', data: JSON.stringify({ act_download: true, i: 0, name: downloads.safeName(downloads.nameFrom({}, req.url), new Set()), error: r.error }) + '\n' });
+    return end(E_FAILED);
+  }
+  let dir = null;
+  try {
+    dir = fs.mkdtempSync(path.join(require('os').tmpdir(), '5dive-dl-'));
+    const entries = await downloads.save({ list: [], files: [{ name: r.name, type: r.type, buf: r.buf }] }, dir);
+    downloads.stream(entries, (line) => send({ t: 'out', data: line }));
+    end(entries[0] && entries[0].error ? E_FAILED : 0);
+  } catch (e) {
+    send({ t: 'err', msg: `the file was fetched but could not be handed back: ${e.message}` });
+    end(E_FAILED);
+  } finally {
+    if (dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { /* its TMPDIR is reaped */ } }
   }
 }
 
@@ -1213,6 +1314,7 @@ async function planRequest(ctx, req, send, end) {
       if (s.op === 'upload' && s.file && typeof s.file.b64 === 'string') {
         s.path = { name: String(s.file.name || 'upload'), mimeType: String(s.file.mimeType || 'application/octet-stream'), buffer: Buffer.from(s.file.b64, 'base64') };
       }
+      let landedFile = false;   // DIVE-7646: a file is no page to judge a landing by
       switch (s.op) {
         case 'goto': {
           // THE ACT'S OWN URL DOES NOT RELOAD THE PAGE IT IS ALREADY ON (DIVE-5817).
@@ -1226,7 +1328,17 @@ async function planRequest(ctx, req, send, end) {
             send({ t: 'log', line: `  ${where}: already on ${s.url}; not reloaded, so the page keeps what it holds` });
             break;
           }
-          await goTo(page, s.url);
+          // A GOTO THAT LANDS ON A FILE HANDS IT OVER (DIVE-7646), as the cold driver.
+          let resp = null;
+          try { resp = await goTo(page, s.url); }
+          catch (e) {
+            if (!(dl && /Download is starting/.test(String(e && e.message)))) throw e;
+            send({ t: 'log', line: `  ${where}: ${s.url} is a file, and it is downloading` });
+            landedFile = true;
+            break;
+          }
+          const kept = await downloads.keepResponse(dl, ctx, resp);
+          if (kept) { send({ t: 'log', line: `  ${where}: ${s.url} is a file (${kept.type || 'attachment'}); it is handed over with the act` }); landedFile = true; break; }
           const inter = await aria.waitInterstitial(page);   // DIVE-6317
           if (inter) send({ t: 'log', line: `  ${where}: "${inter.title}" ${inter.cleared ? `cleared by itself after ${inter.waited_ms} ms` : `was still there after ${inter.waited_ms} ms`}` });
           const ms = settleOf(req, RUN_SETTLE_MS);
@@ -1247,7 +1359,7 @@ async function planRequest(ctx, req, send, end) {
       send({ t: 'log', line: `  ${where} ok` });
       // WHERE THE GOTO LANDED (DIVE-4991), said every time, exactly as the cold
       // driver says it. This IS the served browser, so there is nothing to retry in.
-      if (s.op === 'goto' && req.landing) {
+      if (s.op === 'goto' && req.landing && !landedFile) {
         const land = await aria.checkLanding(page, s.url, req.landing);
         if (land.line) send({ t: 'log', line: land.line });
         if (land.loginWall) throw new Error(`${where}: ${land.loginWall}`);
@@ -1344,7 +1456,7 @@ async function sendReport(page, req, send, { failed = false, watch = null, settl
 async function sendDownloads(dl, send) {
   if (!dl) return;
   dl.stop();
-  if (!dl.list.length) return;
+  if (!dl.list.length && !dl.files.length) return;
   let dir = null;
   try {
     dir = fs.mkdtempSync(path.join(require('os').tmpdir(), '5dive-act-dl-'));
@@ -2006,6 +2118,7 @@ async function inputRequest(be, profile, req, send, end, behalf) {
     tree: 'there is no DOM tree to enumerate: read the screenshot (`5dive browser shot`) and act on pixel coordinates',
     snapshot: '`5dive browser snapshot` on an input-mode site returns the screenshot and the window title, not a DOM',
     render: '`5dive browser shot` on an input-mode site returns a screenshot of the live window',
+    download: 'this browser has no request client to fetch a file with; a file the page downloads lands in the browser\'s own download folder',
     plan: 'adapter actions address the page by selector, and input mode has no DOM to resolve a selector in: use `5dive browser act <site> --steps=` with input steps (' + INPUT_VOCAB + ')',
   }[req.op];
   send({ t: 'err', msg: instead

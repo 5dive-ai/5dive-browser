@@ -8,13 +8,38 @@ that file stays where it is.
 
 ## Unreleased
 
-### Fixed — an agent's browser keeps its page between steps again on a seat that shares its Google group with the box (DIVE-7637), 1.66.5
+### Fixed — an agent's browser keeps its page between steps again on a seat that shares its Google group with the box (DIVE-7637), 1.67.1
 
 In the DIVE-7487 home bench, every one of the 101 runs of 5dive in Claude Code said "no served browser kept": each step opened its page from scratch in a new Chrome, so a filter or sort an agent had just applied was gone at the next step. It took 16 steps a task where Claude in Chrome took 26, and finished 24 of 100 to its 51.
 
 - **Why:** since 1.64.2 (DIVE-7316) a group kept no browser when any site of it was offered to the box's other seats. Any serve that is not private writes that offer, a landing retry's included, and only `forget` removes it. So one retry on amtrak.com on 10-30 turned kept pages off for every site that seat's Main ever joined.
 - **Now:** the act keeps its private browser for an offered group too. Nothing widens: no socket for other seats, no new offer. A seat that wakes the box login replaces the private browser, as before (DIVE-6334), but no longer while an act is using it: it is told to try again.
-- **Not measured here:** whether this alone closes the bench gap. The 50-task datacenter rerun is on DIVE-7637.
+- **Measured** (50 tasks, datacenter IP, Haiku 5.5, against 1.66.1 unfixed): no run keeps a one-off browser any more (0 of 50, was 50 of 50); finished 19 to 15 (p = 0.39, not significant); a run's median time 110 s to 80 s; cost per finished task $0.065 to $0.041. Steps per run did not rise (14.9 tool calls to 14.4), so runs still end early: that part is in the agent's instructions, not this fix.
+
+### Added — `browser download` saves a PDF (or any file) at a URL as a real file (DIVE-7646), 1.67.0
+
+An owner wanted Amazon invoice PDFs saved as files for their document archive (box report 677). The browser could show the PDF but could not hand it over. `read` and `snapshot` got an empty page, `shot` got a picture, and clicking the PDF viewer's Download button in an `act` timed out after 30 s.
+
+- **New: `5dive browser download [<site>] <url> [--out=<file|dir/>]`.** It fetches the file with the site's login and saves the original bytes (0600, yours). It prints `downloaded: <path> (<name>, <bytes> bytes, <type>)`. The file goes under the artifacts folder's `downloads/` unless `--out` names a folder or a file. The name comes from the server, made safe.
+- **A sign-in page is not saved as the file.** If the login has lapsed, it stops with "got a sign-in page, not a file" (exit 75). Any other web page, an error status or a file over 100 MB is refused too.
+- **An `act` whose `goto` lands on a PDF now hands it over** with the same `downloaded:` line.
+- Not covered: sites served in input mode (plain Chrome, no automation channel) cannot fetch a file this way.
+
+### Fixed — a signed-in Shopify admin reads signed in, and one login check can no longer hold a whole group's browser for minutes (DIVE-7648), 1.66.6
+
+On exact-swallow (report 680, 1.66.5), the owner signed in to Shopify and tapped Done, yet `status`, `shot` and `read` on shopify.com kept answering UNKNOWN for hours, so every acting step refused. The browser was on the store's admin, signed in. And one check from one agent kept the group's browser busy for 4 to 6 minutes, which blocked google.com and cjdropshipping.com in the same group.
+
+- **A page that is still redirecting is "not yet", not "failed".** The check waits for the next page and looks again, inside the same time limit. A screenshot taken mid-redirect is kept too.
+- **Every login check now has one hard limit, 35 s.** When it runs out, the check answers, its tab is closed, and the browser is free for the next request.
+- **Shopify gets 20 s for its admin to draw, and a tab that lands on `admin.shopify.com/store/<id>` reads signed in.** Only a signed-in session is sent there. A Cloudflare check page at that address still reads UNKNOWN. The quick check without a served browser keeps the 8 s budget and the page markers only.
+
+### Fixed — a browser behind a SOCKS proxy no longer shows Chrome's «unsupported command-line flag» bar (DIVE-7643), 1.66.5
+
+On exact-swallow (1.66.4), a browser going out through the owner's home exit (`socks5://127.0.0.1:1055`) showed a yellow bar across the top: «You are using an unsupported command-line flag: --host-resolver-rules=…». 5dive did not add that flag; Playwright adds it to every socks5 proxy handed to its `proxy` option. The bar also took height out of every screenshot an agent saw.
+
+- **A proxy with no login is now a plain `--proxy-server` setting**, in the served browser and in a cold run, as input mode already did. The page still leaves from the proxy's IP: Chrome's own socks5 looks the name up at the proxy.
+- **A proxy with a login is unchanged** and still goes through Playwright, which answers its password prompt.
+- A browser already open keeps its old launch until it restarts (`5dive browser serve <site> --stop`, then open it again).
 
 ### Fixed — in input mode, a page is read only once it has loaded, so Amazon's error page is no longer returned as a good read (DIVE-7572), 1.66.4
 
