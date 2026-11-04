@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — an Amazon page the browser is refused is read over plain HTTP (DIVE-7688), 1.67.5
+
+On the owner's box (report 617), every amazon.co.jp product and search snapshot stopped with Amazon's error page. A bisect there ran the input-mode browser on a copy of the owner's profile and on an empty one, behind his relay and on the box IP, and without his Amazon cookies: every arm was refused, except an empty profile's first page. A plain HTTP read of the same pages worked on both routes.
+
+- **`snapshot <url>` on amazon.co.jp now falls back to a plain HTTP read** when the browser gets the error page. It goes through the seat's own proxy, signed out, and exits 0 with `page.md` (`read_by: http` in the meta). The browser's screen is kept as `browser-refused.png`.
+- **The owner's login is untouched.** No cookie is read or written, and the profile is never opened.
+- **It stays the stop** when the plain read also fails: not HTTP 200, a redirect off the site, the same error page or a check. A proxy setting that cannot be read is never routed around.
+- An adapter opts in with `"fetch_when_refused": true`. Not covered: signed-in pages (cart, orders) still need the screen.
+
 ### Fixed — an agent's browser keeps its page between steps again on a seat that shares its Google group with the box (DIVE-7637), 1.67.4
 
 In the DIVE-7487 home bench, every one of the 101 runs of 5dive in Claude Code said "no served browser kept": each step opened its page from scratch in a new Chrome, so a filter or sort an agent had just applied was gone at the next step. It took 16 steps a task where Claude in Chrome took 26, and finished 24 of 100 to its 51.
