@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a site with no adapter is checked once, not before every page verb (DIVE-7722), 1.68.2
+
+On a home-exit bench (DIVE-7690), 1,308 page commands on 59 sites first opened a separate Chrome on the site's front page to check the login. Each check added 5-10 s, and runs that hit the 10-minute limit went from 9 to 22.
+
+- **The check's answer is kept for 30 minutes.** For a site with no adapter it can only say "no sign-in form here", and the page goes ahead either way. `read`, `links`, `snapshot` and `act` now skip the extra Chrome while that answer is fresh. They still say no adapter confirmed the login.
+- **A real sign-in wall is still caught.** Those four verbs check the page they read for a sign-in form, as before. A page that is one is refused, and the kept answer is dropped, so the next command checks the front page again. `shot`, `tree` and `download` have no such check on the page, so they still check the front page every time.
+- **Only an "unconfirmed" answer is kept.** A sign-in form, a robot check or a broken browser is never kept. `auth` and `group move` drop the kept answer. It is kept in the calling seat's own store, for that profile only. `FIVEDIVE_BROWSER_GENERIC_MEMO_TTL` sets the time in seconds; `0` turns it off.
+- `tests/browser_generic_memo_unit.sh`: 26 arms, run directly and through the real `5dive` CLI. On 1.68.1 the CLI path checks before all 3 commands; here it checks once.
+
 ### Fixed — a search box the page is swapping is waited for, not called missing (DIVE-7701), 1.68.1
 
 main CI's routine bench went red on Wikipedia 3 times in 20 runs on 2026-11-04: a replayed search stopped at Enter with "matches nothing on this page". Wikipedia removes its search box and mounts a new one once its script loads, and for a moment neither is on the page. The replay looked inside that moment, twice.

@@ -1681,6 +1681,7 @@ _group_move_one() {  # <site> <group> <own 0|1>
     [[ -n "$id" ]] && rm -f -- "$(_group_dir "$id")/$f.$site"
   done
   local l; l=$(_rv_sock "$me" "$site"); [[ -L "$l" ]] && rm -f -- "$l"
+  _generic_memo_drop "$site"   # DIVE-7722
   _audit_row "$(_seat_dir)" group "moved $site from ${cur:-its own profile} to ${id:-its own profile}"
   if (( own )); then
     if (( ! restored )); then
@@ -2424,6 +2425,7 @@ cmd_auth() {
   joined=$(_group_join_default "$site" "$dir")
   # DIVE-7076: a person is signing in to it now, so it is a login from here on.
   _page_joined "$site" && rm -f -- "$(_group_dir "$(_site_group "$dir")")/$PAGE_JOINED_FILE.$site"
+  _generic_memo_drop "$site"   # DIVE-7722: a new sign-in is checked afresh
   _ensure_profile_dir "$dir"
   _rv_offer_write "$(_seat)" "$site"
   [[ -n "$joined" ]] && printf '%s joined the group %s: it shares that browser, so a Google (or any) sign-in made there already counts here. Another group: 5dive browser group move %s <group>
@@ -2696,10 +2698,12 @@ _signin_guard() {
   (( _GENERIC_UNCONFIRMED )) || return 0
   if [[ -n "$u" ]] && grep -qiE "$GENERIC_SIGNIN_URL" <<<"$u"; then
     _signin_google_offer "$f" "$u" && return 0
+    _generic_memo_drop "$_PG_SITE"   # DIVE-7722: the next page verb checks the front page again
     die "$E_COLD" "$(_cic_route)the page redirected to a sign-in ($u). Refusing rather than handing back the sign-in page as if it were the page you asked for; no evidence was written. If this account should be signed in, a person logs in again: 5dive browser auth $_PG_SITE"
   fi
   if [[ -s "$f" ]] && grep -qiE "$GENERIC_SIGNIN_MARKER" "$f"; then
     _signin_google_offer "$f" "$u" && return 0
+    _generic_memo_drop "$_PG_SITE"   # DIVE-7722
     die "$E_COLD" "$(_cic_route)the page that came back is a sign-in form, not the page you asked for. Refusing; no evidence was written. If this account should be signed in, a person logs in again: 5dive browser auth $_PG_SITE"
   fi
   return 0
@@ -6583,7 +6587,35 @@ _page_open() {  # _page_open <site> <url>
 # of the sign-in page handed over as the artifact. Lifted out of _page_open under
 # DIVE-4621 because the warm path reaches it by a different road, and a second
 # copy of a positive list is a second place for a state to fall through.
-_GENERIC_UNCONFIRMED=0
+_GENERIC_UNCONFIRMED=0; _PG_GUARDED=0
+# THE GENERIC VERDICT'S MEMO (DIVE-7722). One file per site in the CALLING seat's
+# own 0700 store, so a brokered seat keeps its own and never writes the owner's.
+# It names whose profile and which directory the verdict was about: a site that
+# resolves elsewhere now (moved, its own login made, the box's instead) is
+# checked again. FIVEDIVE_BROWSER_GENERIC_MEMO_TTL seconds (default 1800; 0 = off).
+GENERIC_MEMO_FILE=".5dive-generic-unconfirmed"
+_generic_memo_path() { printf '%s/%s.%s\n' "$(_seat_dir)" "$GENERIC_MEMO_FILE" "$1"; }
+_generic_memo_ttl() {
+  local t="${FIVEDIVE_BROWSER_GENERIC_MEMO_TTL:-1800}"
+  [[ "$t" =~ ^[0-9]{1,6}$ ]] || t=1800
+  printf '%s\n' "$t"
+}
+_generic_memo_age() {  # <site> -> seconds since the check; rc 1 = none, stale or another profile's
+  local f ttl at now
+  ttl=$(_generic_memo_ttl); (( ttl > 0 )) || return 1
+  f=$(_generic_memo_path "$1"); [[ -f "$f" && ! -L "$f" ]] || return 1
+  [[ "$(_kv "$f" owner)" == "${_SITE_OWNER:-$(_seat)}" && "$(_kv "$f" dir)" == "$_SITE_DIR" ]] || return 1
+  at=$(_kv "$f" at); [[ "$at" =~ ^[0-9]+$ ]] || return 1
+  now=$(date +%s); (( now >= at && now - at < ttl )) || return 1
+  printf '%s\n' "$((now - at))"
+}
+_generic_memo_write() {  # <site>
+  local d; d="$(_seat_dir)"
+  (( $(_generic_memo_ttl) > 0 )) && [[ -d "$d" && -w "$d" && -n "$_SITE_DIR" ]] || return 0
+  ( umask 077; printf 'site=%s\nowner=%s\ndir=%s\nat=%s\n' "$1" "${_SITE_OWNER:-$(_seat)}" "$_SITE_DIR" "$(date +%s)" \
+      > "$(_generic_memo_path "$1")" ) 2>/dev/null || true
+}
+_generic_memo_drop() { [[ -n "${1:-}" ]] && rm -f -- "$(_generic_memo_path "$1")" 2>/dev/null; return 0; }
 _page_open_probe() {
   local site="$1" dir="$2"
   # THE PUBLIC PROFILE HAS NO LOGIN TO PROBE (DIVE-4943 scope 5). Asking it "are
@@ -6591,7 +6623,26 @@ _page_open_probe() {
   _is_public "$site" && return 0
   # DIVE-7076: a site a page verb joined has no login of its own to probe yet.
   _page_joined "$site" && return 0
+  # ONCE PER SITE, NOT ONCE PER COMMAND (DIVE-7722). The check below opens a cold
+  # Chrome on the site's front page. On a site with no adapter its answer is
+  # "unconfirmed" and the page proceeds anyway, guarded by _signin_guard on the
+  # page itself. Paid on every page verb it was +5-10 s each on a home exit
+  # (DIVE-7690: 1,308 checks on 59 sites, timeouts 9 -> 22). So that answer is
+  # kept for a while and the cold Chrome is skipped. The guard still reads every
+  # page, and a page it refuses drops the memo, so a sign-in wall is still caught.
+  # ONLY A VERB THAT GUARDS ITS PAGE uses it (_PG_GUARDED: read, links, snapshot,
+  # act). shot, tree and download have no _signin_guard: the check is their guard.
+  local memo_age
+  if (( _PG_GUARDED )) && memo_age=$(_generic_memo_age "$site"); then
+    _GENERIC_UNCONFIRMED=1
+    printf '%s: unconfirmed (no adapter for %s; checked %ss ago, not again now) — no adapter confirmed the %s login; the page is checked for a sign-in form, so this proceeds.\n' "$PROG" "$site" "$memo_age" "$site" >&2
+    return 0
+  fi
   local state; state=$(_PROBE_GENERIC=1 _probe "$site" "$dir")
+  case "$state" in
+    unconfirmed\ \(no\ adapter*) : ;;
+    *) _generic_memo_drop "$site" ;;
+  esac
   case "$state" in
     authenticated*) : ;;
     unconfirmed*)
@@ -6600,6 +6651,7 @@ _page_open_probe() {
       # that nothing here confirmed the login. The render itself is checked again
       # for a sign-in form before any evidence is written (_signin_guard).
       _GENERIC_UNCONFIRMED=1
+      [[ "$state" == unconfirmed\ \(no\ adapter* ]] && _generic_memo_write "$site"
       printf '%s: %s — no adapter confirmed the %s login; the generic check found no sign-in form or challenge, so this proceeds.\n' "$PROG" "$state" "$site" >&2 ;;
     BROKEN*)
       die "$E_UNAVAILABLE" "$state. Nothing was rendered and nothing was read: a browser that will not start is a box fault, not a verdict about the $site session." ;;
@@ -7019,6 +7071,7 @@ _cmd_read_like() { # _cmd_read_like read|links <site> <url> [flags]
   # warm session; now every read does when one is up. With none up, the cold
   # path below is unchanged.
   _PG_WARM=1
+  _PG_GUARDED=1   # DIVE-7722: this verb runs _signin_guard on the page it reads
   _page_open "$site" "$url"
   local dir="$_PG_DIR" chrome="$_PG_CHROME"
   out="$(_read_output_dir "$site" "$out" "$dir")" || exit $?
@@ -7179,6 +7232,7 @@ _cmd_read_many() {  # _cmd_read_many <site> <full> <wait-ms> <url>...
   done
 
   _PG_WARM=1
+  _PG_GUARDED=1   # DIVE-7722: this verb runs _signin_guard on the page it reads
   _page_open "$site" "${urls[0]}"
   local dir="$_PG_DIR" chrome="$_PG_CHROME"
   _READ_STAGE="$(mktemp -d /tmp/5dive-browser-read.XXXXXXXX)" || die "$E_UNAVAILABLE" "cannot stage the page evidence"
@@ -7451,6 +7505,7 @@ cmd_snapshot() {
   # A snapshot is a navigation and a read — exactly the shape the warm session
   # serves, and the verb an agent runs most in a loop.
   _PG_WARM=1
+  _PG_GUARDED=1   # DIVE-7722: this verb runs _signin_guard on the page it reads
   _page_open "$site" "$url"
 
   out="$(_read_output_dir "$site" "$out" "$_PG_DIR")" || exit $?
@@ -8341,7 +8396,7 @@ cmd_act() {
   # OPEN THE PAGE THROUGH THE ONE GUARDED ROAD. With a URL that is _page_open —
   # lease, host scope, login gate. Without one, the only page there is to act on
   # is the one a served browser is holding, so a live session is required.
-  _PG_WARM=1; _PG_PURPOSE="act"
+  _PG_WARM=1; _PG_PURPOSE="act"; _PG_GUARDED=1   # DIVE-7722: act guards its re-read
   _open_site "$site"
   if [[ -n "$url" ]]; then
     _lease_take "$site" "$_SITE_DIR" "act" "$wait"
