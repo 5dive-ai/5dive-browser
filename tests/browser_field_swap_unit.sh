@@ -37,7 +37,7 @@ const page = {
 const t0 = Date.now();
 aria.resolveOrRepick(page, { op, selector, key: 'Enter', value: 'x' }, 3, { fieldSwapMs: Number(waitMs) })
   .then((r) => console.log(JSON.stringify({ ok: true, sel: r.sel, retry: r.retry, walks: k, ms: Date.now() - t0 })))
-  .catch((e) => console.log(JSON.stringify({ ok: false, err: e.message, walks: k, ms: Date.now() - t0 })));
+  .catch((e) => console.log(JSON.stringify({ ok: false, miss: !!e.refMiss, err: e.message, walks: k, ms: Date.now() - t0 })));
 JS
 run() { node "$TMP/swap.js" "$@"; }
 j() { jq -r "$1" <<<"$2"; }
@@ -72,6 +72,27 @@ t  'S4 ...one walk, no polling' 1 "$(j .walks "$R")"
 # --- S5 two twins is not "the same field": nothing is picked, as before.
 R=$(run press "ref=$SB" 300 "$CB,textbox/Search Wikipedia" -)
 t  'S5 two field roles answer: no pick' false "$(j .ok "$R")"
+
+# --- S7 no twin in walk 1 = DIVE-4674's one look (quinn, DIVE-7701 it1). A textbox
+# that is plainly absent is not "mid-swap": it refuses on the first walk with the
+# refMiss the driver turns into rc 70, even though a later walk WOULD show it
+# (that later walk is the poll T28g-i forbid). The default 5 s wait is in force.
+for op in click fill; do
+  R=$(run "$op" 'ref=textbox/Add a comment' 5000 - 'textbox/Add a comment')
+  t  "S7 $op on a textbox with no twin in walk 1: refused" false "$(j .ok "$R")"
+  t  "S7 ...as a refMiss (the driver's rc 70)" true "$(j .miss "$R")"
+  tc "S7 ...with the one-shot text" 'matches nothing on this page' "$(j .err "$R")"
+  t  "S7 ...having looked EXACTLY ONCE" 1 "$(j .walks "$R")"
+  MS=$(j .ms "$R"); (( MS < 1000 )); t "S7 ...at once, not after the wait (took ${MS} ms)" 0 $?
+done
+# MUTANT: drop the twin gate so every field miss waits (iteration 1 as delivered).
+# S7 must go red on it, or the arm does not grade the gate.
+mkdir -p "$TMP/mut"; cp "$ARIA" "$TMP/mut/aria.cjs"
+perl -pi -e 's/if \(twin && FIELD_ROLES\.includes\(role\)/if (FIELD_ROLES.includes(role)/' "$TMP/mut/aria.cjs"
+t  'S7 (anchor) the mutation landed' 1 "$(grep -c "if (FIELD_ROLES.includes(role) && step.op !== 'wait_for')" "$TMP/mut/aria.cjs")"
+R=$(ARIA="$TMP/mut/aria.cjs" run click 'ref=textbox/Add a comment' 5000 - 'textbox/Add a comment')
+t  'S7 MUTANT: without the twin gate the click polls into a success' true "$(j .ok "$R")"
+t  'S7 MUTANT: ...on a second look' 2 "$(j .walks "$R")"
 
 # --- S6 the default wait covers a script load on a slow runner.
 t  'S6 FIELD_SWAP_MS is 5 s' 5000 "$(node -e 'process.stdout.write(String(require(process.env.ARIA).FIELD_SWAP_MS))')"

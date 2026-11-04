@@ -1123,10 +1123,11 @@ function fieldRoleMatch(nodes, ref) {
 // the next walk that one was gone too: "matches nothing either", red on main
 // 3 times in 20 runs on 2026-11-04 (runs 41790551000, 41800062244 x2).
 //
-// So a TEXT FIELD that misses is looked for again for a short while: the ref as
-// written first, then the one same-name, same-#n field under another role
-// (fieldRoleMatch). Only the text-field family waits, and only up to
-// FIELD_SWAP_MS: the one-shot resolve stays for every other role (DIVE-4674),
+// So a TEXT FIELD caught mid-swap is looked for again for a short while: the ref
+// as written first, then the one same-name, same-#n field under another role
+// (fieldRoleMatch). It waits only when the FIRST walk already shows that twin,
+// and only up to FIELD_SWAP_MS: a field that is plainly absent, and every other
+// role, keeps the one-shot resolve (DIVE-4674, T28g-i; DIVE-7701 it1 reject),
 // and nothing here widens WHAT may be picked — the same two refs the one-shot
 // path took, at a later instant. -> { ref: null|<alt>, sel } or { ref: false, alt }.
 const FIELD_SWAP_MS = 5000;
@@ -1191,8 +1192,13 @@ async function resolveOrRepick(page, step, n, opts = {}) {
   let url = '', site = '';
   try { url = String(await page.url()); site = new URL(url).hostname; } catch (e) { site = ''; }
   const tree = { url, nodes: (miss.nodes || []).filter((x) => INTERACTIVE.includes(x.role)) };
-  let field = null, fieldSel = null;
-  if (FIELD_ROLES.includes(role) && step.op !== 'wait_for') {   // wait_for has waited already
+  // Only a miss that already SHOWS the swap waits: walk 1 has the same field
+  // under another role (S1/S2 in browser_field_swap_unit.sh). A field that is
+  // plainly absent keeps DIVE-4674's one look and its rc 70 (T28g-i).
+  const twin = fieldRoleMatch(miss.nodes, refBody(from));
+  let field = twin, fieldSel = null;
+  if (twin && FIELD_ROLES.includes(role) && step.op !== 'wait_for') {   // wait_for has waited already
+    field = null;
     const got = await fieldSettle(page, from, miss.nodes, { waitMs: opts.fieldSwapMs ?? FIELD_SWAP_MS });
     if (got.ref === null) return { sel: got.sel, retry: null };   // late, not missing: no re-pick
     if (got.ref) { field = got.ref; fieldSel = got.sel; }

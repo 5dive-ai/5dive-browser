@@ -12,8 +12,8 @@ that file stays where it is.
 
 main CI's routine bench went red on Wikipedia 3 times in 20 runs on 2026-11-04: a replayed search stopped at Enter with "matches nothing on this page". Wikipedia removes its search box and mounts a new one once its script loads, and for a moment neither is on the page. The replay looked inside that moment, twice.
 
-- **A text field that misses is looked for again for up to 5 s**: the ref as recorded first, then the same field under another role (searchbox, combobox, textbox). Nothing else may be picked that could not be picked before.
-- **Only text fields wait.** A button or link that misses still fails at once.
+- **A text field caught mid-swap is looked for again for up to 5 s**: the ref as recorded first, then the same field under another role (searchbox, combobox, textbox). Nothing else may be picked that could not be picked before.
+- **Only a swap waits.** The wait starts only when the first look already shows that same field under another role. A field that is simply not there, and any button or link, still fails on the first look (DIVE-4674's one-shot click and fill).
 - `tests/browser_field_swap_unit.sh`: the bench's exact sequence on a scripted page. With the wait set to 0 (the old path) it is the bench's red.
 
 ### Added — Done in the viewer itself (DIVE-7675), 1.68.0
