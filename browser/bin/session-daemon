@@ -190,6 +190,10 @@ const stepLimit = (req) => {
 };
 // How long a request waits for the one in flight before it is refused (DIVE-4927).
 const BUSY_WAIT_MS = Number(process.env.FIVEDIVE_BROWSER_BUSY_WAIT_MS || 60000);
+// How long an input-mode `front` waits for a request in flight to end before it
+// gives up rather than type into it (DIVE-7674). Inside bin/browser's
+// VIEWER_FRONT_S, with room left for the keys.
+const FRONT_IDLE_WAIT_MS = Number(process.env.FIVEDIVE_BROWSER_FRONT_IDLE_WAIT_MS || 2000);
 
 // THE LEASE ANCHOR MUST BE THE CALLER'S OWN PROCESS (DIVE-4927). A brokered
 // lease is held for as long as its anchor pid lives, and the caller names that
@@ -551,9 +555,21 @@ async function serveMode(profile, sock, broker, input) {
       // THE SITE'S TAB IN FRONT, AT ONCE (DIVE-7257). A person is being shown
       // this window for one site; the viewer must not queue behind a run, and
       // bringing a tab forward reads and loads nothing the lease protects.
+      // In input mode it presses keys (DIVE-7674), so it never types into a
+      // request in flight: it waits a moment for one to end, and holds the
+      // window while it types.
       if (req.op === 'front') {
-        try { await frontRequest(ctx, input, req, send, end); }
+        let held = false;
+        try {
+          if (input) {
+            const until = Date.now() + FRONT_IDLE_WAIT_MS;
+            while (busy && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+            if (!busy) { busy = { op: 'front', seat: behalf, since: Date.now() }; held = true; }
+          }
+          await frontRequest(ctx, input, req, send, end, input && !held);
+        }
         catch (e) { send({ t: 'err', msg: e && e.message ? e.message : String(e) }); end(E_FAILED); }
+        finally { if (held) busy = null; }
         return;
       }
 
@@ -640,16 +656,26 @@ async function pageOf(ctx) {
 // site comes to the front (lib/front-tab.cjs picks it), or a new tab opens on the
 // site's URL when none is on it. No other tab is navigated or closed.
 //
-// INPUT MODE says why it did nothing: there is no automation channel to list the
-// tabs, and a key press per viewer would open a tab every time.
-async function frontRequest(ctx, input, req, send, end) {
+// INPUT MODE (DIVE-7674): no automation channel lists the tabs, so the window's
+// own record decides (lib/front-tab.cjs inputFront): a window last sent to
+// another site gets one new tab on this site's URL, typed through the keyboard;
+// a window already on this site is left as it is. It was "nothing moves" until
+// report 688: Connect for business.facebook.com showed CJ's live session.
+async function frontRequest(ctx, input, req, send, end, inUse) {
   const url = String(req.url || '');
   if (!/^https?:\/\/[^\s]+$/i.test(url) || url.length > 2000) {
     send({ t: 'err', msg: 'front needs the site\'s http(s) url' }); return end(E_NOTHING_RAN);
   }
   const host = frontTab.hostOf(url);
   const out = (o) => send({ t: 'out', data: JSON.stringify(o) + '\n' });
-  if (input) { out({ host, moved: false, why: 'input mode: no automation channel to list the tabs' }); return end(0); }
+  if (input) {
+    if (inUse) { out({ host, moved: false, why: 'another request is driving this window, so nothing was typed into it' }); return end(0); }
+    out(await frontTab.inputFront(ctx, url, {
+      sleep: sleepMs, keys: () => keysReachBrowser(ctx),
+      typeUrl: (u) => gotoByKeys(ctx, u),
+    }));
+    return end(0);
+  }
   let page = frontTab.pick(ctx.pages(), host, driven || ctx.pages()[0]);
   const opened = !page;
   if (opened) {
@@ -1622,6 +1648,9 @@ async function inputLaunch(profile, chrome) {
   return {
     input: true, child, x, seen,
     handoff: null,
+    // The host this window was last sent to (DIVE-7674): the start URL, then
+    // every goto typed into it. `front` reads it; nothing else does.
+    lastHost: /^https?:\/\//i.test(startUrl) ? frontTab.hostOf(startUrl) : '',
     // SIGTERM is Chrome's clean shutdown: it writes the profile out, which is
     // the durable half (the login). SIGKILL only for one that will not go.
     close: async () => {
@@ -1996,6 +2025,7 @@ async function inputRequest(be, profile, req, send, end, behalf) {
         if (!INPUT_STEPS.goto({ url: req.url })) { send({ t: 'err', msg: 'screen --url needs an http(s) url' }); return end(E_NOTHING_RAN); }
         const no = inputRefusal(be, profile, req, 'screen');
         if (no) { send({ t: 'err', msg: no }); return end(E_UNAVAILABLE); }
+        be.lastHost = frontTab.hostOf(req.url);
         ld = await gotoLoaded(be, req.url,
           Number.isFinite(Number(req.wait)) && req.wait !== undefined ? Math.min(Number(req.wait), INPUT_MAX_WAIT_MS) : INPUT_GOTO_SETTLE_MS);
       } else if (Number(req.wait) > 0) await sleepMs(Math.min(Number(req.wait), INPUT_MAX_WAIT_MS));
@@ -2071,6 +2101,7 @@ async function inputRequest(be, profile, req, send, end, behalf) {
               await pointerOnBrowser(be, 'scrolled');   // wheel notches go to the window under the pointer, too
               await be.x.scroll(s.dy || 0, s.dx || 0, null); break;
             case 'goto': {
+              be.lastHost = frontTab.hostOf(s.url);
               const ld = await gotoLoaded(be, s.url, INPUT_GOTO_SETTLE_MS);
               // A refused/challenge title is the hard stop's to name, below.
               if (!ld.loaded && !stopOf(ld.title, '', '')) throw new Error(notLoadedMsg(site, ld) + ' Stopped; the rest of the plan did not run.');

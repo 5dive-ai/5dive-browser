@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — Connect for one site of a group opens on that site, never on another site's live window (DIVE-7674), 1.67.1
+
+On exact-swallow (report 688, 1.67.0), the owner tapped Connect for business.facebook.com and was shown cjdropshipping.com, signed in, while another seat was using it. Both sites share one browser. CJ had it in input mode (plain Chrome driven through the screen), and Facebook needs the other browser, but Connect took the browser as it was.
+
+- **Connect now switches the shared browser to the site asked for, on that site's page**, when nobody is using it.
+- **When somebody is using it, Connect is refused in plain words** ("the browser business.facebook.com shares with cjdropshipping.com is in use right now … Try again in a minute"). Nothing is shown and nothing is stopped. This also covers a seat with no proxy, whose Connect used to stop the other site's browser mid-step.
+- **When both sites use input mode**, the viewer opens the site asked for in a new tab if the window was last sent to another site. A window already on the site is left as it is, so a person called in for a check still sees that check.
+- Not covered: a person who moved the window to another site by hand is not tracked; the window is judged by the last page an agent or Connect sent it to.
+
 ### Added — `browser download` saves a PDF (or any file) at a URL as a real file (DIVE-7646), 1.67.0
 
 An owner wanted Amazon invoice PDFs saved as files for their document archive (box report 677). The browser could show the PDF but could not hand it over. `read` and `snapshot` got an empty page, `shot` got a picture, and clicking the PDF viewer's Download button in an `act` timed out after 30 s.
