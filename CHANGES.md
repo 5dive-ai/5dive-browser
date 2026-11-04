@@ -8,7 +8,7 @@ that file stays where it is.
 
 ## Unreleased
 
-### Fixed — Connect for one site of a group opens on that site, never on another site's live window (DIVE-7674), 1.67.1
+### Fixed — Connect for one site of a group opens on that site, never on another site's live window (DIVE-7674), 1.67.2
 
 On exact-swallow (report 688, 1.67.0), the owner tapped Connect for business.facebook.com and was shown cjdropshipping.com, signed in, while another seat was using it. Both sites share one browser. CJ had it in input mode (plain Chrome driven through the screen), and Facebook needs the other browser, but Connect took the browser as it was.
 
@@ -16,6 +16,15 @@ On exact-swallow (report 688, 1.67.0), the owner tapped Connect for business.fac
 - **When somebody is using it, Connect is refused in plain words** ("the browser business.facebook.com shares with cjdropshipping.com is in use right now … Try again in a minute"). Nothing is shown and nothing is stopped. This also covers a seat with no proxy, whose Connect used to stop the other site's browser mid-step.
 - **When both sites use input mode**, the viewer opens the site asked for in a new tab if the window was last sent to another site. A window already on the site is left as it is, so a person called in for a check still sees that check.
 - Not covered: a person who moved the window to another site by hand is not tracked; the window is judged by the last page an agent or Connect sent it to.
+
+### Fixed — clicking into a text field no longer stops as a payment (DIVE-7670), 1.67.1
+
+An agent editing a Shopify store's abandoned-checkout email was stopped as if it were paying (box report 686, exit 73, "it would pay or place an order (Subject | Subject Complete your order)"). The click was into the email's Subject box. The guard read the box's label as its name plus what was typed in it, and the subject line said "Complete your order". Because the edit stopped after Edit, Shopify left the email as a draft, switched off.
+
+- **A click on a text field has no risk class.** A text input, a textarea, a contenteditable, or a textbox/searchbox/combobox (by the page or by the ref's role) only takes focus, so the click runs. Checked in the page and inside a frame.
+- **What a field holds is never read as its label.** `value` counts only for a submit/button/reset/image input, where it IS the button's text. "Place order" on a submit input, a "Complete your order" button and a "Subscribe" checkbox still stop.
+- **Enter is unchanged:** in a field inside a form it still reads the form's submit button.
+- use-browser `references/paying.md`: on a stop mid-edit, check the thing opened for editing is still live.
 
 ### Added — `browser download` saves a PDF (or any file) at a URL as a real file (DIVE-7646), 1.67.0
 
