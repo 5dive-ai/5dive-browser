@@ -38,6 +38,10 @@ jobs:
       # selector that enters it. A page/frame shim, pure node, four mutants.
       - name: frames harness
         run: bash tests/browser_frames_unit.sh
+      # DIVE-7701: a text field the page is swapping (Wikipedia's typeahead) is
+      # waited for, not called missing. A scripted page stub, pure node.
+      - name: field swap harness
+        run: bash tests/browser_field_swap_unit.sh
       # DIVE-6317: Cloudflare's "Just a moment..." is watched in the same page load
       # before it is a stop. A fake page, pure node.
       - name: interstitial wait harness

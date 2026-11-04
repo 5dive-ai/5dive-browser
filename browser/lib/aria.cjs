@@ -1114,6 +1114,42 @@ function fieldRoleMatch(nodes, ref) {
   return hits.length === 1 ? hits[0] : null;
 }
 
+// THE FIELD, MID-SWAP (DIVE-7701). Wikipedia's typeahead does not change the
+// field's role in place: it REMOVES the server-rendered `searchbox` and mounts
+// a `combobox` in its place, once its script has loaded. Between the two there
+// is a window in which neither is on the page. The routine bench fell into it:
+// replay's press re-derived `combobox/Search Wikipedia` (the role run 1
+// recorded), saw only the old `searchbox`, picked it as the same field, and by
+// the next walk that one was gone too: "matches nothing either", red on main
+// 3 times in 20 runs on 2026-11-04 (runs 41790551000, 41800062244 x2).
+//
+// So a TEXT FIELD caught mid-swap is looked for again for a short while: the ref
+// as written first, then the one same-name, same-#n field under another role
+// (fieldRoleMatch). It waits only when the FIRST walk already shows that twin,
+// and only up to FIELD_SWAP_MS: a field that is plainly absent, and every other
+// role, keeps the one-shot resolve (DIVE-4674, T28g-i; DIVE-7701 it1 reject),
+// and nothing here widens WHAT may be picked — the same two refs the one-shot
+// path took, at a later instant. -> { ref: null|<alt>, sel } or { ref: false, alt }.
+const FIELD_SWAP_MS = 5000;
+async function fieldSettle(page, from, nodes, { waitMs = FIELD_SWAP_MS, pollMs = 250 } = {}) {
+  const deadline = Date.now() + Math.max(0, waitMs);
+  let alt = null;
+  for (let first = true; ; first = false) {
+    if (!first) {
+      try { return { ref: null, sel: await resolveRef(page, from) }; }   // the ref as written, now there
+      catch (e) { if (!e.refMiss) throw e; nodes = e.nodes; }
+    }
+    const a = fieldRoleMatch(nodes, refBody(from));
+    if (a) {
+      alt = a;
+      try { return { ref: a, sel: await resolveRef(page, REF_PREFIX + a) }; }
+      catch (e) { if (!e.refMiss) throw e; }
+    }
+    if (Date.now() >= deadline) return { ref: false, alt };
+    await new Promise((r) => setTimeout(r, Math.min(pollMs, Math.max(0, deadline - Date.now()))));
+  }
+}
+
 // bin/browser `_reflex-pick`, the tree on stdin. Never throws: anything that is
 // not its one line of JSON is {reflex:"error"}, and the name match decides.
 function reflexPick(site, args, tree, { timeoutMs = 90000 } = {}) {
@@ -1156,7 +1192,18 @@ async function resolveOrRepick(page, step, n, opts = {}) {
   let url = '', site = '';
   try { url = String(await page.url()); site = new URL(url).hostname; } catch (e) { site = ''; }
   const tree = { url, nodes: (miss.nodes || []).filter((x) => INTERACTIVE.includes(x.role)) };
-  const field = fieldRoleMatch(miss.nodes, refBody(from));
+  // Only a miss that already SHOWS the swap waits: walk 1 has the same field
+  // under another role (S1/S2 in browser_field_swap_unit.sh). A field that is
+  // plainly absent keeps DIVE-4674's one look and its rc 70 (T28g-i).
+  const twin = fieldRoleMatch(miss.nodes, refBody(from));
+  let field = twin, fieldSel = null;
+  if (twin && FIELD_ROLES.includes(role) && step.op !== 'wait_for') {   // wait_for has waited already
+    field = null;
+    const got = await fieldSettle(page, from, miss.nodes, { waitMs: opts.fieldSwapMs ?? FIELD_SWAP_MS });
+    if (got.ref === null) return { sel: got.sel, retry: null };   // late, not missing: no re-pick
+    if (got.ref) { field = got.ref; fieldSel = got.sel; }
+    else if (got.alt) throw failAs(` The same field under another role picked ref=${got.alt}, and that matches nothing either.`);
+  }
   const r = field ? { reflex: 'skipped' }
     : site ? await reflexPick(site, args, tree) : { reflex: 'error', why: 'the page has no host name' };
 
@@ -1182,8 +1229,8 @@ async function resolveOrRepick(page, step, n, opts = {}) {
     pick = { ref: hits[0].ref, line: `name match picked ref=${hits[0].ref}`,
              said: `${why ? `${why.trim()} ` : ''}A name match picked ref=${hits[0].ref}`, review: false };
   }
-  let sel;
-  try { sel = await resolveRef(page, REF_PREFIX + pick.ref); }
+  let sel = fieldSel;
+  if (!sel) try { sel = await resolveRef(page, REF_PREFIX + pick.ref); }
   catch (e) { if (!e.refMiss) throw e; throw failAs(` ${pick.said}, and that matches nothing either.`); }
   const risk = pick.review ? { cls: 'pay, post, send or delete' } : await stepRisk(page, step, sel);
   if (risk) {
@@ -1640,7 +1687,7 @@ function render(nodes, { json = false } = {}) {
 }
 
 module.exports = { movedSince, INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSelector,
-  resolveRefWithin, resolveStepSelector, resolveOrRepick, nameMatches, REPICK_MIN_CONFIDENCE,
+  resolveRefWithin, resolveStepSelector, resolveOrRepick, nameMatches, REPICK_MIN_CONFIDENCE, FIELD_SWAP_MS,
   onRef, refind, REFIND_OPS, _markFocusedIn, clickStep, FAILED_SETTLE_MS, COVERED_CLICK_MS,
   requestWatch, settleQuiet,
   isRef, render, REF_PREFIX,
