@@ -1686,7 +1686,23 @@ function render(nodes, { json = false } = {}) {
   }).join('\n');
 }
 
-module.exports = { movedSince, INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSelector,
+// ---- `show`: PUT AN ELEMENT IN THE PICTURE (DIVE-7754) ----------------------
+//
+// The agent reads the whole page as text (snapshot, the act's look), but the
+// page.png an act writes is the WINDOW, at wherever the page is scrolled. A
+// result that renders below the fold (a calculator's #result, a filter chip in
+// a sidebar, the sort label above a long list) was read, reported, and absent
+// from the picture the owner and any reviewer see. Measured on the 50-task bench
+// (DIVE-7728): runs that ended on an act passed 15 of 22, runs that ended on a
+// snapshot 3 of 18, and 8 of the 17 non-wall misses were "done, not shown".
+// `show` scrolls the element into the window and changes nothing: no click, no
+// focus, no key, so it is never one of the owner's four (stepRisk ignores it).
+// The first match: `text=<words>` usually matches more than one node.
+async function showStep(page, sel, timeout) {
+  await page.locator(sel).first().scrollIntoViewIfNeeded({ timeout });
+}
+
+module.exports = { showStep, movedSince, INTERACTIVE, pageWalk, walk, snapshot, resolveRef, resolveSelector,
   resolveRefWithin, resolveStepSelector, resolveOrRepick, nameMatches, REPICK_MIN_CONFIDENCE, FIELD_SWAP_MS,
   onRef, refind, REFIND_OPS, _markFocusedIn, clickStep, FAILED_SETTLE_MS, COVERED_CLICK_MS,
   requestWatch, settleQuiet,

@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — `show` puts the answer in the picture (DIVE-7754), 1.69.0
+
+On the 50-task bench (DIVE-7728) the agent read a result as text and reported it, but the picture after its last step showed only the top of the page. A calculator's percentiles, a filter chip or a sort label sat below the fold. The judge grades the pictures, so 8 of the 17 misses that were not bot walls were "done, but not shown". Runs that ended on an act passed 15 of 22; runs that ended on a snapshot passed 3 of 18.
+
+- **New act step `{"op":"show","selector":…}`** scrolls the element into the window and changes nothing: no click, no focus, no key. The act's `page.png` is then a picture of it. It is never one of the owner's four (pay, publish, send, delete).
+- **The use-browser skill ends on the proof:** the last call is an act that `show`s the result, with `--expect` on its words, never a `snapshot` or a `read`.
+- `tests/browser_act_show_unit.sh`: the real `bin/browser` and driver on the recording stub. The pre-fix vocabulary refuses the same act (red arm).
+
 ### Fixed — a site with no adapter is checked once, not before every page verb (DIVE-7722), 1.68.2
 
 On a home-exit bench (DIVE-7690), 1,308 page commands on 59 sites first opened a separate Chrome on the site's front page to check the login. Each check added 5-10 s, and runs that hit the 10-minute limit went from 9 to 22.

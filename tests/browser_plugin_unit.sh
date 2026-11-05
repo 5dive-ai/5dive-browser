@@ -2552,6 +2552,7 @@ const page = {
   },
   locator: (sel) => { const box = {
     first: () => { rec({ call: 'first', sel }); return box; },
+    scrollIntoViewIfNeeded: async (o) => rec({ call: 'scrollIntoView', sel, timeout: o && o.timeout }),
     clear: async (o) => rec({ call: 'clear', sel, timeout: o && o.timeout }),
     pressSequentially: async (val, o) => {
       rec({ call: 'type', sel, val, delay: o && o.delay, timeout: o && o.timeout });

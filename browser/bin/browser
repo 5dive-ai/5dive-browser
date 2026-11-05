@@ -7712,7 +7712,11 @@ _inline_page() { # _inline_page <artifact dir> [<refs cap>]
 # a served (warm) browser the tab also survives between calls, so `act` with no
 # URL continues on the page the last call left; without one, the next call starts
 # from a fresh load.
-ACT_VOCAB='goto fill type click wait_for select press upload'
+# DIVE-7754: `show` scrolls an element into the window and changes nothing. The
+# agent reads the WHOLE page as text, but page.png is the window only: a result
+# below the fold was read, reported, and absent from the picture (bench: 3 of 18
+# runs that ended on a snapshot passed, 15 of 22 that ended on an act).
+ACT_VOCAB='goto fill type click wait_for select press upload show'
 # DIVE-7237 (GAP-11): the most a DOM upload step carries. The file travels
 # inside the request to the browser (it reads as the caller, not as the browser's
 # seat), so it is capped; a Meta ad image is a few hundred KB.

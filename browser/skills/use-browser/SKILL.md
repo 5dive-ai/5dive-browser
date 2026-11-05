@@ -25,7 +25,8 @@ needs nothing connected.
    step is one of:
    `{"op":"goto","url":…}` `{"op":"click","selector":…}` `{"op":"fill","selector":…,"value":…}`
    `{"op":"type","selector":…,"value":…}` `{"op":"select","selector":…,"value":…}`
-   `{"op":"press","selector":…,"key":"Enter"}` `{"op":"wait_for","selector":"text=…"}`.
+   `{"op":"press","selector":…,"key":"Enter"}` `{"op":"wait_for","selector":"text=…"}`
+   `{"op":"show","selector":…}` (scrolls it into the window, changes nothing).
    A selector is `ref=<role>/<name>` from the snapshot; a control inside an embedded frame is
    `ref=frame:<frame> >> <role>/<name>`, copied whole. Use `type` for search boxes and
    autocompletes that react to keystrokes, and `fill` for plain inputs. An act with a URL loads
@@ -60,6 +61,13 @@ Agents stop early: right site, one filter missing. So before you report, and bef
    chart drawn, not a menu or a home page.
 5. **Asked for information? Answer with it**: the facts, numbers or names, copied from the
    page, not "I found the page".
+6. **End with the proof in the picture.** The last call's `page.png` is what the owner sees,
+   and it is only the browser window, not the whole page you read as text: a result, total
+   or filter chip below the fold is in your text and not in the picture. So the LAST call is
+   an act with no URL that `show`s the proof, with `--expect` on its words:
+   `act <site> --steps='[{"op":"show","selector":"text=55th percentile"}]' --expect='55th percentile'`.
+   Show the result or the opened item; when the filters or sort sit far from it, show them in
+   one act first, then the result in the last. Never end on a `snapshot` or a `read`.
 
 ## Reading pages
 

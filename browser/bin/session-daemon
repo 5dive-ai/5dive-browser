@@ -177,6 +177,7 @@ const STEPS = {
   select:   ['selector', 'value'],
   upload:   ['selector', 'path'],
   press:    ['selector', 'key'],
+  show:     ['selector'],
 };
 const STEP_TIMEOUT = Number(process.env.FIVEDIVE_BROWSER_STEP_TIMEOUT || 30000);
 // AN AGENT'S STEP GIVES UP SOONER THAN A RECIPE'S (DIVE-6778). `act` sends
@@ -1404,6 +1405,9 @@ async function planRequest(ctx, req, send, end) {
         case 'select':   await on((x, timeout) => page.selectOption(x, s.value, { timeout })); break;
         case 'upload':   await on((x, timeout) => page.setInputFiles(x, s.path, { timeout })); break;
         case 'press':    await on((x, timeout) => page.press(x, s.key, { timeout })); break;
+        // DIVE-7754: scrolls the element into the window and changes nothing, so the
+        // act's page.png shows it (aria.showStep).
+        case 'show':     await on((x, timeout) => aria.showStep(page, x, timeout)); break;
       }
       if (retry) send({ t: 'log', line: `  ${retry}ok` });
       retry = null;
