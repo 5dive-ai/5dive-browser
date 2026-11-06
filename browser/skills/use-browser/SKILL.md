@@ -29,7 +29,10 @@ a stop sign either: read, links, snapshot and act check each page for a sign-in 
    `{"op":"press","selector":…,"key":"Enter"}` `{"op":"wait_for","selector":"text=…"}`.
    A selector is `ref=<role>/<name>` from the snapshot; a control inside an embedded frame is
    `ref=frame:<frame> >> <role>/<name>`, copied whole. Use `type` for search boxes and
-   autocompletes that react to keystrokes, and `fill` for plain inputs. An act with a URL loads
+   autocompletes that react to keystrokes, and `fill` for plain inputs. **A dropdown or a
+   slider:** `select` with the option's words picks from any list, not only a native one (it
+   opens the list and clicks the option); `fill` with a number moves a slider (price,
+   distance). The step says what the control reads now. An act with a URL loads
    the page fresh, so fill and submit a form in one act; without a URL it carries on in the page
    the browser is on. **An act prints what it changed**: the refs that appeared (`+ ref=…`), the
    ones that went and the new text. Act on those refs next; snapshot again only when the ref you
@@ -67,8 +70,11 @@ Agents stop early: right site, one filter missing. So before you report, and bef
    a later click can undo it (a price filter that resets the sort, a toggle clicked twice).
 3. **A part not shown: do it now**, then check again. Set a filter on the page's own control
    (the filter panel, "Narrow your search", a Level or Type dropdown, "More filters", the sort
-   menu), not by adding its words to the search box: a list you checked by reading is not
-   filtered. Try another way in before you call a part impossible.
+   menu), not by adding its words to the search box. A sort the job names (newest, lowest
+   price, top rated) is a part too: `select` it in the page's Sort menu, `--expect` its label.
+   **A filter you checked by reading the list is NOT applied.** A control will not take: try
+   `select`/`fill` on it, the keyboard, the filter's own link or the url parameter. None
+   takes? Say it could not be set; never present a list filtered by eye as the result.
    **Never turn a named filter off**, not to compare and not because the list is empty: an
    empty list with every filter on IS the answer. Turned one off? Set it back before you stop.
 4. **A choice the job did not name and that harms no one: pick it, say it, finish.** A form

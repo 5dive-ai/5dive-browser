@@ -45,6 +45,27 @@ function lookOf(url, nodes, text) {
   return { url: String(url || ''), refs, lines };
 }
 
+// THE URL DROPPED A FILTER OR SORT (DIVE-7791, kept by DIVE-7818). Same page, and
+// a query parameter the last look's url had is gone: a goto, a "Show more" or a
+// reload put the list back to the site's default (Best Buy on the bench:
+// `sp=Price-Low-To-High` went, the list said Best Match, the agent answered from
+// it). Only a key that went away counts; a value the agent changed is its own
+// choice. Tracking and paging keys are not filters.
+const NOT_A_FILTER = /^(utm_.*|_.*|gclid|fbclid|msclkid|ved|ei|sca_esv|sxsrf|oq|gs_.*|aqs|sourceid|sa|ie|ref|ref_|tag|page|pg|p|start|offset|sid|session|ts|t|cb|cache)$/i;
+const PARAMS_MAX = 6;
+function paramsLost(prevUrl, curUrl) {
+  let a, b;
+  try { a = new URL(prevUrl); b = new URL(curUrl); } catch (e) { return []; }
+  if (a.origin !== b.origin || a.pathname !== b.pathname) return [];
+  const out = [];
+  for (const [k, v] of a.searchParams) {
+    if (NOT_A_FILTER.test(k) || b.searchParams.has(k)) continue;
+    const kv = `${k}=${v}`.slice(0, 80);
+    if (!out.includes(kv)) out.push(kv);
+  }
+  return out.slice(0, PARAMS_MAX);
+}
+
 function counts(arr) {
   const m = new Map();
   for (const x of arr) m.set(x, (m.get(x) || 0) + 1);
@@ -91,6 +112,8 @@ function compare(prev, cur, { refsMax = REFS_MAX, goneMax = GONE_MAX, textMax = 
     text_added: text,
     text_added_total: textNew.length,
     text_removed_total: textGone.length,
+    // DIVE-7791: a filter or sort the url dropped since the last look.
+    params_lost: prev ? paramsLost(base.url, cur.url) : [],
   };
 }
 
@@ -109,4 +132,4 @@ function memory() {
   };
 }
 
-module.exports = { lookOf, compare, memory, REFS_MAX, GONE_MAX, TEXT_MAX, OPTIONS_MAX };
+module.exports = { lookOf, compare, memory, paramsLost, PARAMS_MAX, REFS_MAX, GONE_MAX, TEXT_MAX, OPTIONS_MAX };

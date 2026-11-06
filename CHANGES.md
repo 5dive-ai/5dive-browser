@@ -8,6 +8,18 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — dropdowns and sliders that would not take are driven, and a named sort is a part, so the agent stops filtering by eye (DIVE-8601, from DIVE-7818), 1.94.0
+
+Nightly week 2026-11-15: 31 of 55 non-wall misses were a filter or sort the task names, never set or never shown (DIVE-8601); most often the Sort menu still read Best Match or Relevance. This ports DIVE-7818 (PR #138, 1.71.0, never merged) onto 1.93.0. Original finding: on the 1.70.0 bench rerun (DIVE-7791), 10 of the 32 misses that were not a bot wall had one shape: the agent found the filter the job named, the control would not take, and it read the list by eye instead. The judge grades the filter shown on the page, so all 10 failed. 
+
+- **`select` works on any dropdown**, not only a native `<select>`. A radius picker, a button menu or a combobox is opened, the option with those words is found in its list, scrolled to and clicked. If something sits on top of it, the click goes through the page. The step then says what the control reads now, and warns when it does not show the choice. If no option has those words, the step fails and lists the options it saw.
+- **A hidden `<select>` behind the page's own widget is set through the page**, and the page is told. A visible `<select>` whose label matches exactly takes the same call as before.
+- **`fill` with a number moves a slider** (`role=slider`, price or distance). It reads the slider's own value, moves it by keys, and drags the thumb when keys do not move it. A slider that will not reach the value fails the step with what it reads. Arrow keys used to report "ok" while nothing moved. A text field's `fill` is unchanged and costs nothing extra: the slider path runs only after `page.fill` refuses the element.
+- **The skill:** a sort the job names is a part: `select` it in the Sort menu and `--expect` its label. A filter you checked by reading the list is not applied. Try the other ways in, and if none works, say the filter could not be set.
+- **Kept from #136:** `! the url dropped <key>=…` when a load undoes a filter or sort (it fixed om2w-1df24ec8). The `set now:` line is not kept: it did not help.
+- **The owner's check still applies.** When approval is on, an option whose words read as a payment, a send, a delete or a publish is not clicked by `select`. The step says to use a `click` on it, which asks the owner.
+- `tests/browser_act_controls_unit.sh`: 38 arms. 25 of them run on 15 real Chrome pages, one or more per control kind. On 1.70.0, 28 of the 38 failed. CI runs it on the runner's Chrome.
+
 ### Fixed — a site the owner just signed in to no longer reads `unconfirmed` when the check cannot look (DIVE-8595), 1.93.0
 - In input mode, `status` could not load the check page when the group's browser was on another site, a person or
   an agent was using the window, no tab opened, or the page did not finish loading. It said `unconfirmed` even
