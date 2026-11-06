@@ -1122,9 +1122,13 @@ async function snapshotRequest(ctx, req, send, end) {
     // agent-browser's snapshot), and it threw away what the act had just done to
     // the page: a typed value, an open menu. No load, so no settle either: the
     // act that left the page here already waited its own.
-    const stay = inPopup(page, req.url) || isOn(page, req.url);
+    // A SNAPSHOT WITH NO URL (req.here, DIVE-7801) is the page in view, wherever it
+    // went: the url it names is only the last act's, kept to pick the tab. Box bug
+    // 738: a same-tab OAuth redirect left that tab on Google's chooser, and a load
+    // of its URL again would replay a sign-in already under way.
+    const stay = !!req.here || inPopup(page, req.url) || isOn(page, req.url);
     // A late popup (DIVE-7680) is read at its own address, not the one the read named.
-    const readAt = page === latePopup ? String(page.url()) : req.url;
+    const readAt = page === latePopup || req.here ? String(page.url()) : req.url;
     if (stay) send({ t: 'log', line: `  the browser is already on ${readAt}; read as it is, not reloaded` });
     // The load's settle ends when the page is quiet, as act's does (DIVE-6778).
     const watch = !stay && typeof page.context === 'function' ? aria.requestWatch(page.context()) : null;

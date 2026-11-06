@@ -34,8 +34,10 @@ site led there:
   one); the "Sign in to <app> with Google" / "Continue as …" confirm; a consent screen that asks
   only for basic profile and email (the "See your gender / languages" lines under the profile
   item are its details, not extra access). Carry on with `act <the site you started on>` and no
-  URL: the whole sign-up stays in that one browser. Never copy a Google URL into a command; its
-  long query IS the sign-up, and a cut copy opens Google's "400. That's an error." page.
+  URL: the whole sign-up stays in that one browser. The chooser and its account are in that act's
+  own re-read, and in `snapshot <the site you started on>` with no URL. Never copy a Google URL
+  into a command; its long query IS the sign-up, and a cut copy opens Google's "400. That's an
+  error." page.
 - **Hard stop (exit 75), hand it over:** a password field, a verification code or 2-step prompt, a
   robot check, Google asking for an email address (adding an account), a chooser whose account is
   signed out. `5dive browser handoff <site>` (a robot check: `connect-request <site> --challenge`).
