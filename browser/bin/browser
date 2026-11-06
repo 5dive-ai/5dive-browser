@@ -6503,7 +6503,11 @@ _shot_host_ok() {  # _shot_host_ok <site> <host>
 #
 # Publishes _PG_DIR (the profile dir) and _PG_CHROME (the binary), and may arm
 # the EXIT trap that puts back a serve it stopped.
-_PG_DIR=""; _PG_CHROME=""; _PG_WARM=0; _PG_SITE=""
+_PG_DIR=""; _PG_CHROME=""; _PG_WARM=0; _PG_SITE=""; _PG_HERE=0
+_url_host() {  # <url> -> its host, lowercased, no userinfo or port
+  local host="${1#*://}"; host="${host%%/*}"; host="${host%%\?*}"; host="${host%%#*}"
+  host="${host##*@}"; host="${host%%:*}"; printf '%s\n' "${host,,}"
+}
 _page_open() {  # _page_open <site> <url>
   local site="$1" url="$2"
   _PG_SITE="$site"
@@ -6511,9 +6515,15 @@ _page_open() {  # _page_open <site> <url>
   # not pages of a site and have no business being rendered by a verb whose whole
   # contract is "a page of the site you logged into".
   [[ "$url" =~ ^https?://[^/]+ ]] || die "$E_USAGE" "browser renders only http(s) pages; got: $url"
-  local host="${url#*://}"; host="${host%%/*}"; host="${host%%\?*}"
-  host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
-  _shot_host_ok "$site" "$host" || die "$E_USAGE" "$url is not a page of '$site' (its host is $host). A profile is a credential scoped to the site it is named for: rendering another site's page inside it produces a LOGGED-OUT screenshot that looks like a bug in this command. Use the profile for that site — or 5dive browser auth $host."
+  local host; host="$(_url_host "$url")"
+  # _PG_HERE (DIVE-7801): the page this site's own served browser is on, read in
+  # place by a no-URL snapshot; cmd_snapshot checked a daemon holds it.
+  if (( ! ${_PG_HERE:-0} )) && ! _shot_host_ok "$site" "$host"; then
+    # A GOOGLE SIGN-IN PAGE IS NOT A LOGIN TO MAKE (DIVE-7801): `browser auth
+    # accounts.google.com` sent the agent to its owner one click from the account.
+    [[ "$url" =~ $GOOGLE_SIGNIN_URL ]] && die "$E_USAGE" "$url is Google's sign-in, not a page of '$site', and a Google sign-in link is never opened by hand (its long query is the sign-up). If $site's own button opened it, it is in that browser now: read it with 5dive browser snapshot $site (no URL) and answer it with 5dive browser act $site --steps='[…]' (no URL)."
+    die "$E_USAGE" "$url is not a page of '$site' (its host is $host). A profile is a credential scoped to the site it is named for: rendering another site's page inside it produces a LOGGED-OUT screenshot that looks like a bug in this command. Use the profile for that site — or 5dive browser auth $host."
+  fi
 
   _open_site "$site"
   local dir="$_SITE_DIR"
@@ -7476,7 +7486,10 @@ cmd_snapshot() {
   # `snapshot _public` WITH NO URL is the page that browser is on (DIVE-6795), as
   # an act without one already is: on the bench it was a usage error, then a
   # second call with the URL, and each is a model turn.
-  [[ -n "$site" && -z "$url" ]] && url="$(_crumb_url "$site")"
+  # THE PAGE IN VIEW, NOT A URL (DIVE-7801): a snapshot with no URL is READ where
+  # the site's served browser is, never loaded again from the last act's URL.
+  local here=0
+  if [[ -n "$site" && -z "$url" ]]; then url="$(_crumb_url "$site")"; [[ -n "$url" ]] && here=1; fi
   [[ -n "$site" && -n "$url" ]] || die "$E_USAGE" "usage: 5dive browser snapshot <site> <url> [--out=<dir>] [--interactive] [--json] [--no-shot] (the url may be left out right after an act or snapshot on <site>)"
   _valid_site "$site" || die "$E_USAGE" "'$site' is not a usable profile name"
   [[ -z "$settle" || "$settle" =~ ^[0-9]{1,7}$ ]] || die "$E_USAGE" "--settle takes milliseconds; got: $settle"
@@ -7491,6 +7504,21 @@ cmd_snapshot() {
   # is the window in which that happens to a caller who is mid-action.
   _lease_take "$site" "$dir" "snapshot" "$wait"
   trap '_lease_and_serve_release' EXIT
+
+  # A PAGE OF ANOTHER HOST THAT THIS SITE'S OWN ACT OPENED (DIVE-7801). Box bug 738:
+  # supliful.com's "Sign up with Google" moved its tab to accounts.google.com, the
+  # act's re-read showed the chooser, and the no-URL snapshot after it was refused
+  # as "not a page of supliful.com", with advice that sent the agent to its owner.
+  # The host check is for a URL the CALLER types: one profile's name vouching for
+  # another site. This URL was not typed: it is where this profile's own browser
+  # already is, and `act <site>` with no URL already works on it. So it is read in
+  # place, and only in place: with no served browser holding it, reading it means
+  # loading it again, and a second load of an OAuth URL replays a used sign-in.
+  # _signin_guard still judges the page it reads (Google's own pages one by one).
+  if (( here )) && ! _shot_host_ok "$site" "$(_url_host "$url")"; then
+    _daemon_live "$dir" || die "$E_NOT_READY" "the page $site's last act left is on $(_url_host "$url"), not $site, and no served $site browser holds it any more, so it cannot be read where it is (loading it again would start that sign-in over). Start again from $site's own page: 5dive browser act $site <its url> --steps='[…]'"
+    _PG_HERE=1
+  fi
 
   # THE FIRST SNAPSHOT OF THE PUBLIC PROFILE STARTS ITS SERVED BROWSER (DIVE-6778),
   # on this page, as the first act already did (_act_keep_page). The snapshot an
@@ -7534,8 +7562,8 @@ cmd_snapshot() {
     plan=$(jq -nc --arg u "$url" --arg h "$stage/page.html" --arg s "$png" \
         --argjson i "$interactive" --argjson f "$full" --argjson l "$(_daemon_lease_json)" \
         --argjson n "$inline" --argjson st "$(_settle_json "$settle")" --arg wf "$wait_for" --arg xs "$(_extract_sha)" \
-        --argjson sm "$ACT_STEP_MS" \
-        '{op:"snapshot", url:$u, extract:$xs, look:true, step_ms:$sm,
+        --argjson sm "$ACT_STEP_MS" --argjson here "$here" \
+        '{op:"snapshot", url:$u, extract:$xs, look:true, step_ms:$sm, here:($here==1),
           html:(if $n==1 then null else $h end),
           shot:(if $n==1 then (if $s=="" then null else true end) elif $s=="" then null else $s end),
           inline:($n==1), interactive:($i==1), full:($f==1)}

@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a page another site opened is read where it is, not refused (DIVE-7801), 1.68.3
+
+Box bug 738: Supliful's "Sign up with Google" moved its tab to Google's account chooser. The next `snapshot supliful.com` with no URL was refused as "not a page of supliful.com" and told the agent to run `browser auth accounts.google.com`. That sends the job to the owner, who then signed up by hand. The account was one click away.
+
+- **A snapshot with no URL reads the page the site's browser is on**, wherever the site's own act took it. It is not loaded again: a second load of a Google sign-in link starts that sign-in over. Google's own pages are still judged one by one, as before.
+- **A URL you type is still checked.** `snapshot <site> <another site's url>` is refused as before. A Google sign-in URL is refused with the right advice: read it with no URL, answer it with `act <site>` and no URL.
+- **With no browser still holding that page**, the snapshot stops and says to start again from the site's own page, instead of loading the sign-in link again.
+- `tests/browser_plugin_unit.sh` T61: a click that moves the tab to another host, then a no-URL snapshot. On 1.68.2 it is refused.
+
 ### Fixed — a site with no adapter is checked once, not before every page verb (DIVE-7722), 1.68.2
 
 On a home-exit bench (DIVE-7690), 1,308 page commands on 59 sites first opened a separate Chrome on the site's front page to check the login. Each check added 5-10 s, and runs that hit the 10-minute limit went from 9 to 22.

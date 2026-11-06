@@ -8999,6 +8999,90 @@ t  'T60i ...and its line is one the routine recorder reads' 1 \
    "$(printf 'step 2: ref=searchbox/Q matched nothing; name match picked ref=combobox/Q; retried: ok\n' | \
       sed -nE 's/^ *step ([0-9]+): .* matched nothing; (reflex|name match) picked (ref=.*); retried: ok$/\1\t\3/p' | grep -c 'combobox/Q')"
 
+# --- T61 a page of another host that the site's own act opened is read in place (DIVE-7801) ------
+# Box bug 738 (exact-swallow, 1.68.2): supliful.com's "Sign up with Google" moved its tab to
+# accounts.google.com; the act's re-read was the chooser, and the no-URL snapshot after it was
+# refused "is not a page of 'supliful.com' ... 5dive browser auth accounts.google.com", which sent
+# the agent to its owner. The served stub lands the tab where the FILE DPWLAND says (a redirect).
+#   T61a  the act on the site's page lands on another host; a no-URL snapshot reads it: rc 0, its
+#         refs, no goto (re-loading an OAuth URL replays a used sign-in)
+#   T61b  the tab moved again after the act: the no-URL snapshot reads where it is NOW, no goto
+#   T61c  a URL of that other host TYPED by the caller is still refused (T15f, T51c)
+#   T61d  a typed Google sign-in URL is refused WITHOUT `browser auth accounts.google.com`
+#   T61e  with no served browser holding the page: a stop that names the way on, nothing loaded
+#   T61f  NEGATIVE CONTROL: origin/main's 1.68.2 bin/browser refuses T61a
+#   T61g  MUTANT: the daemon ignores `here`: T61b reloads the act's URL
+C61="$(dirname "$KD52")/.5dive-last-page"; L61="$TMP/t61.land"; S61="$TMP/t61.snap.json"; rm -f "$L61"
+O61="https://idp61.test/choose?state=s61"; O61B="https://idp61.test/consent?state=s61"
+jq -n --arg html "$LIVE_DOM" '{nodes:[{ref:"link/alex@example.test", role:"link", name:"alex@example.test", tag:"a"}],
+  marker:null, title:"Choose an account", html:$html}' > "$S61"
+keep61() { keep52 env FIVEDIVE_BROWSER_FLOW_TTL=900 DPWLAND="$L61" DPWSNAP="$S61" "$@"; }
+# A load of the page that was read (idp61.test). The site's own login check opens the site's
+# front page in a tab of its own; that is not the read, and it is listed apart (gotos61all).
+gotos61() { tail -n +$(($1+1)) "$DREC" | jq -rs '[.[]|select(.call=="goto" and (.url|startswith("https://idp61.test")))]|length'; }
+gotos61all() { tail -n +$(($1+1)) "$DREC" | jq -rs '[.[]|select(.call=="goto")|"\(.kind) \(.url)"]|join(", ")'; }
+k52stop "$K52"
+printf '%s\n' "$O61" > "$L61"
+keep61 "$BROWSER" act "$U52" --steps='[{"op":"click","selector":"#google"}]' --out="$TMP/t61"
+t  'T61 (precondition) the act exits 0 and a served browser holds its page' '0 yes' "$RC $(k52live "$KD52")"
+N61=$(wc -l < "$DREC")
+keep61 "$BROWSER" snapshot "$K52" --interactive --out="$TMP/t61a"
+t  'T61a a no-URL snapshot of the page the act left on another host exits 0 (1.68.2: refused)' 0 "$RC"
+tn 'T61a ...it is not refused as another site' 'is not a page of' "$ERR"
+tn 'T61a ...and nobody is sent to log in to the other host' 'browser auth idp61.test' "$ERR"
+tc 'T61a ...it is that page' "$O61" "$OUT"
+t  'T61a ...with its refs' 'link/alex@example.test' "$(jq -r '.nodes[0].ref' "$TMP/t61a/tree.json" 2>/dev/null)"
+t  'T61a ...read where it is: the page is not loaded again' 0 "$(gotos61 "$N61")"
+tn 'T61a ...and the read tab never left it (every load since the act)' 'first https://idp61' "$(gotos61all "$N61")"
+printf 'NOTE: T61a loads since the act: %s\n' "$(gotos61all "$N61")"
+printf '%s\n' "$O61B" > "$L61"
+N61=$(wc -l < "$DREC")
+keep61 "$BROWSER" snapshot "$K52" --out="$TMP/t61b"
+t  'T61b the tab moved after the last read: the snapshot reads where it is now' "0 $O61B" \
+   "$RC $(jq -r '.url' "$TMP/t61b/tree.json" 2>/dev/null)"
+t  'T61b ...and does not load the last URL again' 0 "$(gotos61 "$N61")"
+keep61 "$BROWSER" snapshot "$K52" "$O61" --out="$TMP/t61c"
+t  'T61c the same host TYPED by the caller is still refused' 64 "$RC"
+tc 'T61c ...as another site' "is not a page of '$K52'" "$ERR"
+keep61 "$BROWSER" snapshot "$K52" "https://accounts.google.com/v3/signin/accountchooser?prompt=select_account" --out="$TMP/t61d"
+t  'T61d a typed Google sign-in URL is refused' 64 "$RC"
+tn 'T61d ...without sending the agent to `browser auth accounts.google.com`' 'browser auth accounts.google.com' "$ERR"
+tc 'T61d ...it says to read it with no URL' "snapshot $K52 (no URL)" "$ERR"
+k52stop "$K52"
+printf '%s\t%s\t%s\n' "$K52" "$(date +%s)" "$O61" > "$C61"
+: > "$PWREC"; N61=$(wc -l < "$DREC")
+keep61 env FIVEDIVE_BROWSER_ACT_KEEP=0 "$BROWSER" snapshot "$K52" --out="$TMP/t61e"
+t  'T61e no served browser holds that page: it stops (76)' 76 "$RC"
+tc 'T61e ...and says to start again from the site' "Start again from $K52's own page" "$ERR"
+t  'T61e ...nothing was loaded or launched' '0 0' "$(gotos61 "$N61") $(jq -rs '[.[]|select(.call=="launch")]|length' "$PWREC")"
+# T61f the negative control: 1.68.2's CLI with this tree's daemon.
+OLD61="$TMP/t61-old"; rm -rf "$OLD61"; mkdir -p "$OLD61"
+if git -C "$ROOT" show a9acbd6:browser/bin/browser > "$OLD61/browser.sh" 2>/dev/null; then
+  rm -rf "$OLD61/b"; cp -r "$ROOT/browser" "$OLD61/b"; cp "$OLD61/browser.sh" "$OLD61/b/bin/browser"; chmod +x "$OLD61/b/bin/browser"
+  printf '%s\n' "$O61" > "$L61"
+  keep61 "$OLD61/b/bin/browser" act "$U52" --steps='[{"op":"click","selector":"#google"}]' --out="$TMP/t61f0"
+  keep61 "$OLD61/b/bin/browser" snapshot "$K52" --interactive --out="$TMP/t61f"
+  t  'T61f NEGATIVE CONTROL: 1.68.2 refuses the same no-URL snapshot — T61a is red there' "64 yes" \
+     "$RC $(grep -qF 'is not a page of' <<<"$ERR" && echo yes || echo no)"
+  k52stop "$K52" "$OLD61/b/bin/browser"
+else
+  printf 'SKIP: T61f (no a9acbd6 in this clone)\n'
+fi
+# T61g MUTANT: the daemon reloads the act's URL, as before this row.
+MUT61="$TMP/t61-mutant"; rm -rf "$MUT61"; cp -r "$ROOT/browser" "$MUT61"
+perl -pi -e 's/const stay = !!req\.here \|\| /const stay = \/\* MUTANT-DIVE-7801 \*\/ /' "$MUT61/bin/session-daemon"
+t  'T61g (anchor) the mutation landed in the copy' 1 "$(grep -c 'MUTANT-DIVE-7801' "$MUT61/bin/session-daemon")"
+mut61() { keep61 env FIVEDIVE_BROWSER_SESSION_DAEMON="$MUT61/bin/session-daemon" "$MUT61/bin/browser" "$@"; }
+printf '%s\n' "$O61" > "$L61"
+mut61 act "$U52" --steps='[{"op":"click","selector":"#google"}]' --out="$TMP/t61g0"
+printf '%s\n' "$O61B" > "$L61"
+N61=$(wc -l < "$DREC")
+mut61 snapshot "$K52" --out="$TMP/t61g"
+t  'T61g MUTANT: the daemon loads the act'"'"'s URL again — T61b is red' 1 "$(gotos61 "$N61")"
+k52stop "$K52" "$MUT61/bin/browser" "$MUT61/bin/session-daemon"
+rm -f "$L61" "$C61"
+tc 'T61h CHANGES.md carries the DIVE-7801 entry' 'DIVE-7801' "$(cat "$ROOT/CHANGES.md")"
+
 # --- T98 no arm wrote to the seat's real approval store (DIVE-5429) -----------
 # Last on purpose: it grades every arm above. The listing carries size and mtime,
 # so a line appended to allowed.jsonl is caught as well as a new ask.
