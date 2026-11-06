@@ -2318,6 +2318,94 @@ _lock_clear_dead() {
   rm -f -- "$1/SingletonLock" "$1/SingletonSocket" "$1/SingletonCookie"
 }
 
+# _lock_oneshot <profile-dir> — the pid of a live ONE-SHOT headless Chrome
+# (--headless plus --dump-dom or --screenshot, at exactly this --user-data-dir, no
+# debugging channel) holding the profile's SingletonLock; rc 1 for any other
+# holder or none. That shape is a probe's or a one-off render's, never a served
+# browser's or a viewer's (see _reap_stale_probe).
+_lock_oneshot() {
+  # RESOLVED, both sides: every site of a sign-in group is a link to one
+  # .group-<id> directory, so the holder may name another site's link to it.
+  local dir="${1%/}" pid a headless=0 oneshot=0 mine=0 port=0 real
+  pid=$(_lock_owner "$dir") || return 1
+  [[ -d "/proc/$pid" ]] || return 1
+  real=$(readlink -f -- "$dir" 2>/dev/null) || real="$dir"
+  while IFS= read -r -d '' a; do
+    case "$a" in
+      --headless|--headless=*) headless=1 ;;
+      --dump-dom|--screenshot|--screenshot=*) oneshot=1 ;;
+      --remote-debugging-*) port=1 ;;
+      --user-data-dir=*) a="${a#--user-data-dir=}"
+        [[ "${a%/}" == "$dir" || "$(readlink -f -- "$a" 2>/dev/null)" == "$real" ]] && mine=1 ;;
+    esac
+  done < "/proc/$pid/cmdline" 2>/dev/null
+  (( headless && oneshot && mine && ! port )) || return 1
+  echo "$pid"
+}
+
+# THE SCHEDULED CHECK STEPS ASIDE FOR A BROWSER CALL (DIVE-7822). probe-all (the
+# 6-hourly timer) opens a Chrome on each site's profile in turn, and every site of
+# a sign-in group is a link to ONE profile directory: on the bench rig ~300 sites,
+# so the sweep held that profile for 22 minutes, and any page verb that had to
+# start a Chrome in that window died on Chrome's exit 21 ("profile in use"). The
+# probe already yields to a SERVED browser; this is the other direction, in two
+# halves that close the race between them:
+#   - the sweep writes .5dive-probe (its pid) BEFORE it looks at the lease, and
+#     skips the site while a browser call holds or waits for the lease;
+#   - a browser call takes the lease FIRST, then waits out a live .5dive-probe
+#     (one sweep step, seconds) before it launches anything.
+# Whichever order they land in, one of them sees the other.
+PROBE_MARK=".5dive-probe"
+_probe_mark() {  # <profile-dir> <site>
+  local f="${1%/}/$PROBE_MARK" me="$BASHPID"
+  ( umask 077; printf 'pid=%s\nsite=%s\nat=%s\n' "$me" "$2" "$(date -u +%s)" > "$f" ) 2>/dev/null || true
+}
+_probe_unmark() {  # <profile-dir> — only our own mark
+  local f="${1%/}/$PROBE_MARK"
+  [[ "$(_kv "$f" pid)" == "$BASHPID" ]] && rm -f -- "$f"
+  return 0
+}
+_probe_holder() {  # <profile-dir> -> the site the sweep is checking in it now; rc 1 if none
+  local f="${1%/}/$PROBE_MARK" pid
+  [[ -f "$f" ]] || return 1
+  pid=$(_kv "$f" pid)
+  [[ "$pid" != "$BASHPID" && "$pid" != "$$" ]] && _holder_live "$pid" || return 1
+  _kv "$f" site
+}
+# Run with the lease held, before anything launches a Chrome on <profile-dir>.
+# Bounded (FIVEDIVE_BROWSER_PROBE_YIELD_S, default 60): a sweep step is one
+# capped probe, a few seconds; past the bound the call goes ahead and the launch
+# says why it failed in words (_inuse_note).
+_probe_yield() {  # <site> <profile-dir>
+  local site="$1" dir="${2%/}" bound="${FIVEDIVE_BROWSER_PROBE_YIELD_S:-60}" t0 now said=0
+  [[ "$bound" =~ ^[0-9]{1,4}$ ]] || bound=60
+  _daemon_live "$dir" && return 0   # a warm browser: nothing of ours launches
+  t0=$(date +%s); now=$t0
+  while _probe_holder "$dir" >/dev/null || _lock_oneshot "$dir" >/dev/null; do
+    if (( ! said )); then
+      printf '%s: the scheduled login check is using the %s browser; waiting for it to finish (up to %ss)\n' "$PROG" "$site" "$bound" >&2
+      said=1
+    fi
+    now=$(date +%s)
+    if (( now - t0 >= bound )); then
+      printf '%s: the scheduled login check still has the %s browser after %ss; going ahead anyway\n' "$PROG" "$site" "$bound" >&2
+      return 0
+    fi
+    sleep 0.2
+  done
+  (( said )) && printf '%s: the login check let go of the %s browser after %ss; continuing\n' "$PROG" "$site" "$(( $(date +%s) - t0 ))" >&2
+  return 0
+}
+# Chrome's exit 21 / SingletonLock, said in words: who has the profile.
+_inuse_note() {  # <profile-dir> <chrome's words> [<status>] -> a sentence to append, or nothing
+  [[ "${3:-}" == 21 || "$2" == *SingletonLock* || "$2" == *process_singleton* ]] || return 0
+  if _probe_holder "$1" >/dev/null; then
+    printf ' [The scheduled login check is using this browser right now. It lets go within a minute; try again then.]'
+  else
+    printf ' [Another Chrome has this browser profile open (Chrome exit 21, "profile in use"): 5dive browser served lists the ones 5dive started.]'
+  fi
+}
+
 # _reap_stale_probe <profile-dir> — the profile is locked by a ONE-SHOT headless
 # Chrome (--headless plus --dump-dom or --screenshot, at exactly this
 # --user-data-dir, no debugging port) that has run longer than any capped launch
@@ -2328,18 +2416,10 @@ _lock_clear_dead() {
 # is driven over a pipe and has neither one-shot flag. Returns 0 when the lock is
 # now free of a live holder.
 _reap_stale_probe() {
-  local dir="${1%/}" pid a headless=0 oneshot=0 mine=0 port=0 age
+  local dir="${1%/}" pid age
   pid=$(_lock_owner "$dir") || return 1
   [[ -d "/proc/$pid" ]] || { _lock_clear_dead "$dir"; return 0; }
-  while IFS= read -r -d '' a; do
-    case "$a" in
-      --headless|--headless=*) headless=1 ;;
-      --dump-dom|--screenshot|--screenshot=*) oneshot=1 ;;
-      --remote-debugging-*) port=1 ;;
-      --user-data-dir=*) a="${a#--user-data-dir=}"; [[ "${a%/}" == "$dir" ]] && mine=1 ;;
-    esac
-  done < "/proc/$pid/cmdline" 2>/dev/null
-  (( headless && oneshot && mine && ! port )) || return 1
+  pid=$(_lock_oneshot "$dir") || return 1
   local stale="${FIVEDIVE_BROWSER_PROBE_STALE_S:-600}"
   [[ "$stale" =~ ^[0-9]{1,7}$ ]] || stale=600
   age=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ') || return 1
@@ -3080,7 +3160,7 @@ _probe() {
     local why; why=$(tr -s '\n' ' ' < "$dom.err" 2>/dev/null | sed 's/^ *//;s/ *$//' | cut -c1-200)
     rm -f "$dom" "$dom.err"
     _stamp "$dir" "UNKNOWN — chrome did not load the page${why:+: $why}"
-    echo "UNKNOWN (chrome did not load the page${why:+ — $why})"; return 0
+    echo "UNKNOWN (chrome did not load the page${why:+ — $why})$(_inuse_note "$dir" "$why")"; return 0
   fi
   # THE GENERIC CHECK, FOR `status` TOO (DIVE-5388). A connected site with no
   # adapter used to stop at UNKNOWN here — 7 of 13 sites on chill-gorge had no
@@ -3236,7 +3316,15 @@ cmd_probe_all() {
       printf '  %-20s skipped: served (a login view, which no probe can ask; checked when it stops)\n' "$site"
       continue
     fi
+    # A BROWSER CALL GOES FIRST (DIVE-7822): see _probe_yield. Mark, THEN look.
+    _probe_mark "$d" "$site"
+    if _lease_live "$d" || _lease_queue_first "$d" >/dev/null; then
+      _probe_unmark "$d"
+      printf '  %-20s skipped: a browser call is using it now (the scheduled check steps aside; the next one reads it)\n' "$site"
+      continue
+    fi
     output=$(_auth_status "$site" 2>&1); arc=$?
+    _probe_unmark "$d"
     printf '%s\n' "$output"
     (( arc == E_UNAVAILABLE )) && broken=1
   done
@@ -3657,7 +3745,9 @@ _lease_take() {  # _lease_take <site> <profile-dir> <purpose> [<wait-seconds>|no
   (( ttl > LEASE_TTL_MAX )) && ttl="$LEASE_TTL_MAX"
   if (( _SITE_BROKERED )); then _lease_take_brokered "$site" "$d" "$purpose" "$wait" "$ttl"; return $?; fi
   if token=$(_lease_try "$d" agent "$purpose" "$ttl"); then
-    _LEASE_DIR="$d"; _LEASE_TOKEN="$token"; _serve_touch "$d"; _audit_row "$d" lease-acquire "$purpose"; return 0
+    _LEASE_DIR="$d"; _LEASE_TOKEN="$token"; _serve_touch "$d"; _audit_row "$d" lease-acquire "$purpose"
+    _probe_yield "$site" "$d"   # DIVE-7822: one sweep step, then this call's Chrome
+    return 0
   fi
   if [[ "$wait" == no ]]; then
     local _desc; _desc="$(_lease_describe "$d")"
@@ -3674,6 +3764,7 @@ Wait for it with --wait, or see who has it: 5dive browser lease $site --status"
        && token=$(_lease_try "$d" agent "$purpose" "$ttl"); then
       rm -f "${_LEASE_TICKET:?}"; _LEASE_TICKET=""
       _LEASE_DIR="$d"; _LEASE_TOKEN="$token"; _serve_touch "$d"
+      _probe_yield "$site" "$d"
       return 0
     fi
     sleep 1; waited=$(( waited + 1 ))
@@ -5975,7 +6066,7 @@ cmd_serve() {
     rm -f "$(_serve_pidfile "$dir")"
     local why; why=$(tr -s '\n' ' ' < "$errlog" 2>/dev/null | sed 's/^ *//;s/ *$//' | cut -c1-500)
     [[ -n "$why" ]] || why="it printed nothing"
-    die "$E_UNAVAILABLE" "chrome exited immediately (status $crc) — $site is NOT being served, and no display was left behind. Chrome said: $why$(_crash_note "$why" "$crc")"
+    die "$E_UNAVAILABLE" "chrome exited immediately (status $crc) — $site is NOT being served, and no display was left behind. Chrome said: $why$(_crash_note "$why" "$crc")$(_inuse_note "$dir" "$why" "$crc")"
   fi
 
   ( umask 077; printf 'display=%s\nxvfb_pid=%s\nchrome_pid=%s\nstarted_at=%s\nsite=%s\n' \

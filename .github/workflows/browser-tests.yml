@@ -141,6 +141,11 @@ jobs:
       # Chrome per profile dir), and the shopify.com adapter's both halves.
       - name: status group serial harness
         run: bash tests/browser_status_group_serial_unit.sh
+      # DIVE-7822: a page verb waits out one step of the scheduled login check
+      # (probe-all) on a shared group profile instead of dying on Chrome's exit 21,
+      # and the sweep skips a site a browser call holds. Fake chrome.
+      - name: probe yield harness
+        run: bash tests/browser_probe_yield_unit.sh
       # DIVE-7648: a probe whose page is still redirecting reads on, every probe
       # has one hard deadline that frees the session, and the Shopify admin's
       # landed address reads signed in (box report 680).
