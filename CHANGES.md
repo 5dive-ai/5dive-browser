@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a browser call no longer fails while the scheduled login check runs (DIVE-7822), 1.71.1
+
+Every 6 hours the box checks each site's login (`probe-all`). All sites of a sign-in group share one browser profile, and Chrome opens a profile only once. On the bench rig (~300 sites in one group) the check held that profile for 22 minutes, and any page verb that had to start a browser then died on Chrome's exit 21 ("profile in use"). One bench task was lost outright, another hit it twice.
+
+- **A page verb waits out the one check step in progress** (seconds), then opens its page. It says so: "the scheduled login check is using the <site> browser; waiting for it to finish". The wait is bounded (`FIVEDIVE_BROWSER_PROBE_YIELD_S`, default 60).
+- **The check steps aside.** While a browser call holds or waits for a site's browser, the sweep skips every site of that profile ("skipped: a browser call is using it now") and the next sweep reads them. Nothing is marked failed.
+- **No race between the two.** The sweep marks the profile (`.5dive-probe`) before it looks at the lease; a page verb takes the lease before it looks at the mark. Whichever lands first, the other sees it.
+- **If a check never lets go**, the refusal says the scheduled login check has the browser, not a bare Chrome exit 21.
+- `tests/browser_probe_yield_unit.sh`: 12 arms, `read` and `shot` in the middle of a sweep on a six-site group. On 1.68.3, 6 of them are red.
+
 ### Fixed — a page another site opened is read where it is, not refused (DIVE-7801), 1.68.3
 
 Box bug 738: Supliful's "Sign up with Google" moved its tab to Google's account chooser. The next `snapshot supliful.com` with no URL was refused as "not a page of supliful.com" and told the agent to run `browser auth accounts.google.com`. That sends the job to the owner, who then signed up by hand. The account was one click away.
