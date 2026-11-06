@@ -46,6 +46,13 @@ jobs:
       # before every page verb. Fake chrome; drives the real 5dive CLI when present.
       - name: generic check memo harness
         run: bash tests/browser_generic_memo_unit.sh
+      # DIVE-7818: select drives a dropdown that is not a <select>, fill moves a
+      # slider. REAL Chrome (the runner's) and the pinned playwright-core: a stub
+      # cannot grade what a page does with a click. No browser here is a failure.
+      - name: act controls harness
+        run: |
+          npm i --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" "playwright-core@$(jq -r '.dependencies["playwright-core"]' browser/package.json)"
+          NODE_PATH="$RUNNER_TEMP/pw/node_modules" CHROME="$(command -v google-chrome || command -v chromium)" CONTROLS_REQUIRE_BROWSER=1 bash tests/browser_act_controls_unit.sh
       # DIVE-6317: Cloudflare's "Just a moment..." is watched in the same page load
       # before it is a stop. A fake page, pure node.
       - name: interstitial wait harness

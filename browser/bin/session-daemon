@@ -48,6 +48,7 @@ const net = require('net');
 const path = require('path');
 const cp = require('child_process');
 const aria = require(path.join(__dirname, '..', 'lib', 'aria.cjs'));
+const controls = require(path.join(__dirname, '..', 'lib', 'controls.cjs'));   // DIVE-7818
 // DIVE-4951: the seat's own proxy — the same parser the cold driver uses, so the
 // served browser and a cold run cannot leave through two different routes.
 const proxy = require(path.join(__dirname, '..', 'lib', 'proxy.cjs'));
@@ -1401,11 +1402,13 @@ async function planRequest(ctx, req, send, end) {
           if (ms > 0) await aria.settleQuiet(page, ms, watch);
           break;
         }
-        case 'fill':     await on((x, timeout) => page.fill(x, s.value, { timeout })); break;
+        // DIVE-7818: a slider is moved, and a list that is not a <select> is picked
+        // from; a text field and a native <select> take the same calls as before.
+        case 'fill':     await on((x, timeout) => controls.fillStep(page, s, x, timeout, { log: (l) => send({ t: 'log', line: `  ${l}` }), guard: !!(req.guard && !req.approved) })); break;
         case 'type':     await aria.typeKeys(page, sel, s.value, s.delay_ms, { timeoutMs: stepMs }); break;
         case 'click':    await on((x, timeout) => aria.clickStep(page, s, x, timeout, { log: (l) => send({ t: 'log', line: `  ${l}` }) })); break;
         case 'wait_for': await page.waitForSelector(sel, { timeout: stepMs }); break;
-        case 'select':   await on((x, timeout) => page.selectOption(x, s.value, { timeout })); break;
+        case 'select':   await on((x, timeout) => controls.selectStep(page, s, x, timeout, { log: (l) => send({ t: 'log', line: `  ${l}` }), guard: !!(req.guard && !req.approved) })); break;
         case 'upload':   await on((x, timeout) => page.setInputFiles(x, s.path, { timeout })); break;
         case 'press':    await on((x, timeout) => page.press(x, s.key, { timeout })); break;
       }

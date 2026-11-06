@@ -8677,7 +8677,10 @@ _act_look_say() {  # <after.json>
       (if $l.text_added_total > $ta then "    … \($l.text_added_total - $ta) more lines (act --full prints page.md)" else empty end),
       (if $l.same_url and $l.text_removed_total > 0 then "  \($l.text_removed_total) lines of text gone" else empty end),
       (if ($l.refs_added_total + $l.refs_removed_total + $l.text_added_total + $l.text_removed_total) == 0
-       then "  nothing on the page changed" else empty end)' "$1" 2>/dev/null
+       then "  nothing on the page changed" else empty end),
+      (if (($l.params_lost // []) | length) > 0
+       then "  ! the url dropped \($l.params_lost | join(", ")): a filter or sort you set may be undone; check it is still on before you answer"
+       else empty end)' "$1" 2>/dev/null
   return 0
 }
 

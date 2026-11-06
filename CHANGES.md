@@ -8,6 +8,18 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — dropdowns and sliders that would not take are driven, so the agent stops filtering by eye (DIVE-7818), 1.71.0
+
+On the 1.70.0 bench rerun (DIVE-7791), 10 of the 32 misses that were not a bot wall had one shape: the agent found the filter the job named, the control would not take, and it read the list by eye instead. The judge grades the filter shown on the page, so all 10 failed. 1.69.0 and 1.70.0 were bench builds that were never shipped (PRs #135 and #136), so this release is 1.71.0.
+
+- **`select` works on any dropdown**, not only a native `<select>`. A radius picker, a button menu or a combobox is opened, the option with those words is found in its list, scrolled to and clicked. If something sits on top of it, the click goes through the page. The step then says what the control reads now, and warns when it does not show the choice. If no option has those words, the step fails and lists the options it saw.
+- **A hidden `<select>` behind the page's own widget is set through the page**, and the page is told. A visible `<select>` whose label matches exactly takes the same call as before.
+- **`fill` with a number moves a slider** (`role=slider`, price or distance). It reads the slider's own value, moves it by keys, and drags the thumb when keys do not move it. A slider that will not reach the value fails the step with what it reads. Arrow keys used to report "ok" while nothing moved. A text field's `fill` is unchanged and costs nothing extra: the slider path runs only after `page.fill` refuses the element.
+- **The skill:** a filter you checked by reading the list is not applied. Try the other ways in, and if none works, say the filter could not be set.
+- **Kept from #136:** `! the url dropped <key>=…` when a load undoes a filter or sort (it fixed om2w-1df24ec8). The `set now:` line is not kept: it did not help.
+- **The owner's check still applies.** When approval is on, an option whose words read as a payment, a send, a delete or a publish is not clicked by `select`. The step says to use a `click` on it, which asks the owner.
+- `tests/browser_act_controls_unit.sh`: 38 arms. 25 of them run on 15 real Chrome pages, one or more per control kind. On main, 28 of the 38 fail. CI runs it on the runner's Chrome.
+
 ### Fixed — a page another site opened is read where it is, not refused (DIVE-7801), 1.68.3
 
 Box bug 738: Supliful's "Sign up with Google" moved its tab to Google's account chooser. The next `snapshot supliful.com` with no URL was refused as "not a page of supliful.com" and told the agent to run `browser auth accounts.google.com`. That sends the job to the owner, who then signed up by hand. The account was one click away.

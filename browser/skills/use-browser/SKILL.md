@@ -28,7 +28,10 @@ needs nothing connected.
    `{"op":"press","selector":…,"key":"Enter"}` `{"op":"wait_for","selector":"text=…"}`.
    A selector is `ref=<role>/<name>` from the snapshot; a control inside an embedded frame is
    `ref=frame:<frame> >> <role>/<name>`, copied whole. Use `type` for search boxes and
-   autocompletes that react to keystrokes, and `fill` for plain inputs. An act with a URL loads
+   autocompletes that react to keystrokes, and `fill` for plain inputs. **A dropdown or a
+   slider:** `select` with the option's words picks from any list, not only a native one (it
+   opens the list and clicks the option); `fill` with a number moves a slider (price,
+   distance). The step says what the control reads now. An act with a URL loads
    the page fresh, so fill and submit a form in one act; without a URL it carries on in the page
    the browser is on. **An act prints what it changed**: the refs that appeared (`+ ref=…`), the
    ones that went and the new text. Act on those refs next; snapshot again only when the ref you
@@ -55,6 +58,10 @@ Agents stop early: right site, one filter missing. So before you report, and bef
 3. **A part not shown: do it now**, then check again. A site's filter has more than one way
    in: the filter panel, a "More filters" button, the sort menu, the search box, the result
    page's own fields. Try another way before you call a part impossible.
+   **A filter you checked by reading the list is NOT applied.** When a control will not take,
+   try the other ways in: `select`/`fill` on it, the keyboard, the slider's number box, the
+   filter's own link or the url parameter the page uses. If none takes, say the filter could
+   not be set. Never present a list you filtered by eye as the filtered result.
 4. **Say done only when every part is shown**, or when a part is truly not on this site (say
    which and why). The page must END on the result: the filtered list, the opened item, the
    chart drawn, not a menu or a home page.

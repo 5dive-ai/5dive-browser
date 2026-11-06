@@ -157,6 +157,17 @@ name it: `5dive browser act github.com_work <url> --steps=…`.
                                   {"op":"click","selector":"ref=button/Save draft"}]' --expect='Draft saved'
 ```
 
+**Dropdowns and sliders (DIVE-7818).** `select` takes the option's words on any list: a native
+`<select>` as before (a hidden one behind the page's own widget is set through the page, and the
+page told), and a list that is not a `<select>` (a button, a combobox, a radius picker) is opened,
+the option with those words found in the list it owns or that opened beside it, scrolled to and
+clicked, through the page when something sits on it. `fill` with a number on a slider
+(`role=slider` or `<input type=range>`) reads the slider's own value, moves it by keys, or by a
+drag of its thumb when keys do not move it, and the step says what it reads now
+(`step ref=slider/Maximum: the slider now reads 1200 (16 keys)`). A list with no such option fails
+the step with the options it shows; a slider that will not reach the value fails with what it
+reads. Never "ok" on a control that did not change.
+
 Steps are `goto fill type click wait_for select press`, run in order, in one tab. Use `type`
 for search boxes and autocompletes that react to keystrokes, and `fill` for plain inputs: `fill`
 sets the value in one event with no key presses, so a suggestion list that opens on typing never
