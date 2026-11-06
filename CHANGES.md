@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — every act says what is set on the page now, and when the url dropped a filter (DIVE-7791), 1.70.0
+
+On the 1.69.0 bench rerun (DIVE-7754), 18-19 of the 30 misses that were not bot walls were one thing: the task named a filter or sort (weekly, 1-star, part-time, cheapest first) and the agent answered from a list that did not have it. It never applied it, skipped the site's question, or a later load undid it (Best Buy: sorted by price, then a `goto` dropped `sp=` and the list was Best Match again).
+
+- **`set now:`** ends every served act: the boxes ticked, the options chosen in selects and dropdowns, and a sort a button shows ("Sort by: Newest"). Up to 14, each cut at 60 characters.
+- **`! the url dropped sp=…`** when the page is the same page and a query key the last look had is gone. Tracking and paging keys do not count; a value the agent changed does not count.
+- **use-browser skill, "Before you say done"**: check each filter and sort the job names against the last act's `set now:`; apply a missing one with the page's own control; words in the search box are not a filter; never skip a question the job answers. No `show` step (PR #135 did not clear its bar).
+- `tests/browser_act_chosen_unit.sh`.
+
 ### Fixed — a site with no adapter is checked once, not before every page verb (DIVE-7722), 1.68.2
 
 On a home-exit bench (DIVE-7690), 1,308 page commands on 59 sites first opened a separate Chrome on the site's front page to check the login. Each check added 5-10 s, and runs that hit the 10-minute limit went from 9 to 22.

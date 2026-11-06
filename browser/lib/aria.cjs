@@ -1319,6 +1319,64 @@ function _valuesIn() {
   return out.join('\n');
 }
 
+// WHAT IS SET ON THE PAGE NOW (DIVE-7791): the boxes ticked, the options chosen
+// and the sort the page shows, so the agent can check every condition the job
+// names against the page's own controls before it answers. On the 1.69.0 bench
+// 18-19 of the 30 non-wall misses were a filter or sort the task named that was
+// never applied, skipped in a modal, or undone by a later click or page load
+// (Best Buy: sorted by price, then a goto dropped `sp=` and the list was Best
+// Match again). The agent read the result list and never the controls.
+// Page-side: serialized into the browser, so nothing from module scope.
+function _chosenIn() {
+  var out = [], seen = {}, MAX = 14, LEN = 60;
+  function clean(x) { return String(x || '').replace(/\s+/g, ' ').trim(); }
+  function cut(x) { x = clean(x); return x.length > LEN ? x.slice(0, LEN - 1) + '\u2026' : x; }
+  function byIds(ids) {
+    var t = [], p = String(ids || '').split(/\s+/);
+    for (var i = 0; i < p.length; i++) { var e = p[i] && document.getElementById(p[i]); if (e) t.push(e.textContent); }
+    return clean(t.join(' '));
+  }
+  // A field's name, never its own text (a select's text is every option it has).
+  function nameOf(el) {
+    var a = el.getAttribute ? clean(el.getAttribute('aria-label')) || byIds(el.getAttribute('aria-labelledby')) : '';
+    if (a) return a;
+    if (el.labels && el.labels.length) return clean(el.labels[0].textContent);
+    var l = el.closest ? el.closest('label') : null;
+    return l ? clean(l.textContent) : '';
+  }
+  function add(x) { x = cut(x); if (!x || seen[x] || out.length >= MAX) return; seen[x] = 1; out.push(x); }
+  function all(sel) { try { return document.querySelectorAll(sel); } catch (e) { return []; } }
+  var els = all('input[type=checkbox],input[type=radio]'), i, el;
+  for (i = 0; i < els.length; i++) {
+    el = els[i];
+    if (el.checked) add('[x] ' + (nameOf(el) || clean(el.title) || clean(el.value) || clean(el.name)));
+  }
+  els = all('[role=checkbox][aria-checked=true],[role=radio][aria-checked=true],[role=switch][aria-checked=true],'
+    + '[role=menuitemcheckbox][aria-checked=true],[role=menuitemradio][aria-checked=true],[aria-pressed=true]');
+  for (i = 0; i < els.length; i++) { el = els[i]; add('[x] ' + (nameOf(el) || clean(el.textContent))); }
+  els = all('select');
+  for (i = 0; i < els.length; i++) {
+    el = els[i];
+    var o = el.selectedOptions && el.selectedOptions[0];
+    if (o && clean(o.textContent)) add((nameOf(el) || clean(el.name) || 'chosen') + ': ' + clean(o.textContent));
+  }
+  // A custom dropdown (a button or div with role=combobox) shows its choice as its text.
+  els = all('[role=combobox]');
+  for (i = 0; i < els.length; i++) {
+    el = els[i];
+    if (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA') continue;
+    var tx = clean(el.textContent), nm = nameOf(el);
+    if (tx && tx.length <= 40) add(nm && nm !== tx ? nm + ': ' + tx : tx);
+  }
+  // A sort shown as a button's words ("Sort by: Newest").
+  els = all('button,[role=button]');
+  for (i = 0; i < els.length; i++) {
+    var b = clean(els[i].textContent);
+    if (/^sort(ed)?\b/i.test(b) && b.length <= 50) add(b);
+  }
+  return out;
+}
+
 // The ONE element a verify is graded on (DIVE-4984): a Sent list is read at its
 // newest row, so an older message with the same subject further down cannot
 // stand in for the one just sent. The first match in document order, or null —
@@ -1528,6 +1586,7 @@ async function pageAfter(page, { settleMs = 0, waitFor = null, waitTimeoutMs = 3
     try { o.html = String(await page.content()); } catch (e) { /* recorded empty */ }
     try { o.text = String(await page.evaluate(_textIn, { textOf: true }) || ''); } catch (e) { /* recorded empty */ }
     try { o.values = String(await page.evaluate(_valuesIn, { valuesOf: true }) || ''); } catch (e) { /* recorded empty */ }
+    try { const c = await page.evaluate(_chosenIn, { chosenOf: true }); o.chosen = Array.isArray(c) ? c.map(String) : []; } catch (e) { o.chosen = []; }
     // And every drawn frame's (DIVE-6966): a value set in a calculator's frame is read there.
     try { const t = await framesEval(page, _textIn, { textOf: true }); if (t) o.text += '\n' + t; } catch (e) { /* the page's own */ }
     try { const v = await framesEval(page, _valuesIn, { valuesOf: true }); if (v) o.values = [o.values, v].filter(Boolean).join('\n'); } catch (e) { /* the page's own */ }
@@ -1698,4 +1757,4 @@ module.exports = { movedSince, INTERACTIVE, pageWalk, walk, snapshot, resolveRef
   redirectWhy, checkLanding, E_REDIRECTED,
   _payloadIn, cleanText, cleanPayload,
   INTERSTITIAL_TITLE, waitInterstitial, waitForPast, unmarkedArgs, fieldRoleMatch,
-  waitForVisible, _visibleIn, _textIn, _valuesIn, _scopeIn };
+  waitForVisible, _visibleIn, _textIn, _valuesIn, _chosenIn, _scopeIn };

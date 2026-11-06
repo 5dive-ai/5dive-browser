@@ -259,6 +259,10 @@ jobs:
       # arrives split, and page.md is derived only for --full. Daemon on the stub.
       - name: act look harness
         run: bash tests/browser_act_look_unit.sh
+      # DIVE-7791: every act says what is set on the page now (`set now:`) and when
+      # the url dropped a filter or sort; the skill checks each named filter against it.
+      - name: act chosen harness
+        run: bash tests/browser_act_chosen_unit.sh
       # DIVE-6732: read takes several urls in one call, loaded side by side in one
       # browser, and prints a page's head. Fake executor arms, then live arms in real
       # Chrome against a local server that counts the pages it holds at once.

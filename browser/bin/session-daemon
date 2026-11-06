@@ -1489,7 +1489,7 @@ async function sendReport(page, req, send, { failed = false, watch = null, settl
     // WHAT CHANGED SINCE THE AGENT LAST SAW THIS TAB (DIVE-6795), when asked. A
     // scoped re-read is one element's text, not the page's, so it is no look.
     const seen = req.look && !after.scope && Array.isArray(after.nodes)
-      ? looks.since(page, look.lookOf(after.url, after.nodes, after.text)) : undefined;
+      ? looks.since(page, look.lookOf(after.url, after.nodes, after.text, after.chosen)) : undefined;
     const report = { act_report: true, url: after.url, title: after.title,
       text: after.text, values: after.values,
       wait_for: after.wait_for, expect_polled_ms: after.expect_polled_ms, scope: after.scope,

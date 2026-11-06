@@ -36,13 +36,34 @@ const OPTIONS_MAX = 8;
 
 // What one look at a page is: its url, its interactive refs in page order, and
 // its readable text as lines.
-function lookOf(url, nodes, text) {
+function lookOf(url, nodes, text, chosen) {
   const refs = [];
   for (const n of Array.isArray(nodes) ? nodes : []) {
     if (n && typeof n.ref === 'string' && ROLES.has(n.role)) refs.push(n.ref);
   }
   const lines = String(text || '').split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
-  return { url: String(url || ''), refs, lines };
+  return { url: String(url || ''), refs, lines, chosen: Array.isArray(chosen) ? chosen.map(String) : [] };
+}
+
+// THE URL DROPPED A FILTER OR SORT (DIVE-7791). Same page, and a query parameter
+// the last look's url had is gone: a goto, a "Show more" or a reload put the
+// list back to the site's default (Best Buy on the bench: `sp=Price-Low-To-High`
+// went, the list said Best Match, the agent answered from it). Only a key that
+// went away counts; a value the agent changed is its own choice. Tracking and
+// paging keys are not filters.
+const NOT_A_FILTER = /^(utm_.*|_.*|gclid|fbclid|msclkid|ved|ei|sca_esv|sxsrf|oq|gs_.*|aqs|sourceid|sa|ie|ref|ref_|tag|page|pg|p|start|offset|sid|session|ts|t|cb|cache)$/i;
+const PARAMS_MAX = 6;
+function paramsLost(prevUrl, curUrl) {
+  let a, b;
+  try { a = new URL(prevUrl); b = new URL(curUrl); } catch (e) { return []; }
+  if (a.origin !== b.origin || a.pathname !== b.pathname) return [];
+  const out = [];
+  for (const [k, v] of a.searchParams) {
+    if (NOT_A_FILTER.test(k) || b.searchParams.has(k)) continue;
+    const kv = `${k}=${v}`.slice(0, 80);
+    if (!out.includes(kv)) out.push(kv);
+  }
+  return out.slice(0, PARAMS_MAX);
 }
 
 function counts(arr) {
@@ -91,6 +112,9 @@ function compare(prev, cur, { refsMax = REFS_MAX, goneMax = GONE_MAX, textMax = 
     text_added: text,
     text_added_total: textNew.length,
     text_removed_total: textGone.length,
+    // DIVE-7791: what is set on the page now, and a filter or sort the url dropped.
+    chosen: Array.isArray(cur.chosen) ? cur.chosen : [],
+    params_lost: prev ? paramsLost(base.url, cur.url) : [],
   };
 }
 
@@ -109,4 +133,4 @@ function memory() {
   };
 }
 
-module.exports = { lookOf, compare, memory, REFS_MAX, GONE_MAX, TEXT_MAX, OPTIONS_MAX };
+module.exports = { lookOf, compare, memory, paramsLost, REFS_MAX, GONE_MAX, TEXT_MAX, OPTIONS_MAX, PARAMS_MAX };

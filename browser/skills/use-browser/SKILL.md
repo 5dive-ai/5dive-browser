@@ -48,13 +48,17 @@ Agents stop early: right site, one filter missing. So before you report, and bef
 1. **List every part of the job**: each place, date, number, filter, sort, option, field, the
    item to open and the fact to report. "Running shoes, size 10, under $80, cheapest first"
    is four parts.
-2. **Find each part on the page as it is NOW**: the checked box, the filter chip, the sort
-   label, the field's value, the opened item. Use what the last act printed, or one
-   `snapshot --interactive`. A part you set earlier counts only if the page still shows it:
-   a later click can undo it (a price filter that resets the sort, a toggle clicked twice).
-3. **A part not shown: do it now**, then check again. A site's filter has more than one way
-   in: the filter panel, a "More filters" button, the sort menu, the search box, the result
-   page's own fields. Try another way before you call a part impossible.
+2. **Find each part on the page as it is NOW.** Every act ends with `set now:`, the boxes
+   ticked, the options chosen and the sort the page shows, and with `! the url dropped …` when
+   a load undid a filter or sort. Check each filter and sort the job names against the LAST
+   act's `set now:` (or the chip, label or field the page shows for it). A part you set
+   earlier counts only if it is still there: a later click or `goto` can undo it.
+3. **A part not shown: apply it now with the page's own control**, then check again. Words
+   in the search box are not a filter: "weekly cleaning" typed in a search is not the weekly
+   option ticked. A question the site asks that the job answers (how often, which size,
+   which star rating) is answered, never skipped. A filter has more than one way in: the
+   filter panel, "More filters", the sort menu, the result page's own fields. Try another
+   way before you call a part impossible.
 4. **Say done only when every part is shown**, or when a part is truly not on this site (say
    which and why). The page must END on the result: the filtered list, the opened item, the
    chart drawn, not a menu or a home page.
