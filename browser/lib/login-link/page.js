@@ -12,7 +12,7 @@
 // site, a line of help, Type and Paste (viewer-ui.js), the box's screen below it.
 // The size sent with the redeem is the area under the bar, the one the screen is
 // drawn in.
-import { TEXT, pickText, wireBar, wireDone } from './viewer-ui.js';
+import { TEXT, pickText, wireBar, wireDone, fitScale } from './viewer-ui.js';
 
 const BAR = 44;
 const t = pickText(navigator.languages);
@@ -56,9 +56,10 @@ if (!r || !r.ok || !j.ws || !j.password) {
     // draws exactly that, and a tap lands where it is drawn (no CSS transform
     // between the canvas and noVNC's pointer maths). The rest is off the page.
     // The height is the smaller scale too, so a page that shrank since the
-    // redeem never loses the bottom of the login form.
+    // redeem never loses the bottom of the login form. fitScale reads the
+    // layout viewport, not innerWidth (DIVE-7882: Type blew the screen up 4x).
     const place = () => {
-      const s = Math.min(innerWidth / +fit[1], (innerHeight - BAR) / +fit[2]);
+      const s = fitScale(document, +fit[1], +fit[2], BAR);
       screen.style.cssText = 'right:auto;bottom:auto;' +
         'width:' + (+full[1] * s) + 'px;height:' + (+full[2] * s) + 'px';
     };

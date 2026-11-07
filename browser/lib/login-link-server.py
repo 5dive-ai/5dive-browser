@@ -83,7 +83,7 @@ _lock = threading.Lock()
 # {site} is RE_PAGE's match, so it holds no markup.
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1">
 <meta name="referrer" content="no-referrer">
 <link rel="icon" href="data:,">
 <title>{site}</title>

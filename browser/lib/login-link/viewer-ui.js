@@ -130,6 +130,21 @@ export function unzoom(doc, win) {
   return true;
 }
 
+// The scale the box's screen is drawn at on a phone (DIVE-7882): the fitted
+// window's width, or less if the page under the bar is shorter. Read off the
+// LAYOUT viewport (the root's client size), never innerWidth/innerHeight: in
+// Chrome those follow the page's own zoom, and the screen (wider than the
+// phone, the rest off the page) lets Chrome zoom out to it, so on a 412-px
+// phone innerWidth read 1648 and the first resize after load, the keyboard
+// opening on Type, drew the screen 4 times too big (lodar, 2026-11-07, Brave
+// on Android). The client size does not move with zoom or with a keyboard laid
+// over the page, so Type keeps the scale, or shrinks it where the keyboard
+// shrinks the page itself.
+export function fitScale(doc, fw, fh, bar) {
+  const de = doc.documentElement;
+  return Math.min(de.clientWidth / fw, (de.clientHeight - bar) / fh);
+}
+
 // Labels the bar in the viewer's language and wires Type, Paste and Send to the
 // noVNC connection. The buttons stay disabled until connect() is called.
 export function wireBar(doc, rfb, t, clipboard, win = doc.defaultView) {
