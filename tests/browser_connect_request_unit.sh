@@ -471,7 +471,7 @@ printf '<html><head><title>Just a moment...</title></head><body>cf</body></html>
 printf '<html><head><title>Submit a tool | FutureTools</title></head><body><div class="g-recaptcha"></div><form></form></body></html>' >"$TMP/form.html"
 out=$(hint "$TMP/cf.html" "https://futuretools.io/submit")
 tc "H1 a challenge interstitial names the handoff, with the host and the page" "connect-request futuretools.io --challenge --url=https://futuretools.io/submit" "$out"
-tc "H1 ... and says 5dive never solves one" "never solves one" "$out"
+tc "H1 ... and says it is the agent's to try first (DIVE-7881)" "yours to clear" "$out"
 t  "H2 a normal form that merely embeds a reCAPTCHA says nothing" "" "$(hint "$TMP/form.html" "https://futuretools.io/submit")"
 out=$(hint "$TMP/cf.html" "" "https://uneed.best/submit")
 tc "H3 with no landed URL, the asked URL names the host" "connect-request uneed.best --challenge" "$out"

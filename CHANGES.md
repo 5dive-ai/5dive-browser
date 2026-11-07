@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Changed — the agent clears email codes, 2-step prompts and robot checks itself; the owner can turn a stop back on per site (DIVE-7881), 1.72.0
+
+lodar, 2026-11-07: a head agent refused five times to open the box's Gmail for Discord's «Verify by Email» while he kept saying «its yours». «remove rules», «im for freedom and custom gates».
+
+- **A code box, a 2-step prompt or an "we emailed you a link" step no longer exits 75.** The page comes back with how to clear it: open the newest mail from that site in the box's mailbox, follow its link or type its code (or the owner's saved `.2fa`). Read only that mail; never put the code or link in chat.
+- **A robot check is tried first**, like a person: tick it, wait out "Just a moment…", retry. No paid solver. Only a check that stays goes to the owner (`connect-request --challenge`). Google's own 2-step and robot pages are the agent's too; its password page and adding an account still stop.
+- **A site whose own page shows a check** no longer refuses `act`/`snapshot` before the first step: the verb runs in that browser so the agent can clear it. Input mode: a check that comes up mid-plan still stops the rest of the plan, now with exit 76 and how to try it.
+- **Custom gates, off by default:** `sudo 5dive browser gate on <site|all> <code|robot|all>` turns a stop back on (exit 75, asks the owner); `gate off` removes it; `5dive browser gate` lists them. One root-owned file beside the approval policy; a file the owner does not own is no gate, and a seat cannot set one.
+- README, CONTRIBUTING, the skills, AGENTS.md and the plugin/marketplace descriptions drop "never solved / hard stop".
+- Tests: `browser_google_signin_unit.sh` G4/G5/G20 (gates), `browser_page_check_unit.sh` V1-V11 (`verify`), `browser_plugin_unit.sh` T32g5/T32g6 and T32m1/T32m2 (a code page runs the step; a gated one stops with 75; 1.71.1 stopped every one).
+
 ### Fixed — a browser call no longer fails while the scheduled login check runs (DIVE-7822), 1.71.1
 
 Every 6 hours the box checks each site's login (`probe-all`). All sites of a sign-in group share one browser profile, and Chrome opens a profile only once. On the bench rig (~300 sites in one group) the check held that profile for 22 minutes, and any page verb that had to start a browser then died on Chrome's exit 21 ("profile in use"). One bench task was lost outright, another hit it twice.

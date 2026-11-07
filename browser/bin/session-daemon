@@ -1331,7 +1331,7 @@ async function planRequest(ctx, req, send, end) {
       // GOOGLE'S SIGN-IN PAGES (DIVE-6228), before the step touches one: a password,
       // a code, a robot check, adding an account or a wider grant stops the plan
       // here, whatever the steps say. lib/google-signin.cjs, shared by both loops.
-      const gs = await gsignin.stepStop(page, s);
+      const gs = await gsignin.stepStop(page, s, (req && req.gates) || []);
       if (gs) {
         send({ t: 'err', msg: gsignin.STOP_PREFIX.trim() + ' ' + JSON.stringify(gs) });
         throw new Error(`${where}: not run. ${gs.why}`);
@@ -1975,7 +1975,7 @@ async function inputRequest(be, profile, req, send, end, behalf) {
     if (reRefused && reRefused.test(title))
       return { rc: E_SITE_REFUSED, msg: `REFUSED${lead}: ${site} served its own error page ("${title}") instead of the page you asked for. This is the site refusing this browser, not a security check: there is nothing on it for a person to clear, so a handoff will not help.${tail}` };
     if (reChallenge && reChallenge.test(title))
-      return { rc: 75, msg: `CHALLENGE${lead}: the page title is "${title}", which is a security check.${tail} A person clears it: 5dive browser handoff ${site}` };
+      return { rc: 75, msg: `CHALLENGE${lead}: the page title is "${title}", which is a security check.${tail} Try it like a person first (tick its box, or wait and look again); a person clears it only if it stays, or if the owner gated it: 5dive browser handoff ${site}` };
     return null;
   };
   const out = (o) => send({ t: 'out', data: JSON.stringify(o) + '\n' });

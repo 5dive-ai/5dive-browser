@@ -14,7 +14,8 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 PASS=0; FAIL=0
 t() { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL: %s\n   expected: %s\n   got:      %s\n' "$1" "$2" "$3"; fi; }
 # g <url> <html> -> "<verdict> <kind>", or "none" when it is not Google's page
-g() { printf '%s' "$2" > "$TMP/p.html"; local v; v=$(node "$LIB" "$TMP/p.html" "$1")
+# [<gates-json>]: the kinds the owner gated (DIVE-7881)
+g() { printf '%s' "$2" > "$TMP/p.html"; local v; v=$(node "$LIB" "$TMP/p.html" "$1" "${3:-}")
       [[ -n "$v" ]] && jq -r '"\(.verdict) \(.kind)"' <<<"$v" || echo none; }
 
 AC='https://accounts.google.com'
@@ -30,11 +31,11 @@ t 'G2b a chooser with no account on it stops' 'stop add-account' \
 PW='<html><body><h1>Welcome</h1><div>alex.test@gmail.com</div><input type="password" name="Passwd" autocomplete="current-password"><span>Show password</span></body></html>'
 t 'G3 the password page stops' 'stop password' "$(g "$AC/v3/signin/challenge/pwd?TL=1" "$PW")"
 t 'G3b a visible password box stops on any Google URL' 'stop password' "$(g "$AC/signin/oauth/id?x=1" "$PW")"
-t 'G4 a 2-step prompt stops' 'stop code' "$(g "$AC/v3/signin/challenge/ipp?TL=1" '<html><body><h1>2-Step Verification</h1><div>Enter the code</div></body></html>')"
-t 'G4b a verification-code page with no challenge URL stops' 'stop code' "$(g "$AC/signin/v2/sl/x" '<html><body>Get a verification code sent to your phone</body></html>')"
+t 'G4 a 2-step prompt is the agent'"'"'s to clear (DIVE-7881)' 'allow code' "$(g "$AC/v3/signin/challenge/ipp?TL=1" '<html><body><h1>2-Step Verification</h1><div>Enter the code</div></body></html>')"
+t 'G4b a verification-code page with no challenge URL is the agent'"'"'s too' 'allow code' "$(g "$AC/signin/v2/sl/x" '<html><body>Get a verification code sent to your phone</body></html>')"
 ROBOT='<html><body><iframe src="https://www.google.com/recaptcha/api2/anchor?k=x&size=normal"></iframe><div>Confirm you are not a robot</div></body></html>'
-t 'G5 a robot check stops' 'stop robot' "$(g "$AC/v3/signin/challenge/recaptcha?TL=1" "$ROBOT")"
-t 'G5b google.com/sorry is a robot check' 'stop robot' "$(g 'https://www.google.com/sorry/index?continue=x' '<html><body>Our systems have detected unusual traffic</body></html>')"
+t 'G5 a robot check is the agent'"'"'s to try (DIVE-7881)' 'allow robot' "$(g "$AC/v3/signin/challenge/recaptcha?TL=1" "$ROBOT")"
+t 'G5b google.com/sorry is a robot check' 'allow robot' "$(g 'https://www.google.com/sorry/index?continue=x' '<html><body>Our systems have detected unusual traffic</body></html>')"
 t 'G5c an invisible reCAPTCHA loader on a chooser is not a robot check' 'allow chooser' \
   "$(g "$AC/v3/signin/accountchooser?x=1" "${CHOOSER/<\/body>/<iframe src=\"https://www.google.com/recaptcha/enterprise/anchor?k=x&size=invisible\"></iframe></body>}")"
 IDENT='<html><body><h1>Sign in</h1><input type="email" id="identifierId" name="identifier"><input type="password" name="hiddenPassword" aria-hidden="true" tabindex="-1"></body></html>'
@@ -129,8 +130,31 @@ t 'G18e NEGATIVE: a chooser with only "Use another account" still stops' 'stop a
   "$(g "$CH" '<html><body><h1>Choose an account</h1><div>Use another account</div></body></html>')"
 t 'G18f NEGATIVE: an error page carrying a password box still stops at the password' 'stop password' \
   "$(g "$AC/v3/signin/accountchooser" '<html><body>400. That'"'"'s an error.<input type="password" name="Passwd"></body></html>')"
-t 'G18g NEGATIVE: a robot check outranks an error page' 'stop robot' \
+t 'G18g NEGATIVE: a robot check outranks an error page' 'allow robot' \
   "$(g "$AC/v3/signin/accountchooser" '<html><body>400. That'"'"'s an error. Our systems have detected unusual traffic</body></html>')"
+
+# DIVE-7881: the owner's gate turns a code or a robot check back into a stop.
+TWOSTEP='<html><body><h1>2-Step Verification</h1><div>Enter the code</div></body></html>'
+t 'G20a a gated code stops' 'stop code' "$(g "$AC/v3/signin/challenge/ipp?TL=1" "$TWOSTEP" '["code"]')"
+t 'G20b a gated robot check stops' 'stop robot' "$(g "$AC/v3/signin/challenge/recaptcha?TL=1" "$ROBOT" '["robot"]')"
+t 'G20c a robot gate does not stop a code' 'allow code' "$(g "$AC/v3/signin/challenge/ipp?TL=1" "$TWOSTEP" '["robot"]')"
+t 'G20d a code gate does not stop a robot check' 'allow robot' "$(g "$AC/v3/signin/challenge/recaptcha?TL=1" "$ROBOT" '["code"]')"
+t 'G20e no gate is not a password: the password page still stops' 'stop password' "$(g "$AC/v3/signin/challenge/pwd?TL=1" "$PW" '[]')"
+t 'G20f bad gates JSON is no gate' 'allow code' "$(g "$AC/v3/signin/challenge/ipp?TL=1" "$TWOSTEP" 'nope')"
+# stepStop: the loops stop before a step on a gated page, not on an ungated one
+ss() { printf '%s' "$2" > "$TMP/s.html"; node -e '
+  const g = require(process.argv[1]); const fs = require("fs");
+  const page = { url: () => process.argv[2], content: async () => fs.readFileSync(process.argv[3], "utf8") };
+  g.stepStop(page, { op: "type", ref: "e1", value: "123456" }, JSON.parse(process.argv[4])).then((v) => console.log(v ? "stop " + v.kind : "run"));
+' "$LIB" "$1" "$TMP/s.html" "${3:-[]}"; }
+t 'G20g the step loop types a code on an ungated 2-step page' 'run' "$(ss "$AC/v3/signin/challenge/ipp?TL=1" "$TWOSTEP")"
+t 'G20h ...and stops before it when the owner gated codes' 'stop code' "$(ss "$AC/v3/signin/challenge/ipp?TL=1" "$TWOSTEP" '["code"]')"
+gr() { printf '%s' "$2" > "$TMP/s.html"; node -e '
+  const g = require(process.argv[1]); const fs = require("fs");
+  const page = { url: () => process.argv[2], content: async () => fs.readFileSync(process.argv[3], "utf8") };
+  g.stepGrant(page, { op: "click", ref: "e1" }).then((v) => console.log(v ? "grant " + v.kind : "none"));
+' "$LIB" "$1" "$TMP/s.html"; }
+t 'G20i a code step is not recorded as a sign-in grant' 'none' "$(gr "$AC/v3/signin/challenge/ipp?TL=1" "$TWOSTEP")"
 
 # samePage: the page a browser is on, asked for again with its query cut (DIVE-6247)
 sp() { node "$LIB" --same-page "$1" "$2" && echo same || echo different; }

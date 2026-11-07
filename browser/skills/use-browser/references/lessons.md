@@ -27,7 +27,7 @@ Part of the use-browser skill. Read it before a form, a sign-up, a post or an up
 - **Look at the screenshot after a submit with no `--expect`**, not only the exit code. A success line can show for a moment and the form reset under it.
 - **One run per form, every field in it.** Tabs keep page state between runs, so clear a pre-filled form and re-check it before you type.
 - **Never press a site's autofill or AI-assist button.** It writes text you were not given.
-- **A bot check can appear mid-flow**, after a sign-in or submit button, not only on page load. It is still a hard stop.
+- **A bot check can appear mid-flow**, after a sign-in or submit button, not only on page load. Try it like any other (tick, wait, retry); ask the owner only if it stays.
 - **Only a real browser render proves a page has no bot check.** A plain fetch of the page cannot see one.
 - **Patterns:** `--expect` already ignores case, so never put `(?i)` in it (grep -E rejects it). `--wait-for='text=<words>'` matches plain words in any case. A regex works only in a `wait_for` step's selector, as `text=/word/i`.
 - **A form that only says "thanks"** (Tally and the like) leaves no record to read back: report "submitted, not live".
@@ -40,7 +40,7 @@ Part of the use-browser skill. Read it before a form, a sign-up, a post or an up
 - **A site that fills the form by reading your URL writes text you were not given.** Clear every field you have no value for. If the form has no place for text you were given, stop and ask; never rewrite it to fit.
 - **An invite refused for a new account is usually an unverified email.** Verify the account's email, then retry the invite once.
 - **A tick box or dropdown can miss on the first click.** Before the final press, check in a screenshot that every box shows ticked, every dropdown shows its value and the submit button is enabled. A native dropdown that will not open takes a second click or the Down key.
-- **"Captcha verification failed" after a submit is an invisible bot check.** There was no widget to see, and it is still a hard stop: never press submit twice.
+- **"Captcha verification failed" after a submit is an invisible bot check.** There was no widget to see. Wait a few seconds and submit once more; if it fails again, ask the owner rather than pressing again.
 - **A money form can open on the wrong direction or with an old amount.** Read the add/withdraw switch, the amount and the button label in a screenshot before you press.
 - **A site that flags the account as automated means stop there for the day.** After a captcha, a 403 or an "unusual activity" page on a site where you post, tell the owner and do nothing more on that site that day. Space later posts hours apart.
 - **A click can land on a different page than you meant**, like a notification that opens the feed instead of the post. Check the URL bar or title before you record a link or id from it; never guess one.

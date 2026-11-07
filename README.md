@@ -6,8 +6,9 @@
 
 5dive browser gives agents on Claude Code and the 5dive CLI persistent, human-authenticated browser
 sessions. You sign in to a site once, by hand, in a real Chrome on your own server. Your agent gets
-that session and never the password. A robot check (a CAPTCHA, an "unusual activity" page) is a hard
-stop that hands the window to you, and before a step that pays, the agent asks you first.
+that session and never the password. Email codes, 2-step prompts and robot checks the agent clears
+itself, like a person would; it asks you only when it can't, or where you said "ask me first".
+Before a step that pays, the agent asks you first.
 
 ```
  1. You sign in once, by hand     Chrome on your server, reached over VNC through SSH.
@@ -17,7 +18,8 @@ stop that hands the window to you, and before a step that pays, the agent asks y
  2. Your agent uses the session   "check my GitHub notifications": it opens the page
                                   signed in as you. It never sees the password.
           │
-          ├─ a robot check?       Hard stop. You get the steps to its live window.
+          ├─ an email code?       It reads the site's mail on the box and types it.
+          ├─ a robot check?       It ticks it or waits it out; stuck, it asks you.
           ├─ about to pay?        It asks you first, with a screenshot.
           ▼
  3. The next run                  Still signed in. No new sign-in, no password.
@@ -134,7 +136,7 @@ Jobs a sandboxed browser cannot do, because they need **your** account:
 |---|---|---|---|---|---|
 | Signed-in sessions persist across runs | Yes | Yes, a persistent profile by default | Yes, it is your own Chrome | Yes, if you reuse a profile | Yes, with a persisted Context |
 | You sign in by hand; the model never sees the password | Yes | Yes, in the headed browser | Yes | Yes, by reusing a profile | Yes, through live view |
-| A robot check stops and hands off to a person | Yes, it is never solved | Not documented | Yes, it pauses for you | Not documented | No, it solves CAPTCHAs by default (can be turned off) |
+| Clears email codes and robot checks on its own | Yes, it asks you only when stuck; turn a stop on per site | Not documented | No, it pauses for you | Not documented | Yes, it solves CAPTCHAs by default (can be turned off) |
 | Asks you before paying, by default | Yes, with a screenshot | Not documented | Partly: asks before financial sites | Not documented | Not documented |
 | Runs on your own server | Yes (Debian, Ubuntu) | Yes | No, it needs your desktop Chrome | Yes | No, a hosted cloud |
 

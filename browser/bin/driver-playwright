@@ -792,7 +792,7 @@ async function main() {
       // GOOGLE'S SIGN-IN PAGES (DIVE-6228), before the step touches one: a password,
       // a code, a robot check, adding an account or a wider grant stops the plan
       // here, whatever the steps say. lib/google-signin.cjs, shared by both loops.
-      const gs = await gsignin.stepStop(page, s);
+      const gs = await gsignin.stepStop(page, s, plan.gates || []);
       if (gs) {
         process.stderr.write(gsignin.STOP_PREFIX + JSON.stringify(gs) + '\n');
         throw new Error(`${where}: not run. ${gs.why}`);

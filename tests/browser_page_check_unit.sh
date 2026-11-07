@@ -108,5 +108,26 @@ t 'N5d NEGATIVE: ...with a robot check, stops' 'stop challenge' \
 t 'N5e NEGATIVE: ...with a code box, stops' 'stop challenge' \
   "$(s "$(sed 's|</form>|<input autocomplete="one-time-code" name="otp"></form>|' "$PT")" "$PTU")"
 
+# ---- DIVE-7881: verify() hands a code, an email step or a robot check back -----------
+v() { printf '%s' "$1" > "$TMP/p.html"; node "$LIB" verify "$TMP/p.html" "${2:-}" "${3:-}" | jq -r '"\(.verdict) \(.kind)"'; }
+CODEP='<html><head><title>Log in</title></head><body><form action="/login/verify"><label>Enter the 6-digit code we sent you</label><input name="otp_code" autocomplete="one-time-code"><button>Verify</button></form></body></html>'
+MAILP='<html><head><title>Discord</title></head><body><h1>New login location detected</h1><p>Please check your email for a verification link.</p></body></html>'
+CFP='<html><head><title>Just a moment...</title></head><body><div id="challenge-stage"></div></body></html>'
+RECAP='<html><body><form action="/login"><div class="g-recaptcha" data-sitekey="x"></div><button>Continue</button></form></body></html>'
+t 'V1 a code box is the agent'"'"'s to clear' 'offer code' "$(v "$CODEP" 'https://site.test/login/verify')"
+t 'V2 a "check your email" step is a code step, the agent'"'"'s' 'offer code' "$(v "$MAILP" 'https://discord.com/login')"
+t 'V3 "Just a moment…" is a robot check, the agent'"'"'s to try' 'offer robot' "$(v "$CFP" 'https://site.test/login')"
+t 'V4 a visible reCAPTCHA is a robot check, the agent'"'"'s to try' 'offer robot' "$(v "$RECAP" 'https://site.test/login')"
+t 'V5 a 2fa URL is a code step' 'offer code' "$(v '<html><body><p>Open your app</p></body></html>' 'https://site.test/2fa')"
+t 'V6 gated code stops' 'stop code' "$(v "$CODEP" 'https://site.test/login/verify' '["code"]')"
+t 'V7 gated robot stops' 'stop robot' "$(v "$CFP" 'https://site.test/login' '["robot"]')"
+t 'V8 a robot gate leaves the email step to the agent' 'offer code' "$(v "$MAILP" 'https://discord.com/login' '["robot"]')"
+t 'V9 a password box still stops, gate or none' 'stop password' \
+  "$(v '<html><body><form action="/login"><input type="password" name="p"><input autocomplete="one-time-code" name="otp"></form></body></html>' 'https://site.test/login')"
+t 'V10 a plain sign-in form is none (the guard'"'"'s own refusal stands)' 'none none' \
+  "$(v '<html><body><form action="/login"><input type="email" name="e"><button>Next</button></form></body></html>' 'https://site.test/login')"
+t 'V11 challenge() names the kind: a code box is code' 'code' \
+  "$(printf '%s' "$CODEP" > "$TMP/p.html"; node "$LIB" challenge "$TMP/p.html" 'https://site.test/login/verify' | jq -r .kind)"
+
 printf 'page-check: %d pass, %d fail\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

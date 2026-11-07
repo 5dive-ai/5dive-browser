@@ -38,9 +38,12 @@ site led there:
   own re-read, and in `snapshot <the site you started on>` with no URL. Never copy a Google URL
   into a command; its long query IS the sign-up, and a cut copy opens Google's "400. That's an
   error." page.
-- **Hard stop (exit 75), hand it over:** a password field, a verification code or 2-step prompt, a
-  robot check, Google asking for an email address (adding an account), a chooser whose account is
-  signed out. `5dive browser handoff <site>` (a robot check: `connect-request <site> --challenge`).
+- **Yours to clear (DIVE-7881):** a verification code or 2-step prompt (the newest Google mail in
+  this browser's mailbox, or the owner's saved `"saved":"<name>.2fa"`), and a robot check (tick it,
+  wait, retry). Only a code or a prompt on the owner's phone is theirs.
+- **Hard stop (exit 75), hand it over:** a password field, Google asking for an email address
+  (adding an account), a chooser whose account is signed out, and a code or robot check the owner
+  gated (`5dive browser gate`). `5dive browser handoff <site>` (a robot check: `connect-request <site> --challenge`).
 - **Google's error page (exit 76)**, "400. That's an error.": the sign-up was lost, not refused.
   Open the site's sign-up again and click its Google button.
 - **A sign-up that lands on the site's own login page** with "Continue with Google" (or a button
@@ -68,13 +71,26 @@ they give you. Switching the proxy mid-session can end a site's login (the site 
 and the refusal names both. **Ask the owner which one, never guess**, then name it:
 `5dive browser act github.com_work <url> --steps=…`.
 
-## Stuck on a captcha: ask the owner to clear it, then carry on (DIVE-5200)
+## An email or SMS code: get it yourself (DIVE-7881)
 
-A CAPTCHA, a "verify you are human" or a "Just a moment…" check is a hard stop. You never
-solve it and never look for a way round it. A "Just a moment…" usually clears by itself, so the
-browser already watches it for up to 20 s in the same page load before it says STOP; once it has,
-do not sleep and snapshot again: a fresh load starts the check over. But you do not give up the task either: ask the
-person, wait, and finish the job yourself.
+"Check your email", "we sent you a code", "new login location", "verify by email": the site
+mailed this account. If this box's browser is signed in to the mailbox (Gmail and the like):
+
+1. `5dive browser snapshot https://mail.google.com/` and open the newest mail from that site.
+2. Follow its verification link (`act` on the link, same browser), or read its code and type it
+   on the site's page (`act <site>`, no URL).
+3. Read only that mail. Never put the code or the link in chat or a report.
+
+Ask the owner only if no mailbox here holds it, or the code went to their phone.
+
+## A captcha: try it first, then ask the owner (DIVE-5200, DIVE-7881)
+
+A CAPTCHA, a "verify you are human" or a "Just a moment…" check is yours to try, like a person
+would: tick the box, pick the images if it asks, or wait. No paid solver service. A "Just a
+moment…" usually clears by itself, and the browser already watches it for up to 20 s in the same
+page load; a fresh load starts it over, so act on the page you have (`act <site>`, no URL). Still
+stuck after a few tries, or the owner gated robot checks on this site (`5dive browser gate`):
+ask the person, wait, and finish the job yourself.
 
 ```bash
 5dive browser connect-request <site> --challenge --url=<the page you were stopped on> \

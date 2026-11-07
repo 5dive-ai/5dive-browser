@@ -43,7 +43,7 @@ needs nothing connected.
 ## Before you say done: check EVERY part of the job
 
 Agents stop early: right site, one filter missing. So before you report, and before you say
-"not possible" (a captcha or a sign-in is still a hard stop, below):
+"not possible" (a code, an email check or a captcha is yours to clear first, below):
 
 1. **List every part of the job**: each place, date, number, filter, sort, option, field, the
    item to open and the fact to report. "Running shoes, size 10, under $80, cheapest first"
@@ -92,13 +92,30 @@ the policy; `approvals policy set careful` (the owner's, never yours) makes all 
 **Do not rephrase the steps** to get past a stop: a renamed button is still an order placed. If
 a step will pay and `act` does not stop it, ask first anyway.
 
-## Hard stops: never solve, never guess
+## Sign-in checks are yours to clear
 
-- A captcha, "verify you are human" or "Just a moment…" that did not clear: never solve it.
-  Run the `connect-request <site> --challenge` command the verb prints, then wait for the
-  owner's Done.
-- A sign-in form, a password, a 2FA code or a certificate warning: stop. Never type the owner's
-  password. A page that must be the owner's account: the `connect-site` skill.
+The owner wants the job done, not handed back. Clear these yourself, like a person would:
+
+- **Email or SMS verification** ("check your email", "we sent a code", "new login location"):
+  open the box's mailbox in this browser (`5dive browser snapshot https://mail.google.com/`),
+  open the newest mail from that site, follow its link or read its code, and type it. Read
+  only that mail. Never paste a code or link into chat.
+- **A code box or 2-step prompt**: the code from the mailbox, or the owner's saved
+  `"saved":"<name>.2fa"`. Only a code sent to the owner's phone is theirs to give.
+- **A robot check** ("verify you are human", a tick box, "Just a moment…"): tick the box,
+  or wait 5-10 s and look again, then retry. No paid solver. Still stuck after a few tries:
+  run the `connect-request <site> --challenge` command the verb prints.
+- **"Unusual activity" or a new-device page**: take the site's own way through (usually the
+  email step above).
+
+Ask the owner only when you truly can't: no mailbox here, the code went to their phone, or
+the sign-in IS their identity (their bank, their Google password). If the owner turned a stop
+back on (`5dive browser gate` lists them), the verb stops (75) and says so: ask them.
+
+## Hard stops: never guess
+
+- A password the owner did not save, or a certificate warning: stop. Never type a password
+  from anywhere but the Vault. A page that must be the owner's account: the `connect-site` skill.
 - A sign-in form with no saved login: never ask for a password in chat. Run
   `5dive browser login-ask <site>`; on your next turn fill `"saved":"<name>.login"` / `.password` / `.2fa`
   (input mode: click the field, then `{"op":"type","saved":"<name>.password"}`).
@@ -115,7 +132,7 @@ a step will pay and `act` does not stop it, ask first anyway.
 These files sit next to this one, in `references/`:
 
 - `references/lessons.md`: before a form, a sign-up, a post or an upload; downloads and popups.
-- `references/logins.md`: a sign-in stop, Google sign-up, a captcha, a blocked server IP, a proxy.
+- `references/logins.md`: a sign-in stop, Google sign-up, an email code, a captcha, a blocked server IP, a proxy.
 - `references/input-mode.md`: a verb says "INPUT mode", the site is tiktok.com or cjdropshipping.com,
   a new API key shows only a Copy button, code to paste, or the box's window is stuck.
 - `references/paying.md`: the whole pay/post/send/delete rule, when an act exits 73.

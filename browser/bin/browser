@@ -301,6 +301,13 @@ usage() {
                                       # posting, sending and deleting go ahead and are
                                       # logged. yolo = all allow, careful = all ask.
 
+  5dive browser gate [--json]         # what stops for you; by default nothing: the agent
+  sudo 5dive browser gate on|off <site|all> <code|robot|all>
+                                      # reads the site's verification mail, types the code
+                                      # (the site's mail, or a saved .2fa) and ticks the
+                                      # robot check itself. `on` makes that check stop
+                                      # (75) and ask you, on that site or on all.
+
   5dive browser setup                 # once, as root: installs Chrome, a virtual screen, VNC and Node 22 if missing (+ a seat's profile store)
   5dive browser auth <site>           # open a browser; log in yourself, once
   5dive browser status [site]         # per-site auth state (run on a SCHEDULE)
@@ -2621,6 +2628,17 @@ _challenge_confirmed() {  # <site> <html-file> [<url>] -> 0 = a challenge
   return 1
 }
 
+# WHICH KIND OF CHECK (DIVE-7881): code (a code box, a 2-step or identity URL)
+# or robot (everything else, and the answer when node or the lib is missing).
+_challenge_kind() {  # <html-file> [<url>] -> code|robot
+  local k=""
+  _have node && [[ -r "$_SELF_DIR/../lib/page-check.cjs" ]] \
+    && k=$(node "$_SELF_DIR/../lib/page-check.cjs" challenge "$1" "${2:-}" 2>/dev/null | head -1 | jq -r '.kind // empty' 2>/dev/null)
+  [[ "$k" == code ]] && echo code || echo robot
+}
+# The kind a CHALLENGE state names; empty for one that names none (an older line).
+_challenge_state_kind() { [[ "$1" =~ ^CHALLENGE\ —\ a\ (code|robot)\ check ]] && echo "${BASH_REMATCH[1]}"; }
+
 # Liveness. Sessions die on the SITE's schedule, not ours — device checks, 2FA
 # re-prompts, "unusual activity" interstitials — so a profile that worked Monday
 # is logged out Thursday. Run this on a schedule; one page load a day is worth
@@ -2778,13 +2796,45 @@ _signin_guard() {
   (( _GENERIC_UNCONFIRMED )) || return 0
   if [[ -n "$u" ]] && grep -qiE "$GENERIC_SIGNIN_URL" <<<"$u"; then
     _signin_google_offer "$f" "$u" && return 0
+    _signin_verify_offer "$f" "$u" && return 0
     _generic_memo_drop "$_PG_SITE"   # DIVE-7722: the next page verb checks the front page again
     die "$E_COLD" "$(_cic_route)the page redirected to a sign-in ($u). Refusing rather than handing back the sign-in page as if it were the page you asked for; no evidence was written. If this account should be signed in, a person logs in again: 5dive browser auth $_PG_SITE"
   fi
   if [[ -s "$f" ]] && grep -qiE "$GENERIC_SIGNIN_MARKER" "$f"; then
     _signin_google_offer "$f" "$u" && return 0
+    _signin_verify_offer "$f" "$u" && return 0
     _generic_memo_drop "$_PG_SITE"   # DIVE-7722
     die "$E_COLD" "$(_cic_route)the page that came back is a sign-in form, not the page you asked for. Refusing; no evidence was written. If this account should be signed in, a person logs in again: 5dive browser auth $_PG_SITE"
+  fi
+  return 0
+}
+
+# A SIGN-IN CHECK THE AGENT CLEARS ITSELF (DIVE-7881). A code box, a 2-step
+# prompt, a "we emailed you a link" step or a robot check, on a page the generic
+# guard would refuse as a sign-in: handed back with how to clear it, not stopped
+# (75). lodar 2026-11-07: «clicker wont check email», «remove rules». A kind the
+# owner gated (`gate on <site|all> code|robot`) still stops, and says so. A
+# password box still stops. No node or no lib: the refusal stands (fail closed).
+_signin_verify_offer() {  # <html-file> [<url>] -> 0 = handed back to clear
+  local f="$1" u="${2:-}" v kind why site="${_PG_SITE:-<site>}"
+  [[ -s "$f" ]] && _have node && [[ -r "$_SELF_DIR/../lib/page-check.cjs" ]] || return 1
+  v=$(node "$_SELF_DIR/../lib/page-check.cjs" verify "$f" "$u" "$(_gates_for "${_PG_SITE:-}" "$(_url_host "$u")")" 2>/dev/null | head -1)
+  kind=$(jq -r '.kind // ""' <<<"$v" 2>/dev/null); why=$(jq -r '.why // ""' <<<"$v" 2>/dev/null)
+  case "$(jq -r '.verdict // ""' <<<"$v" 2>/dev/null)" in
+    offer) ;;
+    stop)
+      [[ "$kind" == code || "$kind" == robot ]] || return 1
+      _generic_memo_drop "$_PG_SITE"
+      local label="verification step"; [[ "$kind" == robot ]] && label="robot check"
+      die "$E_COLD" "STOP, your owner turned this stop on: $why. Ask them, on the same window: 5dive browser handoff $site --reason=\"$site shows a $label\"" ;;
+    *) return 1 ;;
+  esac
+  if [[ "$kind" == robot ]]; then
+    printf '%s: %s shows a robot check%s: %s. It is yours to clear, like a person would: tick its box, or wait 5-10 s and look again ("Just a moment…" usually clears by itself), then carry on in this same browser with no URL (5dive browser act %s --steps='"'"'[…]'"'"'). Ask your owner only if it is still there after a few tries: 5dive browser connect-request %s --challenge --url=%s\n' \
+      "$PROG" "$site" "${u:+ ($u)}" "$why" "$site" "$site" "${u:-<the page>}" >&2
+  else
+    printf '%s: %s is asking to verify the sign-in%s: %s. It is yours to clear: open the newest mail from %s in this browser'"'"'s mailbox (5dive browser snapshot https://mail.google.com/ for Gmail), follow its verification link or read its code, and type the code here in this same browser with no URL (5dive browser act %s --steps='"'"'[…]'"'"'), or type the owner'"'"'s saved code ("saved":"<name>.2fa"). Read only that mail, and never put the code or link in chat. Ask your owner only if the code went to their phone or no mailbox here holds it.\n' \
+      "$PROG" "$site" "${u:+ ($u)}" "$why" "$site" "$site" >&2
   fi
   return 0
 }
@@ -2817,8 +2867,10 @@ _signin_google_offer() {  # <html-file> [<url>] -> 0 = hand it back for the Goog
 # sign-in pages (the generic guard decides), 0 when it is and may be handed
 # back; it dies otherwise. Allowed: the account chooser with a signed-in saved
 # account, "Continue as …", a consent screen for basic profile and email.
-# Stopped (75): a password, a code or 2-step prompt, a robot check, adding an
-# account, a page it does not recognise. Asked (73): a consent screen wanting
+# (DIVE-7881) Allowed too: a code or 2-step prompt and a robot check, which the
+# agent clears itself. Stopped (75): a password, adding an account, a page it
+# does not recognise, and a code or robot check the owner gated
+# (`gate on <site|all> code|robot`). Asked (73): a consent screen wanting
 # more than basic profile and email.
 GOOGLE_SIGNIN_URL='^https?://(accounts\.google\.[a-z.]+([:/?#]|$)|(www\.)?google\.[a-z.]+/sorry([/?#]|$))'
 _google_die() {  # <verdict-json>
@@ -2845,9 +2897,15 @@ _google_page_guard() {
   if ! _have node || [[ ! -r "$lib" ]]; then
     die "$E_COLD" "the page is Google's sign-in ($u) and node is not here to read which one it is, so it stops. 5dive browser setup installs node."
   fi
-  v=$(node "$lib" "$f" "$u" 2>/dev/null | head -1)
+  v=$(node "$lib" "$f" "$u" "$(_gates_for "${_PG_SITE:-}" "$(_url_host "$u")")" 2>/dev/null | head -1)
   [[ -n "$v" ]] || return 1
   if [[ "$(jq -r '.verdict' <<<"$v" 2>/dev/null)" == allow ]]; then
+    case "$(jq -r '.kind' <<<"$v" 2>/dev/null)" in
+      code|robot)
+        printf '%s: Google sign-in page, yours to clear: %s. Carry on in this same browser, with no URL: 5dive browser act %s --steps='"'"'[…]'"'"'\n' \
+          "$PROG" "$(jq -r '.why' <<<"$v")" "${_PG_SITE:-<site>}" >&2
+        return 0 ;;
+    esac
     printf '%s: Google sign-in page, allowed: %s. Pick only the saved account the task names; a password, a code, a robot check or a wider grant stops. Carry on in this same browser, with no URL: 5dive browser act %s --steps='"'"'[…]'"'"'\n' \
       "$PROG" "$(jq -r '.why' <<<"$v")" "${_PG_SITE:-<site>}" >&2
     return 0
@@ -2923,7 +2981,7 @@ _input_probe() {  # <site> <dir>
   fi
   if grep -qiE -- "$challenge" <<<"$title"; then
     if (( looked )); then _signed_in_forget "$dir"; _stamp "$dir" challenge; fi
-    echo "CHALLENGE — human action required (the window shows \"$title\"; we do not solve these: 5dive browser handoff $site)"
+    echo "CHALLENGE — a robot check is on the page (the window shows \"$title\"; the agent tries it first, and a person takes over only if it stays or you gated it: 5dive browser handoff $site)"
     return 1
   fi
   if (( ! looked )); then
@@ -3064,7 +3122,7 @@ _probe() {
   total="${total:-8000}"
   [[ "$total" =~ ^[0-9]{1,7}$ ]] || total=8000
   [[ "$poll"  =~ ^[1-9][0-9]{0,6}$ ]] || poll=400
-  local rc waited=0 verdict="" landed_at=""
+  local rc waited=0 verdict="" landed_at="" ckind=robot
   # A PROFILE HELD BY A FORGOTTEN PROBE (DIVE-5375): see _reap_stale_probe. A
   # second Chrome at a held profile exits at once with an empty document, so
   # without this every probe after a wedged one reads UNKNOWN until a person
@@ -3095,6 +3153,7 @@ _probe() {
     # is fine.
     if grep -qiE "$challenge" "$dom" \
        && _challenge_confirmed "$site" "$dom" "$(sed -n 's/^5dive-probe-final-url: //p' "$dom.err" 2>/dev/null | tail -1)"; then
+      ckind=$(_challenge_kind "$dom" "$(sed -n 's/^5dive-probe-final-url: //p' "$dom.err" 2>/dev/null | tail -1)")
       verdict=challenge; break
     fi
     if [[ -n "$marker" ]] && grep -qiE "$marker" "$dom"; then verdict=expired; break; fi
@@ -3206,7 +3265,8 @@ _probe() {
       (( warm )) && _signed_in_forget "$dir"
       # THERE IS DELIBERATELY NO BYPASS BEHIND THIS.
       _stamp "$dir" challenge
-      echo "CHALLENGE — human action required (we do not solve these)"; return 1 ;;
+      # DIVE-7881: the kind is in the words, for the page verbs (_challenge_state_kind).
+      echo "CHALLENGE — a $ckind check is on the page (the agent clears it itself; it asks you first only where you turned that stop on: 5dive browser gate)"; return 1 ;;
     expired)
       _signed_in_forget "$dir"
       _stamp "$dir" expired; echo "session expired — human action required${gwhy:+ (generic check: $gwhy)}"; return 1 ;;
@@ -4016,7 +4076,7 @@ cmd_run() {
   fi
   case "$state" in
     CHALLENGE*)
-      die "$E_COLD" "$site is presenting a security challenge. Stopping: 5dive does not attempt to solve one, by decision and not by limitation. A person clears it. Ask your owner to, then carry on after their Done: 5dive browser connect-request $site --challenge --url=<the page you were on>" ;;
+      die "$E_COLD" "$site is presenting a security challenge, and a saved routine cannot clear one. Clear it yourself first in the same browser (5dive browser act $site: type the code from the site's mail or the owner's saved .2fa, tick the robot check), then run this again. Ask your owner only if you cannot: 5dive browser connect-request $site --challenge --url=<the page you were on>" ;;
     session\ expired*)
       die "$E_COLD" "$site is logged out. Failing closed: no retry, no login attempt, no falling through to a generic click. A person clears this — 5dive browser auth $site" ;;
     authenticated*)
@@ -4083,8 +4143,8 @@ cmd_run() {
   local may=0; _retry_possible && may=1
   local plan; plan=$(jq -c --arg a "$action" --arg profile "$dir" --argjson args "$args" \
       --argjson g "$guard" --argjson ap "$is_approved" --argjson ak "$(_policy_allowed)" \
-      --argjson lj "$(_landing_json "$site" "$may")" \
-      '{profile: $profile, steps: .actions[$a].steps, args: $args, guard: $g, approved: $ap, allow_kinds: $ak} + $lj' "$f")
+      --argjson gt "$(_gates_json "$site")" --argjson lj "$(_landing_json "$site" "$may")" \
+      '{profile: $profile, steps: .actions[$a].steps, args: $args, guard: $g, approved: $ap, allow_kinds: $ak} + $lj + $gt' "$f")
   # THE LEASE TRAVELS WITH THE PLAN, and it is what the executor re-checks before
   # every single step. Handing it over once and trusting the first check would be
   # a lease that protects keystroke one: the case it has to cover is a PERSON
@@ -4121,8 +4181,8 @@ _run_session_plan() {  # <adapter> <action> <args> <settle> <guard> <approved> <
   jq -nc --argjson steps "$(jq -c --arg a "$2" '.actions[$a].steps' "$1")" \
       --argjson args "$3" --argjson l "$(_daemon_lease_json)" \
       --argjson st "$(_settle_json "$4")" --argjson g "$5" --argjson ap "$6" \
-      --argjson ak "$(_policy_allowed)" --argjson lj "$(_landing_json "$7" 0)" \
-      '{op:"plan", steps:$steps, args:$args, guard:$g, approved:$ap, allow_kinds:$ak} + $st + $l + $lj'
+      --argjson ak "$(_policy_allowed)" --argjson gt "$(_gates_json "$7")" --argjson lj "$(_landing_json "$7" 0)" \
+      '{op:"plan", steps:$steps, args:$args, guard:$g, approved:$ap, allow_kinds:$ak} + $st + $l + $lj + $gt'
 }
 
 # WHAT FOLLOWS EITHER EXECUTOR, in one place for the reason _run_verify is one
@@ -4696,8 +4756,14 @@ _challenge_hint() {  # <html> <landed url> [<asked url>] [<ms waited on it>] [<p
   [[ "$waited" =~ ^[0-9]+$ ]] && printf '%s: the browser watched "%s" for %s s in this same page load and it did not clear by itself. Loading the page again starts the check over, so a second snapshot will not get past it either.\n' \
     "$PROG" "$(cut -c1-80 <<<"$title")" "$(( waited / 1000 ))" >&2
   [[ "$mode" == headless ]] && printf '%s: this load ran in a HEADLESS browser (this box gave it no display of its own). Cloudflare challenges headless Chrome that a headed one passes, so the owner'"'"'s browser may not see this check at all.\n' "$PROG" >&2
-  printf '%s: STOP — this page is a security check ("%s"), not the page you asked for. 5dive never solves one. Ask your owner to clear it, wait for their Done, then re-run this step: 5dive browser connect-request %s --challenge --url=%s  (A flat block with nothing to click, such as "access denied" or a 403, is the site refusing this box'"'"'s IP, and a person cannot clear that one either.)\n' \
+  # DIVE-7881: a robot check is the agent's to try first, unless the owner gated it.
+  if declare -F _gate_on >/dev/null && _gate_on robot "$host" "${_PG_SITE:-}"; then
+  printf '%s: STOP — this page is a security check ("%s"), not the page you asked for, and your owner asked to be asked first (gate robot). Ask your owner to clear it, wait for their Done, then re-run this step: 5dive browser connect-request %s --challenge --url=%s  (A flat block with nothing to click, such as "access denied" or a 403, is the site refusing this box'"'"'s IP, and a person cannot clear that one either.)\n' \
     "$PROG" "$(cut -c1-80 <<<"$title")" "$host" "${u:-<the page>}" >&2
+  else
+  printf '%s: this page is a robot check ("%s"), not the page you asked for. It is yours to clear, like a person would: tick its box (5dive browser act %s --steps='"'"'[…]'"'"', no URL), or wait 5-10 s and look again ("Just a moment…" usually clears by itself), then carry on. Ask your owner only if it is still there after a few tries: 5dive browser connect-request %s --challenge --url=%s  (A flat block with nothing to click, such as "access denied" or a 403, is the site refusing this box'"'"'s IP, and a person cannot clear that one either.)\n' \
+    "$PROG" "$(cut -c1-80 <<<"$title")" "$host" "$host" "${u:-<the page>}" >&2
+  fi
   if [[ -n "$profile" && "$host" != "<site>" ]] && _is_public "$profile"; then
     printf '%s: this load used the PUBLIC profile. The owner clears the check in the box'"'"'s %s browser, and after their Done the same command, given the URL, goes through THAT profile, where the clearance is kept, not this one (to name it: 5dive browser snapshot %s %s).\n' \
       "$PROG" "$host" "$host" "${u:-<the page>}" >&2
@@ -6757,7 +6823,21 @@ _page_open_probe() {
     BROKEN*)
       die "$E_UNAVAILABLE" "$state. Nothing was rendered and nothing was read: a browser that will not start is a box fault, not a verdict about the $site session." ;;
     CHALLENGE*)
-      die "$E_COLD" "$site is presenting a security challenge, so anything rendered now is the challenge page and not the page you asked for. A person clears it. Ask your owner to, then carry on after their Done: 5dive browser connect-request $site --challenge --url=<the page you asked for>" ;;
+      # DIVE-7881 (lodar 11-07, «remove rules»): a code or a robot check on the
+      # site's page is the agent's to clear, in this same browser, so the verb
+      # proceeds and the page it returns IS the check, said so. The owner's gate
+      # for that kind (or for either, when the state names no kind) still stops.
+      local ck; ck=$(_challenge_state_kind "$state")
+      if { [[ -n "$ck" ]] && ! _gate_on "$ck" "$site"; } || { [[ -z "$ck" ]] && ! _gate_on code "$site" && ! _gate_on robot "$site"; }; then
+        _GENERIC_UNCONFIRMED=1
+        if [[ "$ck" == code ]]; then
+          printf '%s: %s is asking to verify the sign-in (a code box or a 2-step step). It is yours to clear: get the code from the newest %s mail in this browser'"'"'s mailbox, or the owner'"'"'s saved code ("saved":"<name>.2fa"), and type it in this same browser; read only that mail and never put the code in chat. Ask your owner only if the code went to their phone. This proceeds, and the page you get may be that step.\n' "$PROG" "$site" "$site" >&2
+        else
+          printf '%s: %s is showing a robot check. It is yours to clear, like a person would: tick its box, or wait 5-10 s and look again. Ask your owner only if it stays: 5dive browser connect-request %s --challenge --url=<the page>. This proceeds, and the page you get may be that check.\n' "$PROG" "$site" "$site" >&2
+        fi
+        return 0
+      fi
+      die "$E_COLD" "$site is presenting a security challenge${ck:+ (a $ck check)}, and your owner asked to be asked first (5dive browser gate). Anything rendered now is the challenge page and not the page you asked for. Ask your owner to clear it, then carry on after their Done: 5dive browser connect-request $site --challenge --url=<the page you asked for>" ;;
     session\ expired*)
       die "$E_COLD" "$site is logged out. Refusing rather than handing back a screenshot of the sign-in page: that PNG would look exactly like evidence and would be the opposite. A person clears this — 5dive browser auth $site" ;;
     *)
@@ -8565,9 +8645,9 @@ cmd_act() {
     plan=$(jq -nc --arg p "$_PG_DIR" --slurpfile sf "$steps_file" --argjson a "$is_approved" \
         --arg h "$stage/page.html" --arg m "$stage/after.json" --arg sh "$png" \
         --arg t "$stage/tree.json" --argjson r "$report" --argjson ak "$allow_kinds" \
-        --argjson lj "$(_landing_json "$site" "$may")" --arg dl "$stage/downloads" --argjson sm "$ACT_STEP_MS" \
+        --argjson gt "$(_gates_json "$site")" --argjson lj "$(_landing_json "$site" "$may")" --arg dl "$stage/downloads" --argjson sm "$ACT_STEP_MS" \
         '$sf[0] as $s | {profile:$p, steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak, step_ms:$sm,
-          report:({html:$h, meta:$m, tree:$t, shot:(if $sh=="" then null else $sh end), downloads:$dl} + $r)} + $lj')
+          report:({html:$h, meta:$m, tree:$t, shot:(if $sh=="" then null else $sh end), downloads:$dl} + $r)} + $lj + $gt')
     FIVEDIVE_BROWSER_PROFILE="$_PG_DIR" FIVEDIVE_BROWSER_CHROME="$chrome" \
       FIVEDIVE_BROWSER_RUN_SETTLE_MS="${settle:-${FIVEDIVE_BROWSER_RUN_SETTLE_MS:-$SNAP_SETTLE_DEFAULT}}" \
       FIVEDIVE_BROWSER_LEASE="$(_lease_meta "$_LEASE_DIR")" \
@@ -8812,11 +8892,11 @@ _act_session() {  # <site> <steps-file> <approved> <shot> <settle> <report> <all
   if (( _ACT_FULL )); then xs="$(_extract_sha)"; fi
   plan=$(jq -nc --slurpfile sf "$steps_file" --argjson a "$is_approved" --argjson sh "$shot" \
       --argjson l "$(_daemon_lease_json)" --argjson st "$(_settle_json "$settle")" --argjson r "$report" \
-      --argjson ak "$allow_kinds" --argjson lj "$(_landing_json "$site" 0)" --argjson stay "$_ACT_STAY" \
+      --argjson ak "$allow_kinds" --argjson gt "$(_gates_json "$site")" --argjson lj "$(_landing_json "$site" 0)" --argjson stay "$_ACT_STAY" \
       --argjson sm "$ACT_STEP_MS" --arg xs "$xs" \
       '$sf[0] as $s | {op:"plan", steps:$s, args:{}, literal:true, guard:true, approved:$a, allow_kinds:$ak, stay:($stay==1), step_ms:$sm,
         look:true, split:true, report:({shot:($sh==1), tree:true, downloads:true} + $r)}
-       + (if $xs == "" then {} else {extract:$xs} end) + $st + $l + $lj')
+       + (if $xs == "" then {} else {extract:$xs} end) + $st + $l + $lj + $gt')
   # To a FILE, not a variable: a download comes back in this payload (DIVE-5751).
   _daemon_call "$_PG_DIR" "$plan" >"$payload" 2>>"$errf" || rc=$?
   _act_downloads_unpack "$payload" "$stage/downloads"
@@ -9360,6 +9440,92 @@ cmd_approval_policy() {
   if (( json )); then jq -c --arg m "$(_policy_mode <<<"$pol")" '. + {mode:$m}' <<<"$pol"; return 0; fi
   jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<<"$pol"
   printf 'mode\t%s\n' "$(_policy_mode <<<"$pol")"
+}
+# THE OWNER'S CUSTOM GATES (DIVE-7881): sign-in checks the agent clears by
+# itself, unless the owner turned a stop back on. lodar 2026-11-07, after a head
+# agent refused five times to open the box's Gmail for Discord's «Verify by
+# Email»: «remove rules», «im for freedom and custom gates». So a code box, a
+# 2-step prompt, an email or SMS verification and a robot check are the agent's
+# job by DEFAULT (it reads the site's mail, types the code, ticks the box, waits
+# out «Just a moment…»), and the owner asks to be asked, per site or for all:
+#   code   a code box, a 2-step prompt, an email/SMS verification step
+#   robot  a robot check: a CAPTCHA, «verify you are human», «Just a moment…»
+# One root-owned 0644 file beside the approval policy, same rule: a file not
+# owned by the uid that grants is no gate, so a seat can neither add nor drop
+# one. {"bank.com":["robot"],"*":["code"]}: "*" is every site. A site's gate
+# also covers its subdomains (bank.com covers login.bank.com).
+# What NEVER turns off (it is not a gate): a password the owner did not save, a
+# code or link pasted into chat, any mail but the site's own verification mail.
+GATE_KINDS="code robot"
+_gates_file() { printf '%s\n' "${FIVEDIVE_BROWSER_GATES_FILE:-$PROFILE_ROOT/.sign-in-gates.json}"; }
+_gates_owned() {  # the owner's file as {site:[kinds]}, {} when there is none that counts
+  local f cur='{}'; f="$(_gates_file)"
+  if [[ -f "$f" && ! -L "$f" && "$(stat -c %u "$f" 2>/dev/null)" == "$(_grant_uid)" ]]; then
+    cur=$(jq -c --arg k "$GATE_KINDS" 'if type == "object" then with_entries(select(.value | type == "array")
+      | .value |= [.[] | select(type == "string" and (. as $x | ($k | split(" ")) | index($x)))] | select(.value | length > 0)) else {} end' "$f" 2>/dev/null) || cur='{}'
+  fi
+  printf '%s\n' "$cur"
+}
+# _gates_for <site-or-host> [<host>...] -> a JSON array of the kinds gated for
+# any of them: "*", the name itself, or a parent domain of it.
+_gates_for() {
+  local g; g="$(_gates_owned)"
+  [[ "$g" == '{}' ]] && { echo '[]'; return 0; }
+  jq -c --args '. as $g | [$ARGS.positional[] | select(. != "") | ascii_downcase] as $names
+    | [ $g | to_entries[] | select(.key == "*" or (.key as $k | $names | any(. == $k or endswith("." + $k)))) | .value[] ] | unique' "$@" <<<"$g"
+}
+_gates_json() { jq -nc --argjson g "$(_gates_for "$@")" '{gates:$g}'; }   # the step loops' copy
+_gate_on() {  # <kind> <site-or-host>... -> 0 when the owner gated that kind there
+  local k="$1"; shift
+  [[ "$(_gates_for "$@" | jq -r --arg k "$k" 'index($k) != null')" == true ]]
+}
+# `gate` — the owner's switch, one verb:
+#   5dive browser gate [--json]                          what is gated (nothing by default)
+#   sudo 5dive browser gate on  <site|all> <code|robot|all>
+#   sudo 5dive browser gate off <site|all> <code|robot|all>
+cmd_gate() {
+  local json=0 a; local -a pos=()
+  [[ "${FIVEDIVE_JSON_MODE:-0}" == 1 ]] && json=1
+  local usage="gate [--json] | sudo 5dive browser gate on|off <site|all> <code|robot|all>"
+  for a in "$@"; do
+    case "$a" in
+      --json) json=1 ;;
+      -h|--help) printf 'usage: 5dive browser gate [--json]\n       sudo 5dive browser gate on|off <site|all> <code|robot|all>\n\n       By default the agent clears sign-in checks itself: it reads the site'"'"'s\n       verification mail, types the code, ticks the robot check. Turn a stop back\n       on and that check stops for you instead, on that site (and its subdomains)\n       or on all. code = a code box, 2-step prompt or email/SMS verification;\n       robot = a CAPTCHA, "verify you are human", "Just a moment...".\n' ; return 0 ;;
+      -*) die "$E_USAGE" "gate: unexpected '$a' — usage: $usage" ;;
+      *) pos+=("$a") ;;
+    esac
+  done
+  if (( ${#pos[@]} )); then
+    local onoff="${pos[0]}" where="${pos[1]:-}" kind="${pos[2]:-}"
+    [[ "$onoff" == on || "$onoff" == off ]] && [[ -n "$where" && -n "$kind" ]] && (( ${#pos[@]} == 3 )) \
+      || die "$E_USAGE" "usage: $usage"
+    [[ "$kind" == all || " $GATE_KINDS " == *" $kind "* ]] || die "$E_USAGE" "'$kind' is not a gate; the gates are: $GATE_KINDS (or all)"
+    local key="${where,,}"
+    if [[ "$key" == all || "$key" == '*' ]]; then key='*'
+    else
+      key="${key#*://}"; key="${key%%/*}"
+      _valid_site "$key" || die "$E_USAGE" "'$where' is not a site name (bank.com) or all"
+    fi
+    [[ "$(id -u)" == "$(_grant_uid)" ]] || die "$E_PERM" "only the box owner sets a gate: sudo 5dive browser gate $onoff $where $kind"
+    _sudo_is_seat && die "$E_PERM" "an agent seat ($SUDO_USER) cannot change what it has to ask about. The owner sets it, from their own shell or the dashboard."
+    local kinds; [[ "$kind" == all ]] && kinds="$GATE_KINDS" || kinds="$kind"
+    local cur; cur=$(jq -c --arg s "$key" --arg ks "$kinds" --arg on "$onoff" '
+      ($ks | split(" ")) as $k
+      | .[$s] = (if $on == "on" then ((.[$s] // []) + $k | unique) else ((.[$s] // []) - $k) end)
+      | with_entries(select(.value | length > 0))' <<<"$(_gates_owned)")
+    local f d tmp; f="$(_gates_file)"; d="$(dirname "$f")"
+    tmp="$(mktemp "$d/.sign-in-gates.XXXXXX")" || die "$E_UNAVAILABLE" "cannot write the gates in $d"
+    if jq . <<<"$cur" > "$tmp" && chmod 0644 "$tmp" && mv -f -- "$tmp" "$f"; then :; else
+      rm -f -- "${tmp:?}"; die "$E_UNAVAILABLE" "cannot write the gates at $f"
+    fi
+  fi
+  local g; g="$(_gates_owned)"
+  if (( json )); then jq -c '{gates: ., default: "the agent clears codes, email verification and robot checks itself"}' <<<"$g"; return 0; fi
+  if [[ "$g" == '{}' ]]; then
+    printf 'no gates: the agent clears codes, email verification and robot checks itself, and asks you only when it cannot.\n'
+    return 0
+  fi
+  jq -r 'to_entries[] | "\(if .key == "*" then "all sites" else .key end)\tasks you first: \(.value | join(", "))"' <<<"$g"
 }
 cmd_approve() {
   local id="" deny=0 proof="" a
@@ -11081,7 +11247,7 @@ _connect_send() {  # <caller> <site> <kind> <url> <reason> <check 0|1> <chat ids
     # the message: Telegram would preview it, and the site is all they need.
     text="🧩 ${label} is stuck on a captcha on ${site} and cannot go on by itself."
     [[ -n "$reason" ]] && text+=$'\n'"Doing: ${reason}"
-    text+=$'\n\n'"Tap Open for a one-time link to the browser on your box, on the page ${label} stopped at. Clear the check yourself, then tap Done and ${label} carries on. ${label} never solves these."
+    text+=$'\n\n'"Tap Open for a one-time link to the browser on your box, on the page ${label} stopped at. ${label} tried and could not get past it. Clear the check yourself, then tap Done and ${label} carries on."
     kb=$(jq -nc --arg t "Open ${site}" --arg d "bconn:${code}" '{inline_keyboard:[[{text:$t,callback_data:$d}]]}')
   elif [[ "$kind" == challenge ]]; then
     # DIVE-6725: the box loaded the page and saw no check on it, so this is a
@@ -11342,7 +11508,7 @@ _asks_open() {  # <site> [<seat>]
   [[ "$code" =~ ^[0-9a-f]{48}$ ]] || die "$E_PERM" "this ask carries no usable code; ask $who to send it again"
   case "$kind" in
     challenge) if [[ "$check" == 0 ]]; then head="🖐 $who is working on $site and needs you to take over."
-               else head="🧩 $who is stuck on a check on $site and cannot go on by itself. Clear it yourself; $who never solves these."; fi ;;
+               else head="🧩 $who is stuck on a check on $site and cannot go on by itself. $who tried and could not get past it. Clear it yourself."; fi ;;
     *)         head="🔐 $who asks you to log in to $site in the browser on this box. You log in yourself; $who never sees your password." ;;
   esac
   # DIVE-7156: the site is served as $BOX_SEAT, so its store must exist first;
@@ -11597,7 +11763,7 @@ _connect_app_words() {  # <kind> <check> <site> <reason> <who>
   if [[ "$kind" == challenge && "$check" == 1 ]]; then
     APP_TEXT="🧩 ${who} is stuck on a check on ${site} and cannot go on by itself."
     [[ -n "$reason" ]] && APP_TEXT+=$'\n'"Doing: ${reason}"
-    APP_TEXT+=$'\n\n'"Tap Open to see that page in the browser on your server. Clear the check yourself, then tap Done. ${who} never solves these."
+    APP_TEXT+=$'\n\n'"Tap Open to see that page in the browser on your server. ${who} tried and could not get past it. Clear the check yourself, then tap Done."
     APP_LABEL="Open ${site}"
   elif [[ "$kind" == challenge ]]; then
     APP_TEXT="🖐 ${who} is working on ${site} and needs you to take over."
@@ -12922,8 +13088,14 @@ _input_rc() {  # map the daemon's exit to this command's, with the handoff advic
   local rc="$1" site="$2"
   case "$rc" in
     0) return 0 ;;
-    75) printf '%s: a security check is on screen. The agent does not solve it — hand the tab to a person, on the same window:\n  5dive browser handoff %s --reason="<what they need to do>"\n  5dive browser handoff %s --wait\n' "$PROG" "$site" "$site" >&2
-        exit "$E_COLD" ;;
+    # DIVE-7881: a robot check is the agent's to try first (76, not ready yet:
+    # the plan stopped so nothing was typed into it); the owner's gate keeps 75.
+    75) if _gate_on robot "$site"; then
+          printf '%s: a security check is on screen, and your owner asked to be asked first (gate robot). Hand the tab to them, on the same window:\n  5dive browser handoff %s --reason="<what they need to do>"\n  5dive browser handoff %s --wait\n' "$PROG" "$site" "$site" >&2
+          exit "$E_COLD"
+        fi
+        printf '%s: a robot check is on screen, so the rest of the plan did not run. It is yours to clear, like a person would: tick its box (act %s with a click at its place in page.png), or wait 5-10 s and shot again ("Just a moment…" usually clears by itself). Ask your owner only if it is still there after a few tries:\n  5dive browser handoff %s --reason="<what they need to do>"\n' "$PROG" "$site" "$site" >&2
+        exit "$E_NOT_READY" ;;
     # DIVE-7528: the daemon's 74 — the site served its own error page. A stop
     # (75), but a person has nothing to clear, so no handoff advice.
     74) printf '%s: STOP — %s refused this read: it served its own error page, not the page you asked for. This is not a security check and a handoff will not help. Do not retry in a loop; use another source for this page, or try again later.\n' "$PROG" "$site" >&2
@@ -13453,6 +13625,7 @@ case "${1:-}" in
   routine) shift; cmd_routine "$@" ;;
   approve) shift; cmd_approve "$@" ;;
   approvals) shift; cmd_approvals "$@" ;;
+  gate|gates) shift; cmd_gate "$@" ;;
   # Not in usage: the session daemon re-enters here as the profile's owner.
   _broker-lease) shift; cmd_broker_lease "$@" ;;
   _broker-audit) shift; cmd_broker_audit "$@" ;;

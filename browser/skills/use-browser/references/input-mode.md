@@ -42,8 +42,11 @@ site is in input mode: `read`, `tree` or `run` refused "INPUT mode" means use th
    default) stops with exit 73 before anything runs. Never leave the kind off to get past that.
    An undeclared purchase is still a purchase.
 
-**Hand the window to the owner whenever a person is needed.** A captcha or slider puzzle, a
-verification code, an "unusual activity" page, or a judgement call that is theirs:
+**Clear sign-in checks yourself first** (DIVE-7881): a code from the site's mail (open the
+box's mailbox in this browser) or the owner's saved `.2fa`, a tick box, a slider you can drag,
+a "Just a moment…" you can wait out. **Hand the window to the owner when a person is truly
+needed**: a check still there after a few tries, a code sent to their phone, a check the owner
+gated (`5dive browser gate`), or a judgement call that is theirs:
 
 ```bash
 5dive browser handoff tiktok.com --reason="solve the slider puzzle"   # they get a Connect button
@@ -52,8 +55,10 @@ verification code, an "unusual activity" page, or a judgement call that is their
 
 They open the **same window** you were driving. Your input is refused while they have it, and
 when they tap Done you carry on from the page they left. Take a `shot` before your next act.
-A challenge whose title says so stops an act by itself (exit 75). TikTok's puzzle does not change
-the title, so when you see one in a screenshot, hand the window over. Never try to solve it.
+A challenge whose title says so stops the rest of an act's steps by itself, so nothing is typed into
+it: exit 76 with how to try it, or exit 75 when the owner gated robot checks on that site. TikTok's
+puzzle does not change the title, so you see it only in a screenshot: try it, and hand the window
+over if it stays.
 
 A site's own **error page** is different: the stop says the site **refused this read** (still exit
 75), and there is no handoff, because a person has nothing on it to clear. Amazon's

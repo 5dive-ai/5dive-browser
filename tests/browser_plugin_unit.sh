@@ -952,7 +952,7 @@ rm -f "$TMP/driver-plan.json"
 run "$BROWSER" run chal publish --body=hi
 t  'T8b run stops on a challenge'          75 "$RC"
 t  'T8b ...without invoking the driver'    'no' "$([[ -f "$TMP/driver-plan.json" ]] && echo yes || echo no)"
-tc 'T8b ...saying it is a decision, not a limitation' 'does not attempt to solve' "$ERR"
+tc 'T8b ...saying to clear it first in the same browser (DIVE-7881)' 'Clear it yourself first' "$ERR"
 # The framing lodar closed: this is persistent human-authenticated sessions. The
 # anti-bot wording is the one that was ruled out for docs, marketing AND the
 # plugin description, so grade the shipped strings rather than trusting a review.
@@ -2230,8 +2230,16 @@ tc 'T15b ...saying a sign-in screenshot is the lie, not the error' 'sign-in page
 printf '%s' "$CHALLENGE_DOM" > "$SHOTDIR/.fake-dom"
 run env PATH="$SHOTPATH" SHOTARGV="$SHOTARGV" "$BROWSER" shot shot.example.com \
     "https://shot.example.com/t" --out="$SHOTOUT/c1.png"
-t  'T15b a CHALLENGE refuses too' 75 "$RC"
-t  'T15b ...writing nothing' 'no' "$([[ -e "$SHOTOUT/c1.png" ]] && echo yes || echo no)"
+t  'T15b a CHALLENGE renders (DIVE-7881): the agent sees the check it has to clear' 0 "$RC"
+t  'T15b ...writing the picture of it' 'yes' "$([[ -e "$SHOTOUT/c1.png" ]] && echo yes || echo no)"
+tc 'T15b ...and saying it is the agent'"'"'s to clear' 'yours to clear' "$ERR"
+printf '{"*":["code","robot"]}\n' > "$TMP/gates15.json"
+rm -f "$SHOTOUT/c1g.png"
+run env PATH="$SHOTPATH" SHOTARGV="$SHOTARGV" FIVEDIVE_BROWSER_GATES_FILE="$TMP/gates15.json" FIVEDIVE_BROWSER_GRANT_UID="$(id -u)" \
+    "$BROWSER" shot shot.example.com "https://shot.example.com/t" --out="$SHOTOUT/c1g.png"
+t  'T15b GATE: with the owner'"'"'s gates on, a CHALLENGE refuses (75)' 75 "$RC"
+t  'T15b GATE: ...writing nothing' 'no' "$([[ -e "$SHOTOUT/c1g.png" ]] && echo yes || echo no)"
+tc 'T15b GATE: ...naming the owner'"'"'s ask' 'asked to be asked first' "$ERR"
 
 # No adapter -> the GENERIC check (DIVE-4943 scope 2). This used to be a flat
 # UNKNOWN refusal, which is why 10 of the 13 sites a customer could connect could
@@ -5597,7 +5605,7 @@ GROBOT='<html><head><title>Verify you are human</title></head><body><iframe src=
 GWIDE='<html><body><h1>Jamie wants to access your Google Account</h1><ul><li>See and download your contacts</li><li>View events on all your calendars</li></ul><button>Allow</button></body></html>'
 # g32 <bin> <site> <landed url> <html> -> "<exit> <clicks that reached the page>"
 g32() { : > "$PWREC"
-  run actenv env PWURL="$3" PWHTML="$4" FIVEDIVE_BROWSER_NO_DAEMON=1 "$1" act "https://$2/signup" --steps="$STAR" --out="$TMP/act32g"
+  run actenv env PWURL="$3" PWHTML="$4" FIVEDIVE_BROWSER_NO_DAEMON=1 FIVEDIVE_BROWSER_GATES_FILE="${GATES32:-$TMP/no-gates.json}" "$1" act "https://$2/signup" --steps="$STAR" --out="$TMP/act32g"
   printf '%s' "$ERR" > "$TMP/g32.err"   # g32 runs in $(...): its ERR does not come back
   printf '%s %s' "$RC" "$(jq -rs '[.[]|select(.call=="click")]|length' "$PWREC")"; }
 g32err() { cat "$TMP/g32.err" 2>/dev/null; }
@@ -5613,8 +5621,30 @@ tc 'T32g2 ...naming the password' 'asking for a password' "$(g32err)"
 t  'T32g2 ...the same on an unconfirmed site'                                          '75 0' "$(g32 "$BROWSER" noadapter.test "$G32PW" "$GPW")"
 t  'T32g2 PRE-FIX: on a confirmed site the password page went through, click and all'  '0 1'  "$(g32 "$G32OLD" gconf.test "$G32PW" "$GPW")"
 G32RB="$GAC/v3/signin/challenge/recaptcha?TL=1"
-t  'T32g3 a robot check: refused, the click never reached it'                          '75 0' "$(g32 "$BROWSER" gconf.test "$G32RB" "$GROBOT")"
-tc 'T32g3 ...and it points at the owner, never a solve' 'connect-request gconf.test --challenge' "$(g32err)"
+t  'T32g3 a robot check (DIVE-7881): the agent'"'"'s to try, the click ran'               '0 1' "$(g32 "$BROWSER" gconf.test "$G32RB" "$GROBOT")"
+tc 'T32g3 ...and it says so' 'yours to clear' "$(g32err)"
+G32CODE='<html><body><h1>2-Step Verification</h1><div>Enter the code</div><input name="totpPin" autocomplete="one-time-code"></body></html>'
+G32CD="$GAC/v3/signin/challenge/totp?TL=1"
+t  'T32g5 a Google 2-step code page (DIVE-7881): no exit 75, the step ran'             '0 1' "$(g32 "$BROWSER" gconf.test "$G32CD" "$G32CODE")"
+t  'T32g5 ...the same on an unconfirmed site'                                          '0 1' "$(g32 "$BROWSER" noadapter.test "$G32CD" "$G32CODE")"
+# 1.71.1, the tree before DIVE-7881: every one of these was an automatic stop.
+G7881BASE="$TMP/g7881base"; mkdir -p "$G7881BASE"
+G7881REF="${G7881_BASE_REF:-738027f}"   # 5dive-browser main before DIVE-7881 (1.71.1)
+git -C "$ROOT" cat-file -e "$G7881REF^{commit}" 2>/dev/null || git -C "$ROOT" fetch -q origin main 2>/dev/null
+git -C "$ROOT" archive "$G7881REF" browser | tar -x -C "$G7881BASE" 2>/dev/null
+G7881OLD="$G7881BASE/browser/bin/browser"
+t  'T32g5 (setup) the 1.71.1 tree is staged' yes "$([[ -x "$G7881OLD" ]] && echo yes || echo no)"
+t  'T32g5 PRE-FIX (1.71.1): the 2-step code page was a stop (75) before the step' '75 0' "$(g32 "$G7881OLD" gconf.test "$G32CD" "$G32CODE")"
+t  'T32g5 PRE-FIX (1.71.1): so was a robot check' '75 0' "$(g32 "$G7881OLD" gconf.test "$G32RB" "$GROBOT")"
+G7881="$TMP/gates7881.json"
+printf '{"gconf.test":["robot"],"noadapter.test":["code"]}\n' > "$G7881"
+t  'T32g6 GATE: the owner gated robot checks on this site: stopped, the click never reached it' '75 0' \
+   "$(GATES32="$G7881" g32 "$BROWSER" gconf.test "$G32RB" "$GROBOT")"
+tc 'T32g6 ...naming the gate' 'gate robot' "$(g32err)"
+t  'T32g6 GATE: a code gate on the site stops the 2-step page'                         '75 0' \
+   "$(GATES32="$G7881" g32 "$BROWSER" noadapter.test "$G32CD" "$G32CODE")"
+t  'T32g6 GATE: a robot gate does not stop a code page'                                '0 1' \
+   "$(GATES32="$G7881" g32 "$BROWSER" gconf.test "$G32CD" "$G32CODE")"
 t  'T32g3 PRE-FIX: on a confirmed site the robot check went through'                   '0 1'  "$(g32 "$G32OLD" gconf.test "$G32RB" "$GROBOT")"
 G32WD="$GAC/signin/oauth/v2/consentsummary?authuser=0"
 t  'T32g4 a consent asking for calendar and contacts: asks the owner (73), Allow never clicked' '73 0' "$(g32 "$BROWSER" gconf.test "$G32WD" "$GWIDE")"
@@ -5656,7 +5686,7 @@ FIVEDIVE_BROWSER_PROFILE_ROOT="$P31" mkprofile codem.test \
   '<html><body><h1>Two-factor authentication</h1><form action="/sessions/two-factor"><input autocomplete="one-time-code" name="otp"></form></body></html>' >/dev/null
 # m32 <bin> <site> <landed url> <landed html> -> "<exit> <clicks that reached the page>"
 m32() { : > "$PWREC"; rm -rf "$TMP/act32m"
-  run actenv env PWURL="$3" PWHTML="$4" FIVEDIVE_BROWSER_NO_DAEMON=1 "$1" act "https://$2/signup" --steps="$STAR" --out="$TMP/act32m"
+  run actenv env PWURL="$3" PWHTML="$4" FIVEDIVE_BROWSER_NO_DAEMON=1 FIVEDIVE_BROWSER_GATES_FILE="${GATES32:-$TMP/no-gates.json}" "$1" act "https://$2/signup" --steps="$STAR" --out="$TMP/act32m"
   printf '%s' "$ERR" > "$TMP/m32.err"
   printf '%s %s' "$RC" "$(jq -rs '[.[]|select(.call=="click")]|length' "$PWREC")"; }
 m32err() { cat "$TMP/m32.err" 2>/dev/null; }
@@ -5666,10 +5696,24 @@ t  'T32m1 tally.so (round 2 AG2): no false challenge, the step ran' '0 1' \
 tc 'T32m1 ...and it says the marker matched only what a person does not see' 'not a challenge' "$(m32err)"
 t  'T32m1 1.39.0: refused as a security challenge before any step'   '75 0' "$(m32 "$M32OLD" tallym.test https://tallym.test/signup "$TSU")"
 tc 'T32m1 1.39.0: ...with round 2'"'"'s sentence' 'presenting a security challenge' "$(m32err)"
-t  'T32m1 NEGATIVE: a site showing a robot check still stops before any step' '75 0' \
+t  'T32m1 a site showing a robot check (DIVE-7881): no exit 75, the step ran to clear it' '0 1' \
    "$(m32 "$BROWSER" robotm.test https://robotm.test/signup "$LIVE_DOM")"
-t  'T32m1 NEGATIVE: a site asking for a two-factor code still stops before any step' '75 0' \
+tc 'T32m1 ...said to be the agent'"'"'s to clear' 'yours to clear' "$(m32err)"
+t  'T32m1 a site asking for a two-factor code (DIVE-7881): no exit 75, the step ran' '0 1' \
    "$(m32 "$BROWSER" codem.test https://codem.test/signup "$LIVE_DOM")"
+tc 'T32m1 ...pointing at the site'"'"'s mail' 'mailbox' "$(m32err)"
+t  'T32m1 PRE-FIX (1.71.1): the two-factor site stopped before any step (75)' '75 0' \
+   "$(m32 "$G7881OLD" codem.test https://codem.test/signup "$LIVE_DOM")"
+G7881M="$TMP/gates7881m.json"
+printf '{"codem.test":["code"],"*":["robot"]}\n' > "$G7881M"
+t  'T32m1 GATE: the owner gated codes on this site: stops before any step (75)' '75 0' \
+   "$(GATES32="$G7881M" m32 "$BROWSER" codem.test https://codem.test/signup "$LIVE_DOM")"
+tc 'T32m1 GATE: ...naming the owner'"'"'s ask' 'asked to be asked first' "$(m32err)"
+t  'T32m1 GATE: a robot gate on all sites stops the robot check (75)' '75 0' \
+   "$(GATES32="$G7881M" m32 "$BROWSER" robotm.test https://robotm.test/signup "$LIVE_DOM")"
+G7881X="$TMP/gates7881x.json"; ln -sf "$G7881M" "$G7881X"
+t  'T32m1 GATE: a gate file that is a symlink is no gate' '0 1' \
+   "$(GATES32="$G7881X" m32 "$BROWSER" codem.test https://codem.test/signup "$LIVE_DOM")"
 PLG="$(cat "$FX32/pitch-login.html")"
 PLU='https://auth.noadapter.test/login?state=x&prompt=select_account'
 t  'T32m2 a sign-up landing on the site'"'"'s login page with "Continue with Google" (round 2 AG5): handed back' '0 1' \
@@ -5678,17 +5722,26 @@ tc 'T32m2 ...said to be a sign-in page, for the Google button only' 'handed back
 t  'T32m2 1.39.0: refused as a sign-in page, nothing handed back' '75 1' "$(m32 "$M32OLD" noadapter.test "$PLU" "$PLG")"
 t  'T32m2 NEGATIVE: the same page with a password box is still refused' '75 1' \
    "$(m32 "$BROWSER" noadapter.test "$PLU" "${PLG/<\/form>/<input type=\"password\" name=\"pw\"></form>}")"
-t  'T32m2 NEGATIVE: ...with a code box' '75 1' \
+t  'T32m2 ...with a code box (DIVE-7881): handed back to clear, not 75' '0 1' \
    "$(m32 "$BROWSER" noadapter.test "$PLU" "${PLG/<\/form>/<input autocomplete=\"one-time-code\" name=\"c\"></form>}")"
-t  'T32m2 NEGATIVE: ...with a robot check' '75 1' \
+tc 'T32m2 ...said to be the agent'"'"'s to clear' 'yours to clear' "$(m32err)"
+t  'T32m2 GATE: ...the same code box with the owner'"'"'s code gate: refused (75)' '75 1' \
+   "$(GATES32="$G7881" m32 "$BROWSER" noadapter.test "$PLU" "${PLG/<\/form>/<input autocomplete=\"one-time-code\" name=\"c\"></form>}")"
+t  'T32m2 ...with a robot check (DIVE-7881): handed back to try, not 75' '0 1' \
    "$(m32 "$BROWSER" noadapter.test "$PLU" "${PLG/<\/form>/<\/form><div class=\"g-recaptcha\"><\/div>}")"
+t  'T32m2 a login page saying "check your email" (Discord, lodar 11-07): handed back, not 75' '0 1' \
+   "$(m32 "$BROWSER" noadapter.test "https://noadapter.test/login?next=/x" '<html><body><form action="/login"><h1>New login location detected</h1><p>Please check your email for a verification link.</p></form></body></html>')"
+tc 'T32m2 ...pointing at the site'"'"'s mail, never the chat' 'never put the code or link in chat' "$(m32err)"
 t  'T32m2 NEGATIVE: a login page with no Google button is still refused' '75 1' \
    "$(m32 "$BROWSER" noadapter.test "https://noadapter.test/login?next=/x" '<html><body><form action="/login"><input type="email"></form></body></html>')"
 # the mutant: the page check always says "challenge", and never offers a button
 MUT32MD="$TMP/m32mut"; mkdir -p "$MUT32MD"; cp -r "$ROOT/browser" "$MUT32MD/"
 sed -i 's|  return { challenge: false, why:|  return { challenge: true, why:|; s|  return { verdict: '"'"'offer'"'"'|  return { verdict: '"'"'none'"'"'|' "$MUT32MD/browser/lib/page-check.cjs"
 t  'T32m mutant applied (both verdicts)' 2 "$(grep -cE "^  return \{ (challenge: true, why: 'the marker|verdict: 'none', kind: 'google-button')" "$MUT32MD/browser/lib/page-check.cjs")"
-t  'T32m MUTANT: tally.so is a challenge again' '75 0' "$(m32 "$MUT32MD/browser/bin/browser" tallym.test https://tallym.test/signup "$TSU")"
+# Since DIVE-7881 a challenge stops only where the owner gated it, so the mutant runs gated.
+printf '{"*":["code","robot"]}\n' > "$TMP/gates32all.json"
+t  'T32m MUTANT: tally.so is a challenge again (owner gated all checks)' '75 0' "$(GATES32="$TMP/gates32all.json" m32 "$MUT32MD/browser/bin/browser" tallym.test https://tallym.test/signup "$TSU")"
+t  'T32m ...and on this tree, gated all the same, tally.so is still no challenge' '0 1' "$(GATES32="$TMP/gates32all.json" m32 "$BROWSER" tallym.test https://tallym.test/signup "$TSU")"
 t  'T32m MUTANT: the Pitch login page is refused again' '75 1' "$(m32 "$MUT32MD/browser/bin/browser" noadapter.test "$PLU" "$PLG")"
 
 # --- T32p round 5's terms step, through act (DIVE-6317) ----------------------------
@@ -5710,7 +5763,7 @@ t  'T32p1 1.41.0: refused as a sign-in page' '75 1' "$(m32 "$M32POLD" noadapter.
 tc 'T32p1 1.41.0: ...with round 5'"'"'s sentence' 'the page redirected to a sign-in' "$(m32err)"
 t  'T32p1 NEGATIVE: the same page with a password box is still refused' '75 1' \
    "$(m32 "$BROWSER" noadapter.test "$PTU" "${PTH/<button type=\"submit\">/<input type=\"password\" name=\"pw\"><button type=\"submit\">}")"
-t  'T32p1 NEGATIVE: ...with a robot check' '75 1' \
+t  'T32p1 ...with a robot check (DIVE-7881): handed back to try' '0 1' \
    "$(m32 "$BROWSER" noadapter.test "$PTU" "${PTH/<\/form>/<div class=\"g-recaptcha\"><\/div><\/form>}")"
 t  'T32p1 NEGATIVE: a login page with a newsletter box only is still refused' '75 1' \
    "$(m32 "$BROWSER" noadapter.test "$PTU" '<html><body><form action="/login"><input type="email"><label><input type="checkbox"> Send me news</label></form></body></html>')"
@@ -8944,7 +8997,7 @@ run cfenv env FIVEDIVE_BROWSER_XVFB="$TMP/no-such-xvfb" "$BROWSER" snapshot "$CF
 t  'T60c with no Xvfb the launch falls back to headless' true \
    "$(jq -rs '[.[]|select(.call=="launch")|.headless]|first' "$PWREC")"
 tc 'T60c ...and says so before anything else' 'this browser runs HEADLESS' "$ERR"
-tc 'T60c the headless load meets the challenge: the STOP still applies' 'STOP — this page is a security check' "$ERR"
+tc 'T60c the headless load meets the challenge: it is still named, now as the agent'"'"'s to try (DIVE-7881)' 'this page is a robot check' "$ERR"
 tc 'T60c ...and the STOP names it a HEADLESS load the owner'"'"'s browser may pass' 'this load ran in a HEADLESS browser' "$ERR"
 t  'T60c page.meta.json is not a page' 'Just a moment...' "$(jq -r '.title' "$TMP/t60c/page.meta.json" 2>/dev/null)"
 
@@ -8980,7 +9033,7 @@ t  'T60g (anchor) the mutation landed in the copy' 1 "$(grep -c 'MUTANT-DIVE-637
 rm -rf "$TMP/t60g"
 run cfenv env FIVEDIVE_BROWSER_DRIVER="$MUT60/bin/driver-playwright" "$BROWSER" snapshot "$CF_URL" --wait-for='text=Matcha' --out="$TMP/t60g"
 t  'T60g MUTANT: headless again, the same site stops at the challenge — T60a is red' 76 "$RC"
-tc 'T60g ...at its STOP' 'STOP — this page is a security check' "$ERR"
+tc 'T60g ...at its check (DIVE-7881)' 'this page is a robot check' "$ERR"
 tc 'T60h CHANGES.md carries the DIVE-6371 entry' 'DIVE-6371' "$(cat "$ROOT/CHANGES.md")"
 # --- T60i a field that changes role when focused is the same field ---
 # Measured in a headed Chrome (5dive-ci, 2026-10-16): Wikipedia's two search inputs
