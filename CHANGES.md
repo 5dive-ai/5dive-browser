@@ -18,6 +18,7 @@ lodar, 2026-11-07: a head agent refused five times to open the box's Gmail for D
 - **Custom gates, off by default:** `sudo 5dive browser gate on <site|all> <code|robot|all>` turns a stop back on (exit 75, asks the owner); `gate off` removes it; `5dive browser gate` lists them. One root-owned file beside the approval policy; a file the owner does not own is no gate, and a seat cannot set one.
 - README, CONTRIBUTING, the skills, AGENTS.md and the plugin/marketplace descriptions drop "never solved / hard stop".
 - Tests: `browser_google_signin_unit.sh` G4/G5/G20 (gates), `browser_page_check_unit.sh` V1-V11 (`verify`), `browser_plugin_unit.sh` T32g5/T32g6 and T32m1/T32m2 (a code page runs the step; a gated one stops with 75; 1.71.1 stopped every one).
+- After the 20 s wait on "Just a moment…" did not clear it, the hand-back offers only the box to tick, not "wait and look again" (the wait line says a reload starts it over). `browser_interstitial_unit.sh` I11/I12 moved to the hand-back; I16 is the gated arm that still prints the STOP.
 
 ### Fixed — a browser call no longer fails while the scheduled login check runs (DIVE-7822), 1.71.1
 
