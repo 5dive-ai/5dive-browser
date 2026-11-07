@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — tapping Type on a phone no longer blows the box's screen up (DIVE-7882), 1.71.2
+
+lodar, 2026-11-07, Brave on Android: right after Type the login view showed the box screen's top-left corner several times too big, with nothing to type into. The view sized the screen from `innerWidth`/`innerHeight`, which in Chrome follow the page's own zoom. The screen is wider than the phone, so Chrome let the page zoom out to it and reported `innerWidth` 1648 on a 412-px phone; the first resize after load (the keyboard opening) then drew the screen 4 times too big, and it stayed that way after the keyboard closed.
+
+- **The scale is read off the page's layout size**, which neither zoom nor a keyboard laid over the page moves. Type keeps the screen at its fitted scale; a browser whose keyboard shrinks the page scales it down, and back when the keyboard closes.
+- **The page cannot zoom out past its own scale** (`minimum-scale=1`), so the wide screen no longer gives Chrome room to. Pinch-zoom in on the bar still works.
+- `tests/browser_viewer_keyboard_unit.sh`: F arms run page.js's own scale line against the numbers real Chrome reported. On 1.71.1, 6 of them are red.
+
 ### Fixed — a browser call no longer fails while the scheduled login check runs (DIVE-7822), 1.71.1
 
 Every 6 hours the box checks each site's login (`probe-all`). All sites of a sign-in group share one browser profile, and Chrome opens a profile only once. On the bench rig (~300 sites in one group) the check held that profile for 22 minutes, and any page verb that had to start a browser then died on Chrome's exit 21 ("profile in use"). One bench task was lost outright, another hit it twice.

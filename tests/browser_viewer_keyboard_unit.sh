@@ -17,6 +17,13 @@
 #   Z  a phone does not stay zoomed in (DIVE-7379): the field's text is 16px (a
 #      phone zooms in on a focused field with smaller text), the page may still
 #      zoom, and Send or the keyboard closing takes the page back to its scale
+#   F  Type does not blow the box's screen up (DIVE-7882): page.js's own scale
+#      line, run against the numbers real Chrome reports on a 412x812 phone
+#      (innerWidth 1648, innerHeight 3248: the page may zoom out to the screen,
+#      which is wider than the phone), with the keyboard laid over the page
+#      (innerHeight / visualViewport shrink) and with the keyboard shrinking the
+#      page; the scale never grows past the fitted 1, and closing the keyboard
+#      gives back the scale from before Type. On 1.71.1 F2-F5 are red.
 # Pure node, no browser.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -26,7 +33,7 @@ trap 'rc=$?; rm -rf "$TMP"; echo "HARNESS-RC=$rc"' EXIT
 cp browser/lib/login-link/viewer-ui.js "$TMP/viewer-ui.mjs"
 
 cat >"$TMP/t.mjs" <<'JS'
-import { wireBar, pickText, TEXT, unzoom, UNZOOM_MS } from './viewer-ui.mjs';
+import { wireBar, pickText, TEXT, unzoom, UNZOOM_MS, fitScale } from './viewer-ui.mjs';
 import { readFileSync } from 'node:fs';
 
 let PASS = 0, FAIL = 0;
@@ -303,6 +310,42 @@ function zoomDoc(scale) {
   fire(c.doc.els.pastebox, ev('submit'));
   await new Promise((r) => setTimeout(r, UNZOOM_MS + 50));
   t('Z7 Send that also closes the keyboard gives the page its own viewport back', 'width=device-width, initial-scale=1', c.meta.content);
+}
+
+// F: the screen's scale through Type (DIVE-7882). page.js's place() line, as
+// shipped, evaluated against a phone: the fitted window is 412x768 (the page
+// under the 44-px bar), the box's screen 1920x1080. Window numbers are the ones
+// Chrome reported on 5dive-ci with a 412x812 mobile viewport once the screen was
+// laid out wider than the phone: innerWidth 1648, innerHeight 3248.
+{
+  const page = readFileSync('browser/lib/login-link/page.js', 'utf8');
+  const m = /const place = \(\) => \{\s*const s = ([^;]+);/.exec(page);
+  t('F0 page.js has its place() scale line', true, !!m);
+  const scale = (w) => new Function('innerWidth', 'innerHeight', 'document', 'fit', 'BAR', 'fitScale',
+    'return ' + (m ? m[1] : 'NaN'))(w.iw, w.ih, { documentElement: { clientWidth: w.cw, clientHeight: w.ch } },
+    [null, '412', '768'], 44, fitScale);
+  const round = (x) => Math.round(x * 1000) / 1000;
+  // Load: before the screen is laid out wide, everything reads the phone.
+  const before = round(scale({ iw: 412, ih: 812, cw: 412, ch: 812 }));
+  t('F1 at load the screen is drawn at the fitted scale', 1, before);
+  // The first resize after load: the keyboard opening on Type, laid over the
+  // page (Chrome's default): the visual viewport shrinks, the layout does not.
+  const typed = round(scale({ iw: 1648, ih: 1800, cw: 412, ch: 812 }));
+  t('F2 Type (keyboard over the page) does not scale the screen up', true, typed <= before);
+  t('F2 ... it stays at the fitted scale', before, typed);
+  // A browser whose keyboard shrinks the page itself (Firefox, iOS-style).
+  const shrunk = round(scale({ iw: 1015, ih: 1109, cw: 412, ch: 450 }));
+  t('F3 Type (keyboard shrinking the page) scales the screen down, never up', true, shrunk < before);
+  // Closing the keyboard: Chrome's innerWidth still reads the zoomed-out size.
+  const after = round(scale({ iw: 1648, ih: 3248, cw: 412, ch: 812 }));
+  t('F4 closing the keyboard gives back the scale from before Type', before, after);
+  // Zoom does not move it either way (a pinch on the bar, the DIVE-7379 cap).
+  t('F5 the page\'s own zoom does not change the scale', [before, before],
+    [round(scale({ iw: 412 / 3, ih: 812 / 3, cw: 412, ch: 812 })), round(scale({ iw: 412 / 0.25, ih: 812 / 0.25, cw: 412, ch: 812 }))]);
+  // And the page cannot be zoomed out to the screen in the first place.
+  const html = readFileSync('browser/lib/login-link-server.py', 'utf8');
+  const vp = /<meta name="viewport" content="([^"]*)"/.exec(html);
+  t('F6 the page cannot zoom out past its own scale (minimum-scale=1)', true, !!vp && /minimum-scale\s*=\s*1\b/.test(vp[1]));
 }
 
 console.log(`\n${PASS} passed, ${FAIL} failed`);
