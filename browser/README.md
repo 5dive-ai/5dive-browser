@@ -1,16 +1,24 @@
 # browser — persistent human-authenticated browser sessions
 
-**What this is, in the words the decision landed on (lodar, 2026-09-07): persistent
-human-authenticated browser sessions.** It is *not* anti-bot bypassing. A CAPTCHA, a 2FA prompt or
-an "unusual activity" interstitial is a **hard stop that asks for a person** — the executor never
-attempts to solve one. That is a decision, not a limitation, and the second framing invites legal
-and reputational exposure the actual design avoids. Use the first one in docs, marketing and the
-plugin description.
+**What this is (lodar, 2026-09-07): persistent human-authenticated browser sessions.** A person
+logs in to a site once, by hand; the agent is granted the session, never the password.
 
-**One exception, and it is the owner's own (DIVE-5336): an authenticator-app 2FA prompt, on a
-site whose owner saved that site's authenticator seed on the box.** See
-[The owner's authenticator seed](#the-owners-authenticator-seed-dive-5336). A CAPTCHA, an emailed
-or SMS code and an "are you human" step still stop and ask for a person.
+**Sign-in checks are the agent's job (DIVE-7881, lodar 2026-11-07: «remove rules», «im for freedom
+and custom gates»).** An email or SMS verification, a code box, a 2-step prompt, an "unusual
+activity" page and a robot check are cleared by the agent like a person would: it reads the site's
+own verification mail in the box's mailbox and follows its link or types its code (or the owner's
+saved `.2fa`, see [The owner's authenticator seed](#the-owners-authenticator-seed-dive-5336)), ticks
+the robot check, waits out "Just a moment…", retries. No paid solver service. The executor no
+longer turns a code box, a 2-step prompt or a robot check into an automatic stop (75): it hands the
+page back with how to clear it. The agent asks the owner only when it truly can't (no mailbox here,
+a code sent to the owner's phone, a check that stays, a sign-in that IS the owner's identity).
+
+**Custom gates, off by default.** The owner turns a stop back on per site or for all:
+`sudo 5dive browser gate on bank.com robot` (`code`, `robot` or `all`; `all` for every site).
+That check then stops (75) and asks them. One root-owned file, `<profile root>/.sign-in-gates.json`,
+read like the approval policy: a file the owner does not own is no gate. `5dive browser gate` lists
+them. What never turns off: read only the site's own mail, never paste a code or link into chat,
+never type a password the owner did not save.
 
 `5dive browser` is a **general capability, not a distribution product.** We do not curate a
 platform list and we do not choose per-site API-vs-browser paths; the user does. Adapters are

@@ -16,8 +16,13 @@
 //          screen that asks for nothing beyond basic profile and email.
 //   ask    a consent screen asking for more than that (calendar, contacts,
 //          Drive, …), or Google's unverified-app warning. The owner decides.
-//   stop   a password field; a verification code or any 2-step prompt; a robot
-//          check; adding an account (Google's email box, or a chooser with no
+//   allow  ALSO, since DIVE-7881 (lodar 11-07, «remove rules»): a verification
+//          code or 2-step prompt (kind code: the agent gets the code itself, from
+//          the site's mail in this browser or the owner's saved .2fa) and a robot
+//          check (kind robot: it tries it like a person, ticks, waits, retries).
+//          The owner turns either back into a stop: `gate on <site|all> code|robot`
+//          (bin/browser), passed in here as `gates`.
+//   stop   a password field; a code or robot check the owner gated; adding an account (Google's email box, or a chooser with no
 //          signed-in account on it); Google refusing the browser; and any
 //          accounts.google.com page this file does not recognise (fail closed).
 //
@@ -236,7 +241,8 @@ function scopeVerdict(u, text, html) {
   return wide;
 }
 
-function classify(url, html) {
+function classify(url, html, gates) {
+  const gated = (k) => Array.isArray(gates) && gates.includes(k);
   if (!isGooglePage(url)) return null;
   const { host, path, u } = hostPath(url);
   const text = visibleText(html);
@@ -246,7 +252,8 @@ function classify(url, html) {
   if (!host.startsWith('accounts.') || /\/challenge\/(recaptcha|captcha)\b/i.test(path)
       || /<iframe\b[^>]*src=["'][^"']*(recaptcha\/(?:api2|enterprise)\/(?:anchor|bframe)(?![^"']*size=invisible)|hcaptcha\.com|challenges\.cloudflare\.com)/i.test(html || '')
       || /unusual traffic|not a robot|type the text you (hear|see)/.test(text)) {
-    return r('stop', 'robot', 'Google is showing a robot check. 5dive never solves one');
+    if (gated('robot')) return r('stop', 'robot', 'Google is showing a robot check, and the owner asked to be asked first (gate robot)');
+    return r('allow', 'robot', 'Google is showing a robot check. Try it like a person: tick its box, or wait a few seconds and look again; ask the owner only if it is still there after a few tries');
   }
   if (/\/signin\/(v2\/)?rejected\b/i.test(path) || /couldn't sign you in|this browser or app may not be secure/.test(text)) {
     return r('stop', 'rejected', 'Google refused to sign in from this browser');
@@ -255,7 +262,8 @@ function classify(url, html) {
     return r('stop', 'password', 'Google is asking for a password. The agent never types one');
   }
   if (/\/challenge\//i.test(path) || /2-step verification|verification code|enter the code|check your phone|get a verification/.test(text)) {
-    return r('stop', 'code', 'Google is asking for a verification code or a 2-step prompt');
+    if (gated('code')) return r('stop', 'code', 'Google is asking for a verification code or a 2-step prompt, and the owner asked to be asked first (gate code)');
+    return r('allow', 'code', "Google is asking for a verification code or a 2-step prompt. Get the code yourself and type it: the newest Google mail in this browser's mailbox, or the owner's saved authenticator (\"saved\":\"<name>.2fa\"). Only a code sent to the owner's phone, or a prompt on it, is theirs");
   }
   // GOOGLE'S OWN ERROR PAGE IS NOT A SIGN-IN STEP (DIVE-6247). Round 3's
   // Whimsical attempt ended on "400. That's an error." at the chooser's path with
@@ -322,14 +330,14 @@ function samePage(cur, want) {
 // BEFORE EACH STEP, in both loops. A goto leaves the page, and leaving is never
 // the danger, so it is not checked. Everything else on a page that is not an
 // allow stops the plan before that step touches it.
-async function stepStop(page, s) {
+async function stepStop(page, s, gates) {
   if (!s || s.op === 'goto') return null;
   let url = '';
   try { url = page.url(); } catch (e) { return null; }
   if (!isGooglePage(url)) return null;
   let html = '';
   try { html = await page.content(); } catch (e) { html = ''; }
-  const v = classify(url, html);
+  const v = classify(url, html, gates);
   return v && v.verdict !== 'allow' ? { ...v, url } : null;
 }
 
@@ -354,7 +362,8 @@ async function stepGrant(page, s) {
   let html = '';
   try { html = await page.content(); } catch (e) { html = ''; }
   const v = classify(url, html);
-  if (!v || v.verdict !== 'allow') return null;
+  // A code or a robot check is a step OF the sign-in, not the account it used.
+  if (!v || v.verdict !== 'allow' || v.kind === 'code' || v.kind === 'robot') return null;
   return { kind: v.kind, accounts: pageAccounts(html, visibleText(html), s) };
 }
 
@@ -366,9 +375,11 @@ if (require.main === module) {
   // node google-signin.cjs --same-page <url-the-browser-is-on> <url-asked-for>  ->  exit 0 or 1
   if (process.argv[2] === '--same-page') process.exit(samePage(process.argv[3] || '', process.argv[4] || '') ? 0 : 1);
   const fs = require('fs');
-  const [file, url] = process.argv.slice(2);
-  let html = '';
+  // [<gates-json>]: the kinds the owner gated for this site (DIVE-7881), e.g. '["robot"]'.
+  const [file, url, gj] = process.argv.slice(2);
+  let html = '', gates = [];
   try { html = fs.readFileSync(file, 'utf8'); } catch (e) { html = ''; }
-  const v = classify(url || '', html);
+  try { gates = JSON.parse(gj || '[]'); } catch (e) { gates = []; }
+  const v = classify(url || '', html, gates);
   if (v) process.stdout.write(JSON.stringify(v) + '\n');
 }

@@ -227,6 +227,7 @@ tc 'L1 a page read at the settle bound says it was still loading' 'still loading
 
 # ============================================================= C  bin/browser's half
 # The two functions under test, from the shipped file; the daemon call is canned.
+_gates_json() { echo '{"gates":[]}'; }   # DIVE-7881: the owner's gates ride every step plan; none here
 eval "$(awk '/^_act_session\(\) \{/{f=1} /^_act_look_say\(\) \{/{f=1} f{print} f&&/^}/{f=0}' "$BROWSER")"
 _daemon_lease_json() { echo '{}'; }; _settle_json() { echo '{}'; }; _landing_json() { echo '{}'; }
 _extract_sha() { echo SHA; }; _act_downloads_unpack() { :; }

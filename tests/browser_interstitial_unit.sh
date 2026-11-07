@@ -59,17 +59,34 @@ t 'I15 FIVEDIVE_BROWSER_INTERSTITIAL_WAIT_MS still sets the bound (the old 90 s)
 t "I8 driver-playwright calls it after its snapshot goto, its act goto and readMode's goto" 3 "$(grep -c 'aria.waitInterstitial(page)' browser/bin/driver-playwright)"
 t 'I9 session-daemon calls it after snapshot, render, read (DIVE-6771) and the act goto' 4 "$(grep -cE 'aria\.waitInterstitial\(page[,)]' browser/bin/session-daemon)"
 
-# bin/browser's STOP says the wait happened when the payload says it did not clear.
+# bin/browser's hint says the wait happened when the payload says it did not clear.
+# DIVE-7881 (1.72.0): an ungated robot check is handed back to the agent to clear
+# (no STOP); only an owner's `gate on <site|all> robot` turns the STOP back on.
 HTML=$(mktemp); trap 'rm -f "$HTML"' EXIT
 printf '<html><head><title>Just a moment...</title></head><body></body></html>' > "$HTML"
-hint() { bash -c 'PROG="5dive browser"; CHALLENGE_TITLE_MARKER='"'"'(captcha|just a moment)'"'"'
+# GATED=1 stands in for an owner who ran `sudo 5dive browser gate on gamma.app robot`.
+hint() { GATED="${GATED:-0}" bash -c 'PROG="5dive browser"; CHALLENGE_TITLE_MARKER='"'"'(captcha|just a moment)'"'"'
   _render_title() { grep -oiE "<title[^>]*>[^<]{1,200}" "$1" | head -n1 | sed -E "s/<title[^>]*>//"; }
+  [[ "$GATED" == 1 ]] && _gate_on() { [[ "$1" == robot && "$2" == gamma.app ]]; }
   eval "$(sed -n "/^_challenge_hint() {/,/^}/p" browser/bin/browser)"; _challenge_hint "$@"' _ "$@" 2>&1; }
+has() { grep -qF -- "$1" <<<"$2" && echo yes || echo no; }
 H=$(hint "$HTML" https://gamma.app/ '' 30000)   # captured: grep -q on a pipe would SIGPIPE it under pipefail
-t 'I10 the STOP after a wait says how long, and that a reload starts the check over' yes \
-  "$(grep -q 'watched "Just a moment..." for 30 s in this same page load' <<<"$H" && echo yes || echo no)"
-t 'I11 ...and still prints the STOP' yes "$(grep -q 'STOP — this page is a security check' <<<"$H" && echo yes || echo no)"
-t 'I12 with no wait reported, only the STOP' 1 "$(hint "$HTML" https://gamma.app/ | wc -l | tr -d ' ')"
+t 'I10 after a wait the hint says how long, and that a reload starts the check over' yes \
+  "$(has 'watched "Just a moment..." for 30 s in this same page load' "$H")"
+t 'I11 ungated: the page is handed back to the agent, no STOP' 'yes no' \
+  "$(has 'It is yours to clear, like a person would' "$H") $(has 'STOP' "$H")"
+t 'I11b ungated after a wait: the two lines agree (no "wait and look again" after a wait that did not clear)' 'yes no' \
+  "$(has 'do not wait on it longer' "$H") $(has 'look again' "$H")"
+H0=$(hint "$HTML" https://gamma.app/)
+t 'I12 ungated with no wait reported: one line, the hand-back, which still offers the short wait' '1 yes no' \
+  "$(wc -l <<<"$H0" | tr -d ' ') $(has 'wait 5-10 s and look again' "$H0") $(has 'STOP' "$H0")"
+HG=$(GATED=1 hint "$HTML" https://gamma.app/ '' 30000)
+t 'I16 gated (gate on gamma.app robot): still prints the STOP, not the hand-back' 'yes no' \
+  "$(has 'STOP — this page is a security check' "$HG") $(has 'It is yours to clear' "$HG")"
+t 'I16b gated: the STOP names the gate and the connect-request for that site' 'yes yes' \
+  "$(has '(gate robot)' "$HG") $(has 'connect-request gamma.app --challenge --url=https://gamma.app/' "$HG")"
+t 'I16c a gate on another site does not stop this one' 'no' \
+  "$(has 'STOP' "$(GATED=1 hint "$HTML" https://example.com/)")"
 
 printf 'interstitial: %d pass, %d fail\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

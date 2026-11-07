@@ -66,19 +66,50 @@ function robotWidget(markup) {
   return '';
 }
 
-// challenge(html, url) -> { challenge: bool, why }
+// challenge(html, url) -> { challenge: bool, kind, why }
+//   kind (DIVE-7881): robot (a robot widget, a check's title or words) or code (a
+//   code box, a 2-step / identity-check URL). The agent clears both by default;
+//   the owner's gate turns one back into a stop (see verify below).
 function challenge(html, url) {
   const t = title(html);
-  if (CHALLENGE_TITLE.test(t)) return { challenge: true, why: `the page title is "${t.slice(0, 80)}"` };
+  if (CHALLENGE_TITLE.test(t)) return { challenge: true, kind: 'robot', why: `the page title is "${t.slice(0, 80)}"` };
   const p = pathOf(url || '');
-  if (p && CHALLENGE_PATH.test(p)) return { challenge: true, why: `the page is at ${p}` };
+  if (p && CHALLENGE_PATH.test(p)) return { challenge: true, kind: 'code', why: `the page is at ${p}` };
   const markup = visibleMarkup(html);
   const w = robotWidget(markup);
-  if (w) return { challenge: true, why: `the page shows ${w}` };
-  if (visibleInputs(markup, CODE_INPUT).length) return { challenge: true, why: 'the page asks for a one-time code' };
+  if (w) return { challenge: true, kind: /^a form posting to /.test(w) ? 'code' : 'robot', why: `the page shows ${w}` };
+  if (visibleInputs(markup, CODE_INPUT).length) return { challenge: true, kind: 'code', why: 'the page asks for a one-time code' };
   const m = visibleText(html).match(CHALLENGE_TEXT);
-  if (m) return { challenge: true, why: `the page says "${m[0]}"` };
+  if (m) return { challenge: true, kind: 'robot', why: `the page says "${m[0]}"` };
   return { challenge: false, why: 'the marker matched only text a person does not see (script data, a hidden or invisible element)' };
+}
+
+// A SIGN-IN CHECK THE AGENT CLEARS ITSELF (DIVE-7881). lodar 2026-11-07, after
+// a head agent refused five times to open the box's Gmail for Discord's «Verify
+// by Email»: «clicker wont check email», «remove rules». A code box, a 2-step
+// prompt, an "we emailed you a link" step and a robot check are handed back to
+// the agent to clear (read the site's mail, type the code, tick the box, wait),
+// unless the owner gated that kind for the site.
+// verify(html, url, gates) -> { verdict: 'offer'|'stop'|'none', kind, why }
+//   offer  a code/email step or a robot check, not gated: the agent's to clear
+//   stop   the same, gated by the owner; or a password box (never typed unless
+//          the owner saved it)
+//   none   none of these: the caller's own verdict stands
+const EMAIL_STEP = /\b(check your (?:e-?mail|inbox)|we(?:'ve| have)? (?:just )?(?:sent|emailed) (?:you )?(?:a|an|the) (?:\d-digit )?(?:code|link|e-?mail|verification)|verify (?:by|your|with) e-?mail|new login location|confirm (?:it'?s|it is) you|verification (?:code|e-?mail|link)|enter the code|2-step verification)\b/;
+function verify(html, url, gates) {
+  const gated = (k) => Array.isArray(gates) && gates.includes(k);
+  const markup = visibleMarkup(html);
+  if (visibleInputs(markup, (a) => (a.type || '').toLowerCase() === 'password').length) {
+    return { verdict: 'stop', kind: 'password', why: 'the page shows a password box' };
+  }
+  let c = challenge(html, url);
+  if (!c.challenge) {
+    const m = visibleText(html).match(EMAIL_STEP);
+    if (!m) return { verdict: 'none', kind: 'none', why: 'the page shows no code box, verification step or robot check' };
+    c = { challenge: true, kind: 'code', why: `the page says "${m[0]}"` };
+  }
+  if (gated(c.kind)) return { verdict: 'stop', kind: c.kind, why: `${c.why}, and the owner asked to be asked first (gate ${c.kind})` };
+  return { verdict: 'offer', kind: c.kind, why: c.why };
 }
 
 // signin(html, url) -> { verdict: 'offer'|'stop'|'none', kind, why }
@@ -132,20 +163,21 @@ function signin(html, url) {
     return { verdict: 'stop', kind: 'password', why: 'the page shows a password box' };
   }
   const c = challenge(html, url);
-  if (c.challenge) return { verdict: 'stop', kind: 'challenge', why: c.why };
+  if (c.challenge) return { verdict: 'stop', kind: 'challenge', why: c.why };   // verify() hands a code/robot back
   if (terms) return { verdict: 'offer', kind: 'terms', why: `the page is the site's terms step, a box by "${terms}", and shows no password box, code box or robot check` };
   return { verdict: 'offer', kind: 'google-button', why: `the page offers ${b} and shows no password box, code box or robot check` };
 }
 
-module.exports = { challenge, signin };
+module.exports = { challenge, signin, verify };
 
 if (require.main === module) {
-  // node page-check.cjs challenge|signin <html-file> [<url>] -> one JSON line
+  // node page-check.cjs challenge|signin|verify <html-file> [<url>] [<gates-json>] -> one JSON line
   const fs = require('fs');
-  const [mode, file, url] = process.argv.slice(2);
-  let html = '';
+  const [mode, file, url, gj] = process.argv.slice(2);
+  let html = '', gates = [];
   try { html = fs.readFileSync(file, 'utf8'); } catch (e) { html = ''; }
-  const fn = mode === 'signin' ? signin : mode === 'challenge' ? challenge : null;
-  if (!fn) { process.stderr.write('usage: page-check.cjs challenge|signin <html-file> [<url>]\n'); process.exit(64); }
-  process.stdout.write(JSON.stringify(fn(html, url || '')) + '\n');
+  try { gates = JSON.parse(gj || '[]'); } catch (e) { gates = []; }
+  const fn = mode === 'signin' ? signin : mode === 'challenge' ? challenge : mode === 'verify' ? verify : null;
+  if (!fn) { process.stderr.write('usage: page-check.cjs challenge|signin|verify <html-file> [<url>] [<gates-json>]\n'); process.exit(64); }
+  process.stdout.write(JSON.stringify(fn(html, url || '', gates)) + '\n');
 }

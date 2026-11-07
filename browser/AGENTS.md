@@ -331,8 +331,11 @@ site is in input mode: `read`, `tree` or `run` refused "INPUT mode" means use th
    default) stops with exit 73 before anything runs. Never leave the kind off to get past that.
    An undeclared purchase is still a purchase.
 
-**Hand the window to the owner whenever a person is needed.** A captcha or slider puzzle, a
-verification code, an "unusual activity" page, or a judgement call that is theirs:
+**Clear sign-in checks yourself first** (DIVE-7881): a code from the site's mail (open the
+box's mailbox in this browser) or the owner's saved `.2fa`, a tick box, a slider you can drag,
+a "Just a moment…" you can wait out. **Hand the window to the owner when a person is truly
+needed**: a check still there after a few tries, a code sent to their phone, a check the owner
+gated (`5dive browser gate`), or a judgement call that is theirs:
 
 ```bash
 5dive browser handoff tiktok.com --reason="solve the slider puzzle"   # they get a Connect button
@@ -341,8 +344,10 @@ verification code, an "unusual activity" page, or a judgement call that is their
 
 They open the **same window** you were driving. Your input is refused while they have it, and
 when they tap Done you carry on from the page they left. Take a `shot` before your next act.
-A challenge whose title says so stops an act by itself (exit 75). TikTok's puzzle does not change
-the title, so when you see one in a screenshot, hand the window over. Never try to solve it.
+A challenge whose title says so stops the rest of an act's steps by itself, so nothing is typed into
+it: exit 76 with how to try it, or exit 75 when the owner gated robot checks on that site. TikTok's
+puzzle does not change the title, so you see it only in a screenshot: try it, and hand the window
+over if it stays.
 
 The one exception is the owner's own authenticator. On a site whose owner saved its
 authenticator seed on the box, `run` types the 2FA code itself, and
@@ -393,10 +398,15 @@ the Vault first. On your next turn, check the login or fill by name. Never ask f
 - **Sessions die on the site's schedule.** A scheduled check skips a served profile and probes
   only after the browser stops; probing the held profile returns `UNKNOWN`.
 
-## Stuck on a captcha: ask the owner to clear it, then carry on (DIVE-5200)
+## Email codes and captchas: clear them yourself, ask only when stuck (DIVE-5200, DIVE-7881)
 
-A CAPTCHA, a "verify you are human" or a "Just a moment…" check is a hard stop. You never
-solve it and never look for a way round it. But you do not give up the task either: ask the
+An email or SMS verification ("check your email", "we sent a code", "new login location") is
+yours: open the box's mailbox in this browser (`5dive browser snapshot https://mail.google.com/`),
+open the newest mail from that site, follow its link or type its code. Read only that mail, and
+never put the code or link in chat. A CAPTCHA, a "verify you are human" or a "Just a moment…" is
+yours to try like a person: tick it, wait, retry. No paid solver. Ask the owner only when you
+truly can't (no mailbox here, a code on their phone, a check that stays), or when the owner
+gated that check on the site (`5dive browser gate`; the verb then stops with 75). Then ask the
 person, wait, and finish the job yourself.
 
 ```bash
@@ -436,7 +446,12 @@ Do not poll while you wait. Do not open the link. A flat block with nothing to c
 
 Persistent **human-authenticated** sessions: a person logs in by hand, once, and the agent
 is granted permission to operate the session — never the credentials.
-**This is not anti-bot bypassing.** A CAPTCHA, a 2FA prompt or an "unusual activity"
-interstitial is a hard stop that asks for a person: surface it, never attempt it. Ask them with `connect-request <site> --challenge`, then carry on after their Done. Never ask
-for a password, never accept one, never export cookies out of a profile.
+It is not anti-bot bypassing: no solver service, no fingerprint tricks, no way round a check;
+the agent clears one only the way a person at the screen would.
+A code, an email verification, a 2FA prompt, an "unusual activity" page or a CAPTCHA is the
+agent's to clear, like a person would (the site's mail, the owner's saved `.2fa`, tick and wait).
+It asks the owner only when it truly can't, or where the owner turned that stop back on
+(`sudo 5dive browser gate on <site|all> code|robot`): `connect-request <site> --challenge`, then
+carry on after their Done. Never ask for a password, never accept one, never type one the owner
+did not save, never paste a code or link into chat, never export cookies out of a profile.
 <!-- 5dive:browser:end -->

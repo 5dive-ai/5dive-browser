@@ -13,8 +13,9 @@ Open an issue with:
 Never paste a session cookie, a VNC password, a one-time link or a screenshot of a signed-in page
 with your details on it.
 
-A robot check or captcha on a site is not a bug. The plugin stops and asks a person on purpose and
-will not solve one.
+A robot check the agent could not get past is not always a bug: it tries like a person (tick,
+wait, retry) and then asks the owner. Report it if it stopped where a person would have got
+through, or if it did not stop where the owner turned a stop on (`5dive browser gate`).
 
 ## Make a change
 
@@ -36,7 +37,11 @@ will not solve one.
 ## Rules the code keeps
 
 - The agent gets the session, never the password.
-- A security challenge is a hard stop for a person, never something to get around.
+- Sign-in checks (an email or SMS code, a 2-step prompt, a robot check) are the agent's to clear
+  like a person would, never with a paid solver. The owner can turn a stop back on per site
+  (`5dive browser gate`), and that stop always holds.
+- The agent reads only the site's own verification mail, never pastes a code or link into chat,
+  and never types a password the owner did not save.
 - Paying asks the owner by default. A step that pays, posts, sends or deletes must say so, and
   that is never left off to get past an ask.
 - Nothing listens on the internet. The viewer and its bridge bind to `127.0.0.1`.

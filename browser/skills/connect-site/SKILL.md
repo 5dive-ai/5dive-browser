@@ -165,7 +165,8 @@ belongs in a second group (`group create Work`, then `group move <site> Work`).
 **The box's Google counts too (DIVE-7168).** Once the owner has signed in to Google in the box's
 browser (any `asks open` or Connect link), a new site an agent opens joins that browser by itself,
 and the agent does a "Continue with Google" sign-up with no owner tap. So do not send the owner a
-link for a sign-up: send one only for a password, a code, a robot check or a wider Google grant.
+link for a sign-up: send one only for a password, a wider Google grant, or a code or robot check
+you could not clear yourself (see below).
 
 ## What will actually go wrong
 
@@ -214,12 +215,23 @@ link for a sign-up: send one only for a password, a code, a robot check or a wid
 ## The line this capability does not cross
 
 This is **persistent human-authenticated sessions** — a person logs in, once, by hand, and
-the agent is granted permission to operate the session, never the credentials. It is not
-anti-bot bypassing. A CAPTCHA, a 2FA prompt or an "unusual activity" interstitial is a
-**hard stop that asks for a person**: surface it, do not attempt it, do not look for a way
-around it. Ask them with `5dive browser connect-request <site> --challenge --url=<page>` (the
-use-browser skill has the whole handoff), then carry on after their Done. The one exception is
-the owner's own authenticator: if the owner saved the site's
+the agent is granted permission to operate the session, never the credentials.
+It is not anti-bot bypassing: no solver service, no fingerprint tricks, no way round a check;
+the agent clears one only the way a person at the screen would.
+
+**Sign-in checks are the agent's job (DIVE-7881, lodar 2026-11-07: «remove rules»).** An email
+or SMS verification, a code box, a 2-step prompt, an "unusual activity" page and a robot check
+are cleared by the agent, like a person would: it opens the newest mail from that site in the
+box's mailbox and follows its link or types its code, ticks the robot check, waits out "Just a
+moment…", retries. No paid solver service. It asks the owner only when it truly can't (no
+mailbox here, a code sent to the owner's phone, a check still there after a few tries), with
+`5dive browser connect-request <site> --challenge --url=<page>` (the use-browser skill has the
+whole handoff), and carries on after their Done. **Custom gates, off by default:** the owner
+turns a stop back on per site or for all, `sudo 5dive browser gate on bank.com robot` (or
+`code`, or `all`); then that check stops (exit 75) and asks them. `5dive browser gate` lists them.
+What never turns off: read only the site's own mail, never paste a code or link into chat,
+never type a password the owner did not save. The owner's own authenticator works too:
+if the owner saved the site's
 authenticator seed on the box (`5dive browser totp status <site>`), `run` types the 2FA code
 itself. To offer that, file the secret gate `totp status` prints, so the owner pastes the seed
 on the box's one-time link. Never ask for it in chat, and never echo it back. Never ask the human for a password, never accept one, never write one down, and

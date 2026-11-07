@@ -199,7 +199,7 @@ out=$(keep "$("$BROWSER" asks open futuretools.io 2>&1)"); rc=$?
 t  "L8 asks open on a check exits 0" 0 "$rc"
 tc "L8 ... with a one-time link" "https://192.0.2.10/browser/viewer/futuretools.io/" "$out"
 tc "L8 ... on the page the agent stopped at" "serve futuretools.io --login --url=$PAGE" "$(cat "$FAKE_LOG")"
-tc "L8 ... and says the agent never solves it" "never solves these" "$out"
+tc "L8 ... and says the agent tried first (DIVE-7881)" "could not get past it" "$out"
 out=$(keep "$("$BROWSER" asks done futuretools.io 2>&1)"); rc=$?
 t  "L9 asks done on a check exits 0" 0 "$rc"
 tc "L9 ... the owner is told the box still sees the check" "still sees a check on futuretools.io" "$out"
