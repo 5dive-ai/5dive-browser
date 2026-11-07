@@ -379,8 +379,16 @@ arm 'R5 ...as goto + the steps, with kind stripped before the daemon' '["goto","
 arm 'R5 ...and the publish is on the audit log' yes "$(yn grep -q 'input-publish' "$TMP/pr/$SEAT/tiktok.com/.5dive-audit.jsonl")"
 echo 75 > "$TMP/fake.rc"
 o=$("$BROWSER" act tiktok.com --steps='[{"op":"press","key":"Enter"}]' --out="$TMP/act2" 2>&1); rc=$?
+# DIVE-7881 (1.72.0): an ungated robot check is the agent's to try first: 76
+# (not ready), the hand-back, and the handoff only as the last resort.
+arm 'R5 a challenge from the daemon, ungated, is handed back (76) with the handoff as the last resort' '76 yes yes' \
+  "$rc $(yn grep -q 'It is yours to clear' <<<"$o") $(yn grep -q 'browser handoff tiktok.com' <<<"$o")"
+printf '{"tiktok.com":["robot"]}\n' > "$TMP/gates-r5.json"
+o=$(FIVEDIVE_BROWSER_GATES_FILE="$TMP/gates-r5.json" FIVEDIVE_BROWSER_GRANT_UID="$(id -u)" \
+  "$BROWSER" act tiktok.com --steps='[{"op":"press","key":"Enter"}]' --out="$TMP/act2g" 2>&1); rc=$?
+arm 'R5 GATE: with the owner'"'"'s gate robot on tiktok.com, the same challenge is E_COLD (75) with the handoff' '75 yes no' \
+  "$rc $(yn grep -q 'browser handoff tiktok.com' <<<"$o") $(yn grep -q 'It is yours to clear' <<<"$o")"
 rm -f "$TMP/fake.rc"
-arm 'R5 a challenge from the daemon is E_COLD (75) with the handoff advice' '75 yes' "$rc $(yn grep -q 'browser handoff tiktok.com' <<<"$o")"
 # R5b (DIVE-7528) — the daemon's 74: the site served its own error page. Still a
 # stop (75), but the advice names the refusal and never sends anyone to a handoff.
 cp "$TMP/ad/tiktok.com.json" "$TMP/tiktok.keep"
