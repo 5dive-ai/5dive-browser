@@ -2592,6 +2592,10 @@ const page = {
     if (arg && arg.visibleOf) { rec({ call: 'visible', target: arg.target, mode: arg.mode, at: clock });
       if (cfBlocked()) return false;
       return !process.env.PWLATE_MS || late(); }
+    // DIVE-8051: scroll what --expect matched into the picture. PWSHOW parks the
+    // page's answer; unset, the match is already in view. Graded in browser_act_show_expect_unit.
+    if (arg && arg.showOf) { rec({ call: 'show', expect: arg.expect, at: clock });
+      return process.env.PWSHOW ? JSON.parse(process.env.PWSHOW) : { show_report: true, in_view: true }; }
     if (arg && arg.textOf) return (lateNow() && process.env.PWTEXT_LATE) || process.env.PWTEXT || '';
     if (arg && arg.valuesOf) return process.env.PWVALUES || '';   // DIVE-6795: what the form fields hold
     // DIVE-4984: a verify's scope — the one element it grades. PWSCOPE parks what
@@ -3860,6 +3864,8 @@ const mkpage = (kind) => { let clock = 0, keydowns = 0, lastGoto = '';
       try { return JSON.parse(fs.readFileSync(process.env.DPWPAYLOAD, 'utf8')); } catch (e) { return {}; } }
     if (arg && arg.visibleOf) { rec({ call: 'visible', target: arg.target, kind, at: clock });
       return !process.env.DPWLATE_MS || late(); }
+    if (arg && arg.showOf) { rec({ call: 'show', expect: arg.expect, kind });   // DIVE-8051
+      return { show_report: true, in_view: true }; }
     if (arg && arg.textOf) return (late() && process.env.DPWTEXT_LATE) || process.env.DPWTEXT || '';
     if (arg && arg.valuesOf) return process.env.DPWVALUES || '';   // DIVE-6795: what the form fields hold
     // DIVE-4984: the scope a verify grades, from a FILE (the env is fixed at serve).
@@ -5939,6 +5945,9 @@ t  'T32h ...the click reached the held page, and the held page was not reloaded'
    "$(tail -n +$((DREC_LINES+1)) "$DREC" | jq -rs '[([.[]|select(.call=="click")]|length), ([.[]|select(.call=="goto" and .kind=="first")]|length)]|join(" ")')"
 t  'T32h ...and the re-read came back over the socket' 'yes' \
    "$([[ -s "$TMP/act31h2/page.html" ]] && grep -q feed "$TMP/act31h2/page.html" && echo yes || echo no)"
+# DIVE-8051: the served act asks the page to show what --expect matched, BEFORE its picture.
+t  'T32h ...the served act asked to show the --expect match, then took the picture' 'show:posts screenshot' \
+   "$(tail -n +$((DREC_LINES+1)) "$DREC" | jq -r 'select(.call=="show" or .call=="screenshot")|if .call=="show" then "show:"+.expect else .call end' | tr '\n' ' ' | sed 's/ $//')"
 
 # --- T32o a sign-up's Google page, named again, carries on in ITS browser (DIVE-6247)
 # Round 3: Whimsical's chooser was up in the whimsical.com browser; the agent named

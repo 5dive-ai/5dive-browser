@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Changed — the act that proves the job pictures its proof; named filters stay on (DIVE-8051), 1.74.0
+- An act whose `--expect` matched text that is off screen scrolls the first visible match to the middle
+  before its `page.png` is taken. A match already on screen moves nothing; a title or url match, a failed
+  step and a scoped verify never scroll. The act says so: `the picture is scrolled to what --expect matched`.
+  Why: the nightly bench (week 2026-11-08) failed om2w-a7a73c8f on "none of the screenshots show a cost
+  estimate" while the answer quoted it from the page text below the fold.
+- use-browser skill: `--expect` the proof itself; set a filter on the page's own control, not with words in
+  the search box; never turn a named filter off to compare (om2w-78f39733 ended with the Italy filter reset).
+- Bench build for the rerun on the 6 filter_sort misses; ships only if the row's three bars pass.
+
 ### Fixed — a login view's stop waits out its cap on Ubuntu 26.04 (DIVE-7978), 1.72.1
 
 `5dive-ai/5dive-plugins` main read red from 2026-11-07: its mirror's T49e stop left after ~0.6 s instead of waiting out its 1 s cap. The same commit was green on GitHub's ubuntu-24.04 runner and red on ubuntu-26.04, and this repo's CI moves to that runner too.
