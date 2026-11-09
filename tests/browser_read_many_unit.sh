@@ -23,6 +23,9 @@ BROWSER="$ROOT/browser/bin/browser"
 PASS=0; FAIL=0; SKIP=0
 t() { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL: %s\n   expected: %s\n   got:      %s\n' "$1" "$2" "$3"; fi; }
 yn() { if grep -qF -- "$1"; then echo yes; else echo no; fi; }
+# The block printed under one "==> <url> <==" header, up to the next header. Not a line count:
+# the page text sits inside a fence (DIVE-7972), so its distance from the header moves (DIVE-8050).
+under() { awk -v h="$1" 'index($0, h) == 1 { on = 1; next } /^==> / { on = 0 } on'; }
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 unset BASH_ENV ENV
@@ -173,7 +176,7 @@ t 'D3 ...that carries all three urls' 3 "$(jq '.urls | length' "$TMP/daemon.log"
 t 'D4 ...and waits the settle, not --wait'"'"'s 8 s' "$SNAP_SETTLE" "$(jq '.wait' "$TMP/daemon.log" 2>/dev/null | head -1)"
 t 'D5 three 2 s pages finish well inside the 6 s a line of them takes' yes "$( (( MS < 5000 )) && echo yes || echo "no (${MS} ms)")"
 t 'D6 ...each printed under its url with its own text' 'yes yes yes' \
-  "$(for h in a.test b.test c.test; do grep -A12 "^==> https://$h/" <<<"$OUT" | yn "This is the article of $h"; done | xargs)"
+  "$(for h in a.test b.test c.test; do under "==> https://$h/" <<<"$OUT" | yn "This is the article of $h"; done | xargs)"
 t 'D7 ...and the executor was not called (the daemon holds the profile)' 0 "$(wc -l < "$FAKE_LOG")"
 : > "$TMP/daemon.log"
 dlive run read https://a.test/x https://fail.test/y https://c.test/z
@@ -222,7 +225,7 @@ JS
   [[ "$RC" == 0 ]] || printf '%s\n' "$ERR" | tail -5
   t 'L2 ...and the server held all three at once' 3 "$(curl -s "$B/peak")"
   t 'L3 ...each page printed under its url' 'yes yes yes' \
-    "$(for k in 1 2 3; do grep -A12 "^==> $B/p$k <==" <<<"$OUT" | yn "The live article at /p$k"; done | xargs)"
+    "$(for k in 1 2 3; do under "==> $B/p$k <==" <<<"$OUT" | yn "The live article at /p$k"; done | xargs)"
   curl -s "$B/reset" >/dev/null
   t0=$(date +%s%N); for k in 1 2 3; do live read "$B/p$k" >/dev/null 2>&1; done
   ONE=$(( ($(date +%s%N) - t0) / 1000000 ))
