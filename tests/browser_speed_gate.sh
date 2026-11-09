@@ -129,7 +129,7 @@ LAUNCHES="$TMP/launches.log"; : > "$LAUNCHES"
 cat > "$SHIMBIN/google-chrome" <<SH
 #!/usr/bin/env bash
 case " \$* " in *" --version "*) exec "$REAL_CHROME" "\$@" ;; esac
-printf '%s %s\n' "\$(date +%s%3N)" "\$*" >> "$LAUNCHES"
+t=\${EPOCHREALTIME//[!0-9]/}; printf '%s %s\n' "\$(( t / 1000 ))" "\$*" >> "$LAUNCHES"   # not date +%s%3N (DIVE-7978)
 exec "$REAL_CHROME" --ignore-certificate-errors "\$@"
 SH
 chmod +x "$SHIMBIN/google-chrome"
@@ -218,7 +218,7 @@ CHECK_RE='the generic check found no sign-in form'
 
 RED_KEEP=(); RED_SIGNIN=(); RED_BUDGET=(); RED_BROKEN=()
 ROWS=()
-now_ms() { date +%s%3N; }
+now_ms() { local t="${EPOCHREALTIME//[!0-9]/}"; echo $(( t / 1000 )); }  # not date +%s%3N: uutils misprints it (DIVE-7978)
 i=0
 for s in "${STEPS[@]}"; do
   i=$((i+1))
