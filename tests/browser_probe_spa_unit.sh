@@ -52,7 +52,7 @@ arm() {  # arm <name> <expected> <got>
   else FAIL=$((FAIL+1)); printf 'FAIL: %s\n   expected: %s\n   got:      %s\n' "$1" "$2" "$3"; fi
 }
 yn() { if "$@"; then echo yes; else echo no; fi; }
-now_ms() { date +%s%3N; }
+now_ms() { local t="${EPOCHREALTIME//[!0-9]/}"; echo $(( t / 1000 )); }  # not date +%s%3N: uutils misprints it (DIVE-7978)
 
 # =============================================================== D: the daemon
 PW="$TMP/pw"; mkdir -p "$PW/node_modules/playwright-core"
