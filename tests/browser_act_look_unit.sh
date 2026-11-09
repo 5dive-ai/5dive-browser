@@ -294,7 +294,7 @@ t  'K2 ...exit 64' 64 "$RC"
 # ============================================================= P  a look act's page.md is the page text
 # DIVE-8050: the writer is _look_page_md, and the text sits inside the per-read
 # untrusted fence a derived page.md carries (DIVE-7972); the fence id is masked.
-eval "$(awk '/^_page_fence_id\(\)/{print} /^_look_page_md\(\) \{/{f=1} f{print} f&&/^}/{exit}' "$BROWSER")"
+eval "$(awk '/^_page_fence_id\(\)/{print} /^_page_fence\(\) \{/||/^_look_page_md\(\) \{/{f=1} f{print} f&&/^}/{f=0}' "$BROWSER")"
 jq -nc '{url:"https://x.test/rate", title:"Rates", text:"Origin ZIP code\nWeight"}' > "$TMP/pa.json"
 PMD="$(_look_page_md "$TMP/pa.json" 2>&1)"
 PID1="$(sed -n 's/^<<<UNTRUSTED-PAGE-\([0-9a-f]\{16\}\)>>>$/\1/p' <<<"$PMD")"
@@ -305,6 +305,11 @@ PID2="$(_look_page_md "$TMP/pa.json" | sed -n 's/^<<<UNTRUSTED-PAGE-\([0-9a-f]\{
 t  'P2 two reads never share a fence id' yes "$([[ -n "$PID1" && -n "$PID2" && "$PID1" != "$PID2" ]] && echo yes || echo no)"
 t  'P3 the served act marks the page read (a send after it asks)' 1 \
    "$(awk '/_look_page_md "\$stage\/after.json" > "\$out\/page.md"/{f=1; next} f{print; exit}' "$BROWSER" | grep -c '_page_read_mark')"
+# An id generator that prints nothing fails the write, never spins (the empty id
+# is in every text). timeout turns a regression into a red, not a hung job.
+P4="$(timeout 20 bash -c "$(declare -f _page_fence _look_page_md)"'
+  _page_fence_id() { :; }; _look_page_md "$1"' _ "$TMP/pa.json" >/dev/null 2>&1; echo "rc=$?")"
+t  'P4 an empty fence id fails page.md (rc 1), it does not spin' 'rc=1' "$P4"
 
 # ============================================================= D  documented
 tc 'D1 SKILL.md: act on the refs the act printed' 'An act prints what it changed' "$(cat "$ROOT/browser/skills/use-browser/SKILL.md")"

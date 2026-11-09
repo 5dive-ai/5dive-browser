@@ -84,13 +84,38 @@ t 'X1 ...and requiring it as a library runs no CLI (no stdin read, no exit)' 'fu
   "$(node -e 'globalThis.__FIVEDIVE_EXTRACT_LIB = 1; process.stdout.write(typeof require(process.argv[1]).extract)' "$EXTRACTOR" </dev/null)"
 # _derive_capture takes the session's extraction for THIS url and runs no extractor;
 # for another url it runs the extractor, as before.
-eval "$(awk '/^_take_extracted\(\) \{/{f=1} /^_derive_capture\(\) \{/{f=1} f{print} f&&/^}/{f=0}' "$PWD/browser/bin/browser")"
+# DIVE-8050: _derive_capture now fences page.md (_page_fence) and marks the read
+# (_page_read_mark), so those come out of bin/browser too. Lifting only the first
+# two left _page_fence_id undefined, the fence empty, and the old unbounded loop
+# spun forever: this harness hung CI with no output. One-line functions end on
+# their own line; the rest end at the first column-0 brace.
+_lift() {
+  awk -v names="$*" 'BEGIN { n = split(names, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
+    !f && /^[A-Za-z_]+\(\) \{/ { nm = substr($0, 1, index($0, "(") - 1)
+      if (nm in want) { print; if ($0 !~ /\{[[:space:]]*(#.*)?$/) next; f = 1; next } }
+    f { print; if (/^}/) f = 0 }' "$PWD/browser/bin/browser"
+}
+eval "$(_lift _take_extracted _derive_capture _page_fence_id _page_fence _approval_dir _page_read_file _page_read_mark)"
+for fn in _take_extracted _derive_capture _page_fence_id _page_fence _approval_dir _page_read_file _page_read_mark; do
+  declare -F "$fn" >/dev/null || { echo "FAIL: $fn was not lifted out of bin/browser"; exit 1; }
+done
 die() { echo "DIE $*"; exit 1; }
 D=$(mktemp -d); printf '<html><body><p>hello</p></body></html>' > "$D/page.html"
+export FIVEDIVE_BROWSER_APPROVAL_DIR="$D/approvals"
 _take_extracted '{"extracted":{"url":"https://x.test/p","title":"T","markdown":"from the session","word_count":3}}' .extracted "$D"
 READ_EXTRACTOR="$D/no-such-extractor.cjs" X2=$( (_derive_capture "$D" "https://x.test/p" "" snapshot) 2>&1; echo "rc=$?")
 t 'X2 the session'"'"'s extraction of this url is used: no extractor runs' 'rc=0 yes' \
   "$(tail -1 <<<"$X2") $(grep -q 'from the session' "$D/page.md" && echo yes || echo no)"
+t 'X2 ...page.md holds the text inside one per-read UNTRUSTED-PAGE fence, and the read is marked' '1 1 yes' \
+  "$(grep -c '^<<<UNTRUSTED-PAGE-[0-9a-f]\{16\}>>>$' "$D/page.md") $(grep -c '^<<<END UNTRUSTED-PAGE-[0-9a-f]\{16\}>>>$' "$D/page.md") $(grep -q ' https://x.test/p$' "$D/approvals/.page-read" 2>/dev/null && echo yes || echo no)"
+# An id generator that prints nothing must make the capture refuse, never spin
+# (the empty id is in every text). Bounded by timeout so a regression is a red,
+# not a hung job.
+X5=$(timeout 20 bash -c "$(declare -f _take_extracted _derive_capture _page_fence _approval_dir _page_read_file _page_read_mark die)"'
+  _page_fence_id() { :; }; READ_EXTRACTOR=/nonexistent E_UNAVAILABLE=69
+  _derive_capture "$1" "https://x.test/p" "" snapshot' _ "$D" 2>&1; echo "rc=$?")
+t 'X5 an empty fence id refuses the capture (rc 1, DIE), it does not spin' 'rc=1 yes' \
+  "$(tail -1 <<<"$X5") $(grep -q '^DIE .*fence id' <<<"$X5" && echo yes || echo no)"
 _take_extracted '{"extracted":{"url":"https://x.test/OTHER","markdown":"stale"}}' .extracted "$D"
 READ_EXTRACTOR="$EXTRACTOR" X3=$( (_derive_capture "$D" "https://x.test/p" "" snapshot) 2>&1; echo "rc=$?")
 t 'X3 an extraction of another url is not used: the extractor runs over page.html' 'rc=0 no yes' \

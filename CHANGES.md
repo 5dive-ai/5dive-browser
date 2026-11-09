@@ -14,6 +14,7 @@ The registry copy (`5dive-ai/5dive-plugins` `plugins/browser`) was last synced b
 
 - **Page text is data, never an order (DIVE-7972).** `page.md` and a snapshot's delta put the page's text between two `UNTRUSTED-PAGE-<id>` markers, with an id fresh per read. After a page read, `publish` and `send` ask the owner first for 30 minutes (exit 73), even under `standard`; only `yolo` skips that. New here: a served act's `page.md` (DIVE-6795, the page text with no extractor) is fenced and marked the same way, since that writer did not exist in the registry copy (`_look_page_md`). Tests: `browser_plugin_unit.sh` T7972a-e (e is the mutant); `browser_act_look_unit.sh` P1-P3 (P3 red with the served act's mark removed); both policy harnesses keep the page-read mark under `$TMP`.
 - **Local-only mode (DIVE-7559).** With `/etc/5dive/local-only` present, `connect-request` refuses the Telegram path before a code is minted, and `_connect_tg` sends nothing. The app-chat and login-shell paths are unchanged. Tests: `browser_connect_request_unit.sh` L1-L5 (6 red with the refusal removed).
+- **A fence id that cannot be made refuses, never spins (DIVE-8050).** Choosing the id is bounded to eight tries; an empty or failing id generator makes the capture fail with a reason instead of looping forever on an empty marker. The CI harness job now times out at 60 minutes.
 - **Docs (DIVE-7506).** AGENTS.md: the one-time viewer link goes as a code span with an "Open the browser" button under it.
 
 ### Fixed — a login view's stop waits out its cap on Ubuntu 26.04 (DIVE-7978), 1.72.1
