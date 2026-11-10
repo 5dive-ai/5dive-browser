@@ -12,6 +12,9 @@ on:
 jobs:
   harness:
     runs-on: ubuntu-latest
+    # A hung arm fails here, not at GitHub's 6 h default (DIVE-8050: a read-tables
+    # hang held this job for hours). A green run on main takes ~25 min.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         # Full history: mutant arms (DIVE-7314's A7/C4) run the pre-fix tree via git archive.

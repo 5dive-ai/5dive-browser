@@ -91,6 +91,9 @@ On a self-hosted box (no 5dive domain) the owner's tap is refused with "login li
 unless the owner turned them on. That is the owner's choice, not yours: tell them once
 that `sudo 5dive browser login-link` lists the options, and never run it yourself.
 
+On a box in local-only mode (`/etc/5dive/local-only` exists) `connect-request` refuses:
+nothing may go to Telegram there. Ask the owner in the office chat to log in at the box.
+
 <!-- 5dive:connect-site-flow:begin -->
 ## The shipped flow
 

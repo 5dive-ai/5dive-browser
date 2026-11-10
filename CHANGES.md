@@ -16,7 +16,16 @@ that file stays where it is.
   estimate" while the answer quoted it from the page text below the fold.
 - use-browser skill: `--expect` the proof itself; set a filter on the page's own control, not with words in
   the search box; never turn a named filter off to compare (om2w-78f39733 ended with the Italy filter reset).
-- Bench build for the rerun on the 6 filter_sort misses; ships only if the row's three bars pass.
+- Benched before shipping (DIVE-8057, same-night pairs vs 1.72.1): the 6 filter_sort misses passed 7/18 vs 1/18; the 5 regression tasks held at 7/15 vs 7/15; passing regression runs took a median 181 s vs 166 s.
+
+### Fixed — three fixes made only in the registry copy are now here too (DIVE-8050), 1.73.0
+
+The registry copy (`5dive-ai/5dive-plugins` `plugins/browser`) was last synced byte-for-byte on 10-02 (1.32.0). Since then it took four hand ports. One (DIVE-7978) had landed here first; three never did. This brings them over, so the registry copy can be re-synced byte-for-byte from this repo without losing them.
+
+- **Page text is data, never an order (DIVE-7972).** `page.md` and a snapshot's delta put the page's text between two `UNTRUSTED-PAGE-<id>` markers, with an id fresh per read. After a page read, `publish` and `send` ask the owner first for 30 minutes (exit 73), even under `standard`; only `yolo` skips that. New here: a served act's `page.md` (DIVE-6795, the page text with no extractor) is fenced and marked the same way, since that writer did not exist in the registry copy (`_look_page_md`). Tests: `browser_plugin_unit.sh` T7972a-e (e is the mutant); `browser_act_look_unit.sh` P1-P3 (P3 red with the served act's mark removed); both policy harnesses keep the page-read mark under `$TMP`.
+- **Local-only mode (DIVE-7559).** With `/etc/5dive/local-only` present, `connect-request` refuses the Telegram path before a code is minted, and `_connect_tg` sends nothing. The app-chat and login-shell paths are unchanged. Tests: `browser_connect_request_unit.sh` L1-L5 (6 red with the refusal removed).
+- **A fence id that cannot be made refuses, never spins (DIVE-8050).** Choosing the id is bounded to eight tries; an empty or failing id generator makes the capture fail with a reason instead of looping forever on an empty marker. The CI harness job now times out at 60 minutes.
+- **Docs (DIVE-7506).** AGENTS.md: the one-time viewer link goes as a code span with an "Open the browser" button under it.
 
 ### Fixed — a login view's stop waits out its cap on Ubuntu 26.04 (DIVE-7978), 1.72.1
 
