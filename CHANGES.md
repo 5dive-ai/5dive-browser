@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Changed — the act that proves the job pictures its proof; named filters stay on (DIVE-8051), 1.74.0
+- An act whose `--expect` matched text that is off screen scrolls the first visible match to the middle
+  before its `page.png` is taken. A match already on screen moves nothing; a title or url match, a failed
+  step and a scoped verify never scroll. The act says so: `the picture is scrolled to what --expect matched`.
+  Why: the nightly bench (week 2026-11-08) failed om2w-a7a73c8f on "none of the screenshots show a cost
+  estimate" while the answer quoted it from the page text below the fold.
+- use-browser skill: `--expect` the proof itself; set a filter on the page's own control, not with words in
+  the search box; never turn a named filter off to compare (om2w-78f39733 ended with the Italy filter reset).
+- Benched before shipping (DIVE-8057, same-night pairs vs 1.72.1): the 6 filter_sort misses passed 7/18 vs 1/18; the 5 regression tasks held at 7/15 vs 7/15; passing regression runs took a median 181 s vs 166 s.
+
 ### Fixed — three fixes made only in the registry copy are now here too (DIVE-8050), 1.73.0
 
 The registry copy (`5dive-ai/5dive-plugins` `plugins/browser`) was last synced byte-for-byte on 10-02 (1.32.0). Since then it took four hand ports. One (DIVE-7978) had landed here first; three never did. This brings them over, so the registry copy can be re-synced byte-for-byte from this repo without losing them.
