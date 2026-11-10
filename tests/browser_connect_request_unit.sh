@@ -492,6 +492,26 @@ DONE=$(sed -n 's/^done=//p' <<<"$out"); : >"$FAKE_LOG"
 out=$(priv done "$DONE" "$OWNER" 2>&1); rc=$?
 t  "H3 Done on an input-mode site hands the window BACK and does not stop it" "viewer-revoke tiktok.com|handoff tiktok.com --close|status tiktok.com" "$(tr '\n' '|' <"$FAKE_LOG" | sed 's/|$//')"
 
+# ---- L: local-only mode (DIVE-7559) ------------------------------------------------
+# /etc/5dive/local-only on: the Connect button travels over Telegram, so the
+# request is refused before a code is minted, and nothing reaches the Bot API.
+reset; rm -rf "$TMP/req"; mkdir -p "$TMP/req"
+: >"$TMP/local-only"
+out=$(FIVE_LOCAL_ONLY_FILE="$TMP/local-only" "$BROWSER" connect-request booking.com --reason="to search hotels" 2>&1); rc=$?
+t  "L1 local-only: connect-request is refused" 69 "$rc"
+tc "L1 ... saying why" "local-only mode is on" "$out"
+t  "L2 local-only: nothing reached the Telegram API" 0 "$(grep -c '"/bot' "$TMP/stub.log" 2>/dev/null || true)"
+t  "L3 local-only: no request code was minted" 0 "$(ls "$TMP/req" | wc -l)"
+out=$(FIVE_LOCAL_ONLY_FILE="$TMP/local-only" "$BROWSER" connect-request booking.com --challenge --url=https://booking.com/x 2>&1); rc=$?
+t  "L4 local-only: a captcha handoff is refused the same way" 69 "$rc"
+t  "L4 ... and nothing reached the Telegram API" 0 "$(grep -c '"/bot' "$TMP/stub.log" 2>/dev/null || true)"
+# control: the same request with the flag file ABSENT is sent, as before.
+reset
+out=$(FIVE_LOCAL_ONLY_FILE="$TMP/no-such-flag" "$BROWSER" connect-request booking.com --reason="to search hotels" 2>&1); rc=$?
+t  "L5 flag absent: the request goes out as before (control)" 0 "$rc"
+t  "L5 ... one Telegram message" 1 "$(grep -c '"/bot' "$TMP/stub.log" 2>/dev/null || true)"
+rm -f "$TMP/local-only"
+
 # ---- X: a self-hosted box (DIVE-6111) — no front, so SSH steps to the same window ----
 # No provisioning.env is what a box 5dive did not build looks like. The hosted
 # arms above ran WITH it, unchanged.
