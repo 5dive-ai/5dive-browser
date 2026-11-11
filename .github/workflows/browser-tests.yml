@@ -263,6 +263,12 @@ jobs:
       # stub, and live arms in real Chrome with a 1.45.0-shaped mutant as the control.
       - name: act popup harness
         run: bash tests/browser_act_popup_unit.sh
+      # DIVE-8241: an act's click by position (click_at/hover_at/type_at, the owner's
+      # gate read off the element under the point) and its read-only page script
+      # (eval, Chrome's side-effect check). Pure arms, live arms in real Chrome with two
+      # mutants (no gate, no side-effect check), and the served daemon under Xvfb.
+      - name: act point and eval harness
+        run: bash tests/browser_act_point_eval_unit.sh
       # DIVE-6795: a served act answers with what changed (lib/look.cjs), its report
       # arrives split, and page.md is derived only for --full. Daemon on the stub.
       - name: act look harness
