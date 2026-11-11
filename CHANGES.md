@@ -8,6 +8,20 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a Chrome that will not install says why, and a person's setup exits 69 until the browser is ready (DIVE-8206), 1.75.0
+- `browser setup` keeps what apt printed on stderr. When Chrome (or the X packages, or Node.js) will not install,
+  the last 5 lines apt said are shown under "could not install …" (`apt-get install google-chrome-stable said:`).
+  Why: on wry-rune (bug report 886) both Chrome installs failed and setup printed only "could not install a chrome".
+- Before installing, setup names the two box faults that make every apt install fail: under 1 GB free on `/` or
+  `/var` (`low disk: / (300 MB free)`), and `dpkg --audit` not empty (fix: `sudo dpkg --configure -a`). After a
+  failed `apt-get update`, a Signed-By conflict (two sources for one repo, different keys) is named in plain words.
+- On Ubuntu with no snapd, the chromium fallback line says it is a snap and will likely fail.
+- A person's run (root, or a seat via sudo) whose stack is still short ends `browser NOT ready: missing <what>`
+  and exits 69. It used to exit 0 on the seat path, so the app's "Finish setup" re-ran a setup that "succeeded"
+  while connect kept failing. The store is still made. A hire's exit (agent create) is unchanged.
+- Tests: `browser_setup_stack_unit.sh` T17-T20 (fake apt failing with "No space left on device" and with the
+  Signed-By conflict; df and dpkg --audit; snapd; two mutants); T5/T6/T7/T8c now expect 69.
+
 ### Changed — the act that proves the job pictures its proof; named filters stay on (DIVE-8051), 1.74.0
 - An act whose `--expect` matched text that is off screen scrolls the first visible match to the middle
   before its `page.png` is taken. A match already on screen moves nothing; a title or url match, a failed
