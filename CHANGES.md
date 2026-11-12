@@ -8,6 +8,19 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — setup finishes an interrupted package install itself, instead of telling the owner to run dpkg (DIVE-8250), 1.76.0
+- When `dpkg --audit` is not empty, a person's `browser setup` (root, sudo, the app's Finish setup) now prints
+  `finishing an interrupted package install first (dpkg --configure -a)...`, runs
+  `dpkg --force-confdef --force-confold --configure -a` (noninteractive, 300 s deadline, retried while another
+  process holds the dpkg lock), then `apt-get -f install` for packages left unpacked without their dependencies,
+  and goes on to install. Why: an owner with no terminal cannot run `sudo dpkg --configure -a`, so a box with a
+  half-done install stayed without Chrome for good.
+- If dpkg still cannot finish, setup keeps the old sentence, names the half-done packages, shows the last 5 lines
+  dpkg printed, and exits 69. A hire (agent create) never touches dpkg.
+- Tests: `browser_setup_stack_unit.sh` T21 (fake dpkg whose `--audit` reports a half-configured package and a fake
+  apt that refuses until `dpkg --configure -a` ran; a failing configure; a held lock; healthy box and hires never
+  call it; a mutant without the call turns T21a red).
+
 ### Fixed — a Chrome that will not install says why, and a person's setup exits 69 until the browser is ready (DIVE-8206), 1.75.0
 - `browser setup` keeps what apt printed on stderr. When Chrome (or the X packages, or Node.js) will not install,
   the last 5 lines apt said are shown under "could not install …" (`apt-get install google-chrome-stable said:`).
