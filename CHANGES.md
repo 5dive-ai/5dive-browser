@@ -8,6 +8,20 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a connected Instagram, SMMplanner or Tilda now reads signed in or signed out, not "unknown" (DIVE-8258), 1.77.0
+- Built-in login checks for `instagram.com`, `smmplanner.com` and `tilda.cc` (`browser/adapters/`). Why: with no
+  check, `browser status instagram.com` read `UNKNOWN (no adapter …)` after the owner connected it, and on a box
+  where the agent may not draft a check itself (a partner box, box bug 902) nobody could ever turn it green.
+- Each marker was read off the site's real signed-out page, never guessed: Instagram's server answers
+  `/accounts/edit/` with the sign-in page, whose own bytes carry Meta's current-user record with account `0`
+  (and a password field once drawn); SMMplanner's `/home/posts` draws its sign-in page with a password field;
+  Tilda's server sends `/projects/` to its `ts-page-login` page.
+- SMMplanner's sign-in page loads Google's invisible reCAPTCHA, so its check leaves bare `g-recaptcha` out of the
+  robot-check list (as reddit.com does); otherwise a signed-out page would read as a robot check.
+- Tests: `browser_plugin_unit.sh` T21g–T21k (each marker against the measured signed-out bytes and a signed-in
+  page; `status` on the shipped files reads expired / authenticated; the same profile with no file is the
+  UNKNOWN the box reported).
+
 ### Fixed — setup finishes an interrupted package install itself, instead of telling the owner to run dpkg (DIVE-8250), 1.76.0
 - When `dpkg --audit` is not empty, a person's `browser setup` (root, sudo, the app's Finish setup) now prints
   `finishing an interrupted package install first (dpkg --configure -a)...`, runs
