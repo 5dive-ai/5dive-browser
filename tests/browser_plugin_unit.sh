@@ -3152,6 +3152,64 @@ t  'T21d it does NOT match the logged-in settings page' 'miss' \
    "$(grep -qiE "$GMARK" <<<'<title>Your profile</title><meta name="user-login" content="someone"><textarea id="user_profile_bio"></textarea>' && echo match || echo miss)"
 tc 'T21e the file records the measurement' 'MEASURED, NOT GUESSED' "$(cat "$GADP")"
 
+# === T21g-T21t instagram.com, smmplanner.com, tilda.cc: MEASURED (DIVE-8258) ===
+# Box bug 902: on a partner box a connected Instagram read UNKNOWN forever — no
+# adapter, and the agent may not propose one. Each marker below was read off the
+# site's real LOGGED-OUT page (curl, and a real Chrome at 1.5 s and 8 s); the
+# fixtures are those bytes, trimmed. Both halves are graded on the marker, then
+# `status` itself is run on the shipped package adapter: logged out reads
+# expired, logged in reads authenticated, and the same profile with no adapter
+# is the UNKNOWN the box reported (the mutant: delete the file, T21j goes red).
+IADP="$PKGADP/instagram.com.json"; SADP8258="$PKGADP/smmplanner.com.json"; TADP="$PKGADP/tilda.cc.json"
+for f in "$IADP" "$SADP8258" "$TADP"; do
+  run jq -e . "$f"; t "T21g $(basename "$f") is valid JSON" 0 "$RC"
+done
+IMARK="$(jq -r '.probe.logged_out_when_dom_matches' "$IADP")"
+SMARK="$(jq -r '.probe.logged_out_when_dom_matches' "$SADP8258")"
+TMARK="$(jq -r '.probe.logged_out_when_dom_matches' "$TADP")"
+# Instagram's login page as the server sends it (no form yet) and as drawn.
+IG_OUT_SHELL='<script type="application/json">{"define":[["CurrentUserInitialData",[],{"ACCOUNT_ID":"0","USER_ID":"0","NAME":"","SHORT_NAME":null,"IS_BUSINESS_PERSON_ACCOUNT":false}]]}</script>'
+IG_OUT_FORM='<form id="login_form" novalidate="" method="POST"><input dir="ltr" autocomplete="username webauthn" type="text" name="email" value=""><input dir="ltr" aria-invalid="false" type="password" name="pass" value=""></form>'
+IG_IN='<script type="application/json">{"define":[["CurrentUserInitialData",[],{"ACCOUNT_ID":"17841400000000001","USER_ID":"17841400000000001","NAME":"Shop","SHORT_NAME":"Shop"}]]}</script><main><h2>Edit profile</h2><textarea id="pepBio"></textarea></main>'
+t  'T21h instagram probes a page the server sends to sign-in when logged out' 'https://www.instagram.com/accounts/edit/' "$(jq -r '.probe.url' "$IADP")"
+t  'T21h ...the marker MATCHES the server-sent logged-out bytes (no form drawn yet)' 'match' \
+   "$(grep -qiE "$IMARK" <<<"$IG_OUT_SHELL" && echo match || echo miss)"
+t  'T21h ...and the drawn login form' 'match' "$(grep -qiE "$IMARK" <<<"$IG_OUT_FORM" && echo match || echo miss)"
+t  'T21h ...and NOT a signed-in page (a real account id, no password field)' 'miss' \
+   "$(grep -qiE "$IMARK" <<<"$IG_IN" && echo match || echo miss)"
+SMM_OUT='<title>SMMplanner | Sign in</title><input aria-invalid="false" autocomplete="nope" name="email" type="email" value=""><input aria-invalid="false" autocomplete="nope" name="password" type="password" value=""><textarea id="g-recaptcha-response" name="g-recaptcha-response"></textarea>'
+SMM_IN='<title>SMMplanner</title><div id="smmplanner-front"><div class="posts"><div class="post">Draft</div></div></div><div class="grecaptcha-badge"></div>'
+t  'T21i smmplanner probes an app page' 'https://smmplanner.com/home/posts' "$(jq -r '.probe.url' "$SADP8258")"
+t  'T21i ...the marker MATCHES the drawn sign-in page' 'match' "$(grep -qiE "$SMARK" <<<"$SMM_OUT" && echo match || echo miss)"
+t  'T21i ...and NOT a post list' 'miss' "$(grep -qiE "$SMARK" <<<"$SMM_IN" && echo match || echo miss)"
+t  'T21i ...its challenge list does NOT fire on the invisible reCAPTCHA of a plain sign-in page' 'miss' \
+   "$(grep -qiE "$(jq -r '.probe.challenge_when_dom_matches' "$SADP8258")" <<<"$SMM_OUT" && echo match || echo miss)"
+t  'T21i (control) the default list WOULD have, which is why the adapter carries its own' 'match' \
+   "$(grep -qiE '(g-recaptcha|hcaptcha|cf-challenge|/checkpoint/challenge|two-factor|verify-your-identity)' <<<"$SMM_OUT" && echo match || echo miss)"
+TL_OUT='<title>Sign in - Tilda</title></head><body><div class="ts-page ts-page-login"><div class="ts-page-wrapper"></div></div>'
+TL_IN='<title>My Sites - Tilda</title><div class="td-sites-grid"><div class="td-site">shop</div></div>'
+t  'T21t tilda probes a page the server sends to /login/ when logged out' 'https://tilda.cc/projects/' "$(jq -r '.probe.url' "$TADP")"
+t  'T21t ...the marker MATCHES the server-sent sign-in page' 'match' "$(grep -qiE "$TMARK" <<<"$TL_OUT" && echo match || echo miss)"
+t  'T21t ...and NOT a project list' 'miss' "$(grep -qiE "$TMARK" <<<"$TL_IN" && echo match || echo miss)"
+for f in "$IADP" "$SADP8258" "$TADP"; do
+  tc "T21g $(basename "$f") records the measurement" 'MEASURED, NOT GUESSED' "$(cat "$f")"
+  tc "T21g $(basename "$f") names the half it could not measure" 'UNMEASURED HALF' "$(cat "$f")"
+done
+# `status` end to end, on the SHIPPED package file (the seat store is empty).
+ADPOVERRIDE="$FIVEDIVE_BROWSER_ADAPTER_DIR"; unset FIVEDIVE_BROWSER_ADAPTER_DIR
+st8258() { mkprofile "$1" "$2" >/dev/null; run env PATH="$SHOTPATH" "$BROWSER" status "$1"; echo "$OUT$ERR"; }
+tc 'T21j instagram.com logged out (server bytes only) reads expired, not UNKNOWN' 'session expired' "$(st8258 instagram.com "<html><head>$IG_OUT_SHELL</head><body></body></html>")"
+tc 'T21j instagram.com logged in reads authenticated' 'authenticated' "$(st8258 instagram.com "<html><head>$IG_IN</head></html>")"
+tc 'T21j smmplanner.com logged out reads expired, not CHALLENGE' 'session expired' "$(st8258 smmplanner.com "<html>$SMM_OUT</html>")"
+tc 'T21j smmplanner.com logged in reads authenticated' 'authenticated' "$(st8258 smmplanner.com "<html>$SMM_IN</html>")"
+tc 'T21j tilda.cc logged out reads expired' 'session expired' "$(st8258 tilda.cc "<html><head>$TL_OUT</body></html>")"
+tc 'T21j tilda.cc logged in reads authenticated' 'authenticated' "$(st8258 tilda.cc "<html><head>$TL_IN</html>")"
+export FIVEDIVE_BROWSER_ADAPTER_DIR="$ADPOVERRIDE"
+# The mutant as the box saw it: the same signed-in profile, the adapter not found.
+mkdir -p "$TMP/noadp8258"
+tc 'T21k (mutant) with no adapter the same signed-in Instagram is the UNKNOWN of bug 902' 'UNKNOWN (no adapter for instagram.com' \
+   "$(FIVEDIVE_BROWSER_ADAPTER_DIR="$TMP/noadp8258" st8258 instagram.com "<html><head>$IG_IN</head></html>")"
+
 # --- T9x: the per-site adblock off switch (DIVE-4516) -------------------------
 #
 # ONE extension is allowed in an agent profile (uBlock Origin Lite, pinned by

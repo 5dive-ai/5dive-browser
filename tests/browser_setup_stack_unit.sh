@@ -52,6 +52,19 @@ cat > "$CORE/dpkg" <<'DPKG'
 [[ "$1" == --print-architecture ]] && { echo amd64; exit 0; }
 [[ "$1" == -s && "$2" == libnode-dev && -e "$BOX_DIR/.libnode-dev" ]] && exit 0
 [[ "$1" == --audit ]] && { cat "$BOX_DIR/.dpkg-audit" 2>/dev/null; exit 0; }
+# --configure -a (DIVE-8250): logged; .dpkg-locked holds how many more calls find
+# the lock held; DPKG_CONFIGURE_FAIL is what a failing run prints. Success clears
+# the audit and the marker that makes the fake apt-get refuse.
+if [[ " $* " == *" --configure -a "* ]]; then
+  echo "dpkg $*" >> "$STACK_LOG"
+  n=$(cat "$BOX_DIR/.dpkg-locked" 2>/dev/null || echo 0)
+  if (( n > 0 )); then
+    echo $((n - 1)) > "$BOX_DIR/.dpkg-locked"
+    echo "dpkg: error: dpkg frontend lock was locked by another process with pid 812" >&2; exit 2
+  fi
+  [[ -n "${DPKG_CONFIGURE_FAIL:-}" ]] && { printf '%b\n' "$DPKG_CONFIGURE_FAIL" >&2; exit 1; }
+  rm -f "$BOX_DIR/.dpkg-audit" "$BOX_DIR/.dpkg-interrupted"; exit 0
+fi
 exit 1
 DPKG
 printf '#!%s\necho "curl $*" >> "$STACK_LOG"; echo FAKEKEY\n' "$(command -v bash)" > "$CORE/curl"
@@ -88,6 +101,8 @@ for a in "$@"; do case "$a" in -*|DPkg::*) ;; update|install|remove) sub="$a" ;;
 # with APT_STDERR, as a Signed-By conflict makes real apt do.
 [[ -n "${APT_UPDATE_FAIL:-}" && ( "$sub" == update || "$sub" == install ) ]] && { printf '%b\n' "$APT_STDERR" >&2; exit 100; }
 [[ "$sub" == install ]] || exit 0
+# DIVE-8250: a dpkg run left half-done makes apt refuse every install, as real apt does.
+[[ -e "$BOX/.dpkg-interrupted" ]] && { echo "E: dpkg was interrupted, you must manually run 'sudo dpkg --configure -a' to correct the problem." >&2; exit 100; }
 rc=0
 for p in "${pk[@]}"; do
   [[ " ${APT_FAIL:-} " == *" $p "* ]] && { rc=100; [[ -n "${APT_STDERR:-}" ]] && printf '%b\n' "$APT_STDERR" >&2; continue; }
@@ -139,6 +154,7 @@ setup_go() {  # setup_go [bin] — run setup in the sandbox; AS=root|person (def
     FIVEDIVE_BROWSER_STACK_ROOT="$TMP/aproot" ${STACK_ENV:+FIVEDIVE_BROWSER_STACK=$STACK_ENV} \
     STACK_LOG="$STACK_LOG" BOX_DIR="$BOX" MK_NODE="$MK_NODE" NPM_VERSION="${NPM_VERSION:-$PIN}" \
     NODE_VER="${NODE_VER:-22.11.0}" APT_FAIL="${APT_FAIL:-}" APT_STDERR="${APT_STDERR:-}" APT_UPDATE_FAIL="${APT_UPDATE_FAIL:-}" \
+    DPKG_CONFIGURE_FAIL="${DPKG_CONFIGURE_FAIL:-}" ${DPKG_TIMEOUT:+FIVEDIVE_BROWSER_DPKG_TIMEOUT=$DPKG_TIMEOUT} \
     "$bin" setup >"$o" 2>"$e"
   RC=$?; OUT=$(cat "$o"); ERR=$(cat "$e"); LOG=$(cat "$STACK_LOG")
 }
@@ -387,11 +403,75 @@ nospace_box; mk_df 50000000 50000000; setup_go
 tn 'T18b plenty of room: no disk line'                   'low disk' "$ERR"
 t  'T18b ...and a box that installs fine stays exit 0'   0 "$RC"
 t  'T18b ...with nothing on stderr'                      '' "$ERR"
-nospace_box; printf 'The following packages are only half configured:\n google-chrome-stable\n' > "$BOX/.dpkg-audit"; setup_go
-tc 'T18c dpkg left half-done: named, with the fix'       'dpkg has an unfinished install, so apt will refuse new ones. Finish it first: sudo dpkg --configure -a' "$ERR"
-tc 'T18c ...quoting dpkg --audit'                        'only half configured' "$ERR"
 fresh_box; full_box; printf 'half configured\n' > "$BOX/.dpkg-audit"; mk_df 1 1; setup_go
 t  'T18d a box with the whole stack never runs the checks' '' "$ERR"
+tn 'T18d ...and never touches dpkg'                      '--configure' "$LOG"
+
+# --- T21 DIVE-8250: a dpkg run left half-done is FINISHED, not just named -----
+# wry-rune (server 596): steps 1, 3, 4 present, Chrome missing, dpkg interrupted.
+# Every apt install refused "dpkg was interrupted", and setup told an owner with
+# no terminal to run `sudo dpkg --configure -a`. Now setup runs it.
+AUDIT='The following packages are only half configured, probably due to problems\nconfiguring them the first time.  The configuration should be retried using\ndpkg --configure <package> or the configure option in the dselect menu:\n google-chrome-stable The web browser from Google'
+interrupted_box() { nospace_box; printf '%b\n' "$AUDIT" > "$BOX/.dpkg-audit"; : > "$BOX/.dpkg-interrupted"; }
+cfg_calls() { grep -c -- '--configure -a' "$STACK_LOG"; }
+line_of() { grep -n -- "$1" "$STACK_LOG" | head -n1 | cut -d: -f1; }
+dpkg_arm1() {  # dpkg_arm1 <label> [bin] — the wry-rune box, a person's run
+  interrupted_box; setup_go "${2:-}"
+  t  "$1 interrupted dpkg, a person: setup exits 0"          0 "$RC"
+  tc "$1 ...says what it does first"                         'finishing an interrupted package install first (dpkg --configure -a)...' "$OUT"
+  t  "$1 ...runs dpkg --configure -a exactly once"           1 "$(cfg_calls)"
+  tc "$1 ...keeping the box's config files, unasked"        'dpkg --force-confdef --force-confold --configure -a' "$LOG"
+  tc "$1 ...then apt-get -f install (unpacked, no deps)"     '-y -q -f install' "$LOG"
+  t  "$1 ...both before the Chrome install"                  yes "$(c=$(line_of '--configure -a'); f=$(line_of '-f install'); g=$(line_of 'install google-chrome-stable'); [[ -n "$c" && -n "$f" && -n "$g" ]] && (( c < f && f < g )) && echo yes)"
+  tc "$1 ...and Chrome goes in"                              'installed google-chrome-stable' "$OUT"
+  tc "$1 ...says it finished"                                'finished the interrupted install' "$OUT"
+  tn "$1 ...no dead-end sentence for the owner"              'Finish it first' "$ERR"
+  tn "$1 ...and no NOT ready"                                'NOT ready' "$ERR"
+}
+dpkg_arm1 T21a
+interrupted_box; AS=root setup_go
+t  'T21b the same box, root (no seat): exits 0'           0 "$RC"
+t  'T21b ...dpkg --configure -a ran once'                 1 "$(cfg_calls)"
+tc 'T21b ...and Chrome went in'                           'installed google-chrome-stable' "$OUT"
+
+CFGFAIL='(Reading database ... 81234 files and directories currently installed.)\nSetting up google-chrome-stable (131.0.6778.85-1) ...\ndpkg: error processing package google-chrome-stable (--configure):\n installed google-chrome-stable package post-installation script subprocess returned error exit status 1\nErrors were encountered while processing:\n google-chrome-stable'
+interrupted_box; DPKG_CONFIGURE_FAIL="$CFGFAIL" setup_go
+t  'T21c dpkg --configure -a fails: exits 69'             69 "$RC"
+t  'T21c ...tried once (a failure is not a lock)'         1 "$(cfg_calls)"
+tc 'T21c ...the old sentence, still with the fix'         'dpkg has an unfinished install, so apt will refuse new ones, and finishing it here failed. Finish it first: sudo dpkg --configure -a' "$ERR"
+tc 'T21c ...naming the half-done package from dpkg --audit' '(dpkg --audit names: google-chrome-stable)' "$ERR"
+tn 'T21c ...not its three-line preamble'                  'dselect menu' "$ERR"
+tc 'T21c ...and dpkg'"'"'s own words'                     'dpkg --configure -a said:' "$ERR"
+tc 'T21c ...its reason'                                   '    installed google-chrome-stable package post-installation script subprocess returned error exit status 1' "$ERR"
+tn 'T21c ...only the tail (5 lines)'                      'Reading database' "$ERR"
+tc 'T21c ...apt'"'"'s refusal under the chrome failure'   "dpkg was interrupted, you must manually run 'sudo dpkg --configure -a'" "$ERR"
+t  'T21c ...ends NOT ready'                               'browser NOT ready: missing chrome (google-chrome-stable). The lines above say why. Fix that, then re-run: sudo 5dive browser setup' "$(tail -n1 <<<"$ERR")"
+
+interrupted_box; echo 1 > "$BOX/.dpkg-locked"; setup_go
+t  'T21d the lock held once (unattended upgrades): exits 0' 0 "$RC"
+t  'T21d ...waited and ran it again'                      2 "$(cfg_calls)"
+tc 'T21d ...and Chrome went in'                           'installed google-chrome-stable' "$OUT"
+interrupted_box; echo 99 > "$BOX/.dpkg-locked"; DPKG_TIMEOUT=7 setup_go
+t  'T21d the lock never frees: gives up inside the deadline, exits 69' 69 "$RC"
+t  'T21d ...after two tries, 5 s apart (7 s deadline)'         2 "$(cfg_calls)"
+tc 'T21d ...dpkg'"'"'s lock line is shown'                     'locked by another process' "$ERR"
+nospace_box; : > "$BOX/.dpkg-interrupted"; mkdir -p "$TMP/aproot/var/lib/dpkg/updates"; : > "$TMP/aproot/var/lib/dpkg/updates/0003"; setup_go
+t  'T21g audit clean, but dpkg'"'"'s journal unapplied: exits 0' 0 "$RC"
+t  'T21g ...dpkg --configure -a ran once'                 1 "$(cfg_calls)"
+nospace_box; setup_go
+tn 'T21e a healthy box never runs dpkg --configure'      '--configure' "$LOG"
+tn 'T21e ...nor apt-get -f install'                      '-f install' "$LOG"
+interrupted_box; : > "$TMP/hosted-converger"; AS=hire setup_go; rm -f "$TMP/hosted-converger"
+t  'T21f a hire (hosted) never touches dpkg'              0 "$(cfg_calls)"
+interrupted_box; AS=hire setup_go
+t  'T21f ...nor a hire on a self-hosted box'              0 "$(cfg_calls)"
+
+# MUTANT: the heal call removed — T21a must go red.
+MUT6="$TMP/mutant6"; rm -rf "$MUT6"; cp -r "$ROOT/browser" "$MUT6"
+perl -pi -e 's/^  _have dpkg && _stack_dpkg_heal$/  : MUTANT-NOHEAL/' "$MUT6/bin/browser"
+t  'T21m (anchor) the call removal landed'                1 "$(grep -c 'MUTANT-NOHEAL' "$MUT6/bin/browser")"
+P0=$PASS F0=$FAIL; dpkg_arm1 T21m "$MUT6/bin/browser" >/dev/null; MUT_RED=$((FAIL-F0)); PASS=$P0; FAIL=$F0
+t  'T21m MUTANT no heal: T21a goes red (exit 69, no configure)' yes "$( (( MUT_RED >= 5 )) && [[ "$RC" == 69 ]] && echo yes)"
 
 # --- T19 Ubuntu without snapd: the chromium fallback says why it will fail ----
 nospace_box; mkdir -p "$TMP/aproot/etc"; printf 'NAME="Ubuntu"\nID=ubuntu\n' > "$TMP/aproot/etc/os-release"

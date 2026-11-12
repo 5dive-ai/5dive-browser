@@ -8,7 +8,7 @@ that file stays where it is.
 
 ## Unreleased
 
-### Added — an act clicks by position on a normal page, and reads the page with a script that cannot act (DIVE-8241), 1.76.0
+### Added — an act clicks by position on a normal page, and reads the page with a script that cannot act (DIVE-8241), 1.79.0
 - `act` takes `{"op":"click_at","x":…,"y":…}`, `hover_at` and `type_at` (+ `"value"`) on any page, not only in input
   mode. The point is a pixel of `page.png` (divided by the page's scale); a point outside the window is refused. The
   act prints what the point landed on (`clicked div#go`). `type_at` types only into the field its click focused.
@@ -26,6 +26,50 @@ that file stays where it is.
   and 5dive lost, and ran page scripts 216 times; 31 of 5dive's clicks died covered or off the window.
 - Tests: `browser_act_point_eval_unit.sh` (pure arms; live arms in real Chrome with a no-gate and a
   no-side-effect-check mutant; the served daemon under Xvfb).
+
+### Fixed — a site the owner connected reads `connected`, not `unconfirmed`, so agents stop refusing it (DIVE-8263), 1.78.0
+- The owner's Done on a Connect is now evidence. Root's Done path records the time in the site's profile
+  (`.5dive-owner-done`), and a later check of a site with no adapter whose page is not a sign-in form says
+  `connected (signed in by the owner <time>; no automatic check for <site>, and a sign-in form on a page would mean
+  signed out). Agents: use it.` The Connected-sites tile reads it as connected. Why: on wry-rune (bug report 902) and
+  chill-gorge, sites the owner had just signed in to read `UNKNOWN`/`unconfirmed` forever and agents stopped on them.
+- A site with a built-in check (`browser/adapters/`, now with instagram.com, smmplanner.com and tilda.cc from
+  DIVE-8258) keeps its own verdict; the Done only speaks for every other site.
+- A sign-in form on that page still reads `session expired`, and forgets the Done, so an old Done never vouches for a
+  signed-out page. read, links, snapshot and act still check each page they read for a sign-in form.
+- `run` accepts `connected` as it accepts `authenticated`; `shot`, `tree` and `download` already went ahead on a
+  no-adapter site and now say `connected` there. Without a Done, the `UNKNOWN (no adapter …)` line now says it is not
+  a stop sign: page verbs work, and `shot` shows the page.
+- The connect-site and use-browser skills (and AGENTS.md) say `connected` is usable and `unconfirmed` is not a stop sign.
+- Tests: `browser_owner_done_unit.sh` D1–D11 (with the Done reader stubbed out, 10 go red; D9 runs origin/main's
+  build as the negative control).
+
+### Fixed — a connected Instagram, SMMplanner or Tilda now reads signed in or signed out, not "unknown" (DIVE-8258), 1.77.0
+- Built-in login checks for `instagram.com`, `smmplanner.com` and `tilda.cc` (`browser/adapters/`). Why: with no
+  check, `browser status instagram.com` read `UNKNOWN (no adapter …)` after the owner connected it, and on a box
+  where the agent may not draft a check itself (a partner box, box bug 902) nobody could ever turn it green.
+- Each marker was read off the site's real signed-out page, never guessed: Instagram's server answers
+  `/accounts/edit/` with the sign-in page, whose own bytes carry Meta's current-user record with account `0`
+  (and a password field once drawn); SMMplanner's `/home/posts` draws its sign-in page with a password field;
+  Tilda's server sends `/projects/` to its `ts-page-login` page.
+- SMMplanner's sign-in page loads Google's invisible reCAPTCHA, so its check leaves bare `g-recaptcha` out of the
+  robot-check list (as reddit.com does); otherwise a signed-out page would read as a robot check.
+- Tests: `browser_plugin_unit.sh` T21g–T21k (each marker against the measured signed-out bytes and a signed-in
+  page; `status` on the shipped files reads expired / authenticated; the same profile with no file is the
+  UNKNOWN the box reported).
+
+### Fixed — setup finishes an interrupted package install itself, instead of telling the owner to run dpkg (DIVE-8250), 1.76.0
+- When `dpkg --audit` is not empty, a person's `browser setup` (root, sudo, the app's Finish setup) now prints
+  `finishing an interrupted package install first (dpkg --configure -a)...`, runs
+  `dpkg --force-confdef --force-confold --configure -a` (noninteractive, 300 s deadline, retried while another
+  process holds the dpkg lock), then `apt-get -f install` for packages left unpacked without their dependencies,
+  and goes on to install. Why: an owner with no terminal cannot run `sudo dpkg --configure -a`, so a box with a
+  half-done install stayed without Chrome for good.
+- If dpkg still cannot finish, setup keeps the old sentence, names the half-done packages, shows the last 5 lines
+  dpkg printed, and exits 69. A hire (agent create) never touches dpkg.
+- Tests: `browser_setup_stack_unit.sh` T21 (fake dpkg whose `--audit` reports a half-configured package and a fake
+  apt that refuses until `dpkg --configure -a` ran; a failing configure; a held lock; healthy box and hires never
+  call it; a mutant without the call turns T21a red).
 
 ### Fixed — a Chrome that will not install says why, and a person's setup exits 69 until the browser is ready (DIVE-8206), 1.75.0
 - `browser setup` keeps what apt printed on stderr. When Chrome (or the X packages, or Node.js) will not install,
