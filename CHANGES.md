@@ -8,6 +8,25 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — an act clicks by position on a normal page, and reads the page with a script that cannot act (DIVE-8241), 1.79.0
+- `act` takes `{"op":"click_at","x":…,"y":…}`, `hover_at` and `type_at` (+ `"value"`) on any page, not only in input
+  mode. The point is a pixel of `page.png` (divided by the page's scale); a point outside the window is refused. The
+  act prints what the point landed on (`clicked div#go`). `type_at` types only into the field its click focused.
+- The owner's four still apply: the step is classified by the element UNDER THE POINT (through open shadow roots
+  and into frames), read like a ref's. A point that cannot be read (nothing there, a closed shadow root, a frame
+  this browser cannot enter) is treated as pay, the strictest kind. A click into a text field is not classified.
+- `act` takes `{"op":"eval","expr":"…"}`: one expression, its value printed as JSON on the act's output
+  (`step 2 (eval) = […]`), cut at 20,000 characters. Chrome runs it with `throwOnSideEffect`, so a click, a synthetic
+  event, focus, a form submit, any navigation, `window.open`, `fetch`/`sendBeacon`/XHR, a DOM or page-state write and
+  timers are refused by the engine. It stops at 3 s. `document.cookie` reads "" during it; a page with a filled
+  password field, or a tab a saved login was typed into, refuses it.
+- Both are act steps only. An adapter recipe keeps its closed vocabulary (`run` refuses them), and `--record`
+  refuses an act that has them. Skill: "a ref click that is covered or off screen: shot, then click by position".
+- Why: in the 7-agent bench (DIVE-7804) BrowserOS clicked by position in 22 of 100 runs, 9 of the 18 tasks it won
+  and 5dive lost, and ran page scripts 216 times; 31 of 5dive's clicks died covered or off the window.
+- Tests: `browser_act_point_eval_unit.sh` (pure arms; live arms in real Chrome with a no-gate and a
+  no-side-effect-check mutant; the served daemon under Xvfb).
+
 ### Fixed — a site the owner connected reads `connected`, not `unconfirmed`, so agents stop refusing it (DIVE-8263), 1.78.0
 - The owner's Done on a Connect is now evidence. Root's Done path records the time in the site's profile
   (`.5dive-owner-done`), and a later check of a site with no adapter whose page is not a sign-in form says
