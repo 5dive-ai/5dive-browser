@@ -138,6 +138,32 @@ t 'C10 several pages share the budget, so three print about what one does' yes \
   "$( (( ${#OUT} <= 6600 + 3 * 600 )) && echo yes || echo "no (${#OUT} chars)")"
 t 'C11 ...and the big one still prints its facts' yes "$(yn '- Initial release: 8 July 1996' <<<"$OUT")"
 
+# ---- G: --grep prints only the lines that match (DIVE-8281) -----------------------------
+# The skill said "grep page.md", which needs a shell; the bench's fence (only `5dive browser`
+# verbs) refused 38 such greps in 7804. On 1.79.0 every G arm fails: --grep is "unknown flag".
+run read https://big.test/p --grep='paragraph 137 '
+t 'G1 a read with --grep exits 0' 0 "$RC"
+t 'G2 ...prints the matching line, any case' yes "$(yn 'Paragraph 137 of the history' <<<"$OUT")"
+t 'G3 ...and not the head of the page' no "$(yn 'Paragraph 5 of the history' <<<"$OUT")"
+t 'G4 ...with the front matter whole' yes "$(head -1 <<<"$OUT" | yn -- '---')"
+t 'G5 ...and one line counting the matches and naming page.md' yes "$(yn '[grep: 1 matching lines. The whole page is in' <<<"$OUT")"
+D=$(grep -o 'artifacts: .*' <<<"$ERR" | cut -d' ' -f2)
+G=$(grep -m1 'Paragraph 137 of' <<<"$OUT"); GN=${G%%:*}
+t 'G6 ...numbered by its line in page.md' yes "$([[ "$GN" =~ ^[0-9]+$ ]] && [[ "$(sed -n "${GN}p" "$D/page.md")" == "${G#*:}" ]] && echo yes || echo "no ($G)")"
+t 'G7 ...with the line around it' yes "$(yn "$((GN + 1)):" <<<"$OUT")"
+run read https://big.test/p --grep='\$[0-9]+ total'
+t 'G8 no line matches: exit 0 and it says so' '0 yes' "$RC $(yn 'no line of this page matches' <<<"$OUT")"
+run read https://big.test/p --grep='paragraph'
+t 'G9 a regex that matches everything stays inside the budget' yes "$( (( ${#OUT} <= 6600 )) && echo yes || echo "no (${#OUT} chars)")"
+t 'G10 ...and says the budget cut it' yes "$(yn 'matching lines shown, the budget is full' <<<"$OUT")"
+run read https://big.test/p --grep='('
+t 'G11 a broken regex is a usage error' 64 "$RC"
+run links https://big.test/p --grep=x
+t 'G12 --grep belongs to read, not links' 64 "$RC"
+run read https://big.test/p https://a.test/x --grep='article of a.test'
+t 'G13 several pages: the match prints under its own page' yes "$(under '==> https://a.test/x <==' <<<"$OUT" | yn 'This is the article of a.test')"
+t 'G14 ...and the page without one says so' yes "$(under '==> https://big.test/p <==' <<<"$OUT" | yn 'no line of this page matches')"
+
 # ---- D: a SERVED profile — the session daemon is live (DIVE-6771) ---------------------
 # The bench rig's R1 ran here, not through the executor: `serve` was up, so each page was
 # one `render` request (the daemon takes one at a time), each waiting --wait's 8 s for real
