@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — `act --help` lists its step ops, so an agent stops concluding there is no upload (DIVE-8287), 1.80.0
+- `5dive browser act --help` prints one JSON example per step op (goto fill type click wait_for select press upload
+  click_at hover_at type_at eval) with the fields it takes, e.g. `{"op":"upload","selector":"ref=…","path":"/abs/file"}`
+  (a regular file, up to 16 MB). The list is walked from `ACT_VOCAB`, so a new op is listed the day it is added.
+- Why: the help never named a step op. Box agents read it and filed "act has no upload step" twice (11-09, 11-12)
+  while upload existed, once blocking a client's photo uploads.
+- Tests: `browser_act_help_steps_unit.sh` (every op listed with its fields, cap from the variable, an added op shows
+  up, control: the 1.79.0 help never says upload).
+
 ### Added — an act clicks by position on a normal page, and reads the page with a script that cannot act (DIVE-8241), 1.79.0
 - `act` takes `{"op":"click_at","x":…,"y":…}`, `hover_at` and `type_at` (+ `"value"`) on any page, not only in input
   mode. The point is a pixel of `page.png` (divided by the page's scale); a point outside the window is refused. The
