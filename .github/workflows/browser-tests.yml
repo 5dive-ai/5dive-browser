@@ -49,6 +49,10 @@ jobs:
       # before every page verb. Fake chrome; drives the real 5dive CLI when present.
       - name: generic check memo harness
         run: bash tests/browser_generic_memo_unit.sh
+      # DIVE-8263: the owner's Done makes a no-adapter site read `connected`; a
+      # sign-in form still reads expired and forgets it. Fake chrome.
+      - name: owner done harness
+        run: bash tests/browser_owner_done_unit.sh
       # DIVE-6317: Cloudflare's "Just a moment..." is watched in the same page load
       # before it is a stop. A fake page, pure node.
       - name: interstitial wait harness
