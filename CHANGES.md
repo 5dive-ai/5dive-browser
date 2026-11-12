@@ -8,20 +8,36 @@ that file stays where it is.
 
 ## Unreleased
 
-### Fixed — a site the owner connected reads `connected`, not `unconfirmed`, so agents stop refusing it (DIVE-8263), 1.77.0
+### Fixed — a site the owner connected reads `connected`, not `unconfirmed`, so agents stop refusing it (DIVE-8263), 1.78.0
 - The owner's Done on a Connect is now evidence. Root's Done path records the time in the site's profile
   (`.5dive-owner-done`), and a later check of a site with no adapter whose page is not a sign-in form says
   `connected (signed in by the owner <time>; no automatic check for <site>, and a sign-in form on a page would mean
   signed out). Agents: use it.` The Connected-sites tile reads it as connected. Why: on wry-rune (bug report 902) and
   chill-gorge, sites the owner had just signed in to read `UNKNOWN`/`unconfirmed` forever and agents stopped on them.
+- A site with a built-in check (`browser/adapters/`, now with instagram.com, smmplanner.com and tilda.cc from
+  DIVE-8258) keeps its own verdict; the Done only speaks for every other site.
 - A sign-in form on that page still reads `session expired`, and forgets the Done, so an old Done never vouches for a
   signed-out page. read, links, snapshot and act still check each page they read for a sign-in form.
 - `run` accepts `connected` as it accepts `authenticated`; `shot`, `tree` and `download` already went ahead on a
   no-adapter site and now say `connected` there. Without a Done, the `UNKNOWN (no adapter …)` line now says it is not
   a stop sign: page verbs work, and `shot` shows the page.
 - The connect-site and use-browser skills (and AGENTS.md) say `connected` is usable and `unconfirmed` is not a stop sign.
-- Tests: `browser_owner_done_unit.sh` D1–D9 (29 arms; with the Done reader stubbed out, 10 go red; D9 runs origin/main's
+- Tests: `browser_owner_done_unit.sh` D1–D11 (with the Done reader stubbed out, 10 go red; D9 runs origin/main's
   build as the negative control).
+
+### Fixed — a connected Instagram, SMMplanner or Tilda now reads signed in or signed out, not "unknown" (DIVE-8258), 1.77.0
+- Built-in login checks for `instagram.com`, `smmplanner.com` and `tilda.cc` (`browser/adapters/`). Why: with no
+  check, `browser status instagram.com` read `UNKNOWN (no adapter …)` after the owner connected it, and on a box
+  where the agent may not draft a check itself (a partner box, box bug 902) nobody could ever turn it green.
+- Each marker was read off the site's real signed-out page, never guessed: Instagram's server answers
+  `/accounts/edit/` with the sign-in page, whose own bytes carry Meta's current-user record with account `0`
+  (and a password field once drawn); SMMplanner's `/home/posts` draws its sign-in page with a password field;
+  Tilda's server sends `/projects/` to its `ts-page-login` page.
+- SMMplanner's sign-in page loads Google's invisible reCAPTCHA, so its check leaves bare `g-recaptcha` out of the
+  robot-check list (as reddit.com does); otherwise a signed-out page would read as a robot check.
+- Tests: `browser_plugin_unit.sh` T21g–T21k (each marker against the measured signed-out bytes and a signed-in
+  page; `status` on the shipped files reads expired / authenticated; the same profile with no file is the
+  UNKNOWN the box reported).
 
 ### Fixed — setup finishes an interrupted package install itself, instead of telling the owner to run dpkg (DIVE-8250), 1.76.0
 - When `dpkg --audit` is not empty, a person's `browser setup` (root, sudo, the app's Finish setup) now prints

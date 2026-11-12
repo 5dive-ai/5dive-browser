@@ -32,6 +32,8 @@
 #   D10 a seat that uses the box login (brokered) cannot open the owner's 0700
 #       store: the Done is also published 0640 beside <site>.offered, a brokered
 #       read finds it there, and an expired read removes it
+#   D11 DIVE-8258's shipped adapters beside it: tilda.cc keeps its own verdict
+#       (expired / authenticated) with a Done; a no-adapter site still reads connected
 #   D9  NEGATIVE CONTROL: origin/main's bin/browser ignores the Done (UNKNOWN)
 set -uo pipefail
 printf 'grading tree: %s @ %s\n' "$PWD" "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" >&2
@@ -216,6 +218,30 @@ printf '%s' "$DEAD_DOM" > "$SEAT/$SITE/.fake-dom-front"
 status
 arm 'D10 ...an expired read removes the public one too'     gone "$([[ -e "$RV/$SITE.done" ]] && echo kept || echo gone)"
 rm -rf "$RV"
+
+# ---------------------------------------------------------------- D11
+# DIVE-8258's shipped adapters (instagram.com, smmplanner.com, tilda.cc) sit in
+# the same adapter dir: a site WITH a check keeps its own verdict whatever the
+# owner's Done says, and every other site still falls through to the Done.
+SHIPPED="$TMP/shipped-adapters"; cp -r "$ROOT/browser/adapters" "$SHIPPED"
+SAVED_ADAPTER_DIR="$FIVEDIVE_BROWSER_ADAPTER_DIR"; export FIVEDIVE_BROWSER_ADAPTER_DIR="$SHIPPED"
+arm 'D11 the shipped adapters include 8258'"'"'s three'          "yes yes yes" \
+  "$([[ -f $SHIPPED/instagram.com.json ]] && echo yes) $([[ -f $SHIPPED/smmplanner.com.json ]] && echo yes) $([[ -f $SHIPPED/tilda.cc.json ]] && echo yes)"
+fresh
+status FIVEDIVE_BROWSER_OWNER_DONE=1
+arm 'D11 a site with no adapter still reads connected beside them' yes "$(has 'connected (signed in by the owner ' "$OUT")"
+ASITE=tilda.cc
+mkdir -m 700 "$SEAT/$ASITE"
+printf '%s' "$LIVE_DOM" > "$SEAT/$ASITE/.fake-dom-front"
+printf '%s' '<html><body><div class="ts-page ts-page-login"><input type="password"></div></body></html>' > "$SEAT/$ASITE/.fake-dom-page"
+OUT=$(FIVEDIVE_BROWSER_OWNER_DONE=1 "$BROWSER" status "$ASITE" 2>"$TMP/err" | grep -F "$ASITE" | head -1)
+arm 'D11 tilda.cc signed out, with a Done: its own check says expired' "yes no" \
+  "$(has 'session expired' "$OUT") $(has 'connected (' "$OUT")"
+printf '%s' "$LIVE_DOM" > "$SEAT/$ASITE/.fake-dom-page"
+OUT=$(FIVEDIVE_BROWSER_OWNER_DONE=1 "$BROWSER" status "$ASITE" 2>"$TMP/err" | grep -F "$ASITE" | head -1)
+arm 'D11 tilda.cc signed in, with a Done: its own check says authenticated, not the Done line' "yes no" \
+  "$(has 'authenticated' "$OUT") $(has 'signed in by the owner' "$OUT")"
+export FIVEDIVE_BROWSER_ADAPTER_DIR="$SAVED_ADAPTER_DIR"
 
 # ---------------------------------------------------------------- D9
 OLD="$TMP/old"
