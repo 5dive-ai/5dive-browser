@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a sign-in whose login lasts only while the browser runs survives Done (DIVE-8367), 1.84.0
+- Some sites keep their login in a cookie with no expiry. Chrome held it in memory only, Done stopped the sign-in
+  window, and the check that followed started a fresh Chrome, which drops such cookies. So the site read "still on
+  the sign-in page" after every sign-in that had really finished, and the person was sent round again.
+- The sign-in window now stores those cookies (it starts with `--restore-last-session`, after deleting the tabs of
+  any earlier session), and stopping a window a person was in gives each one an expiry 30 days out, whoever stops it:
+  Done, the dashboard's close, or the idle sweep. A swap still keeps them for 12 hours; the automated browser's own
+  stop still ends them. Cookies that already have an expiry are not touched.
+- The trade-off: a cookie the site meant to end when the browser closes lasts up to 30 days, inside the seat's 0700
+  profile. The site's own server-side session end still applies.
+
 ### Fixed — the viewer's Done on a link no agent asked for checks the sign-in (DIVE-8354), 1.83.0
 - A view opened from the settings screen's Connect (or a partner cabinet's) has no ask behind it, so the viewer's
   own Done answered "This sign-in is already finished" while the site still showed its sign-in page. The person
