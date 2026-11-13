@@ -8,7 +8,7 @@ that file stays where it is.
 
 ## Unreleased
 
-### Changed — a harmless choice the job left open is picked and said, a blocked site gets a second source, and `read --grep` (DIVE-8281), 1.80.0
+### Changed — a harmless choice the job left open is picked and said, a blocked site gets a second source, and `read --grep` (DIVE-8281), 1.81.0
 - Skill, before you say done: a choice the job did not name and that harms no one (condition, size, delivery or
   pickup, sort order, a grade) is set to the most neutral option and named in the answer ("assumed: Good condition"),
   never a stop to ask. Never a default for money (a payment, a purchase, an amount you set), a person's details
@@ -19,8 +19,19 @@ that file stays where it is.
   its page.md line number and the line around it, in the same budget. Several urls: each page its own matches. For a
   harness with no shell, where "grep page.md" was refused (38 times in the 7804 bench).
 - Why: of BrowserOS's 3 real hard wins in DIVE-7804, Best Buy was a stated default (5dive: "you didn't tell me those
-  answers, so I didn't guess them") and IMDb a second source after a geo-block. Bench in `bench/dive-8281/`.
+  answers, so I didn't guess them") and IMDb a second source after a geo-block. Bench (`bench/dive-8281/`, 2 reps
+  per arm, 59 tasks): the defaults fired (12 vs 6 runs stated one) but LOST18 did not move (13 to 10 of 36, p=0.51)
+  and CONTROL41 held (22 to 25 of 82); Best Buy never loaded in either arm.
 - Tests: `browser_read_many_unit.sh` G1-G14 (10 red on 1.79.0); `browser_plugin_unit.sh` T14c skill arms.
+
+### Fixed — `act --help` lists its step ops, so an agent stops concluding there is no upload (DIVE-8287), 1.80.0
+- `5dive browser act --help` prints one JSON example per step op (goto fill type click wait_for select press upload
+  click_at hover_at type_at eval) with the fields it takes, e.g. `{"op":"upload","selector":"ref=…","path":"/abs/file"}`
+  (a regular file, up to 16 MB). The list is walked from `ACT_VOCAB`, so a new op is listed the day it is added.
+- Why: the help never named a step op. Box agents read it and filed "act has no upload step" twice (11-09, 11-12)
+  while upload existed, once blocking a client's photo uploads.
+- Tests: `browser_act_help_steps_unit.sh` (every op listed with its fields, cap from the variable, an added op shows
+  up, control: the 1.79.0 help never says upload).
 
 ### Added — an act clicks by position on a normal page, and reads the page with a script that cannot act (DIVE-8241), 1.79.0
 - `act` takes `{"op":"click_at","x":…,"y":…}`, `hover_at` and `type_at` (+ `"value"`) on any page, not only in input
