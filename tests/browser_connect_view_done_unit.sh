@@ -10,6 +10,10 @@
 #      verdict with no button left, and the chat's own Done is refused after it
 #   N  not signed in yet: a fresh link to the same window and a fresh Done
 #   C  a challenge ask: "carrying on", and the challenge note
+#   S  DIVE-8354: a link NO agent asked for (the settings screen's Connect): its
+#      Done checks the sign-in the same way and says "not signed in yet" with a
+#      way back in, never "already finished"; only for the window a person is in
+#      now (this bind's ticket, redeemed and not revoked or replaced)
 #   E  END TO END on the self-hosted server: tap -> bind -> redeem -> the page's
 #      Done button (viewer-ui.js wireDone, a DOM fake) -> the server -> root ->
 #      the agent is told. MUTANT: the same run with the button's click handler
@@ -136,6 +140,12 @@ export FIVEDIVE_BROWSER_CONNECT_PRIV="$BROWSER"
 export FAKE_LOG="$TMP/fake.log" FAKE_CTL="$TMP/ctl"
 # The viewer server's user is the box seat; here that is this same user.
 export FIVEDIVE_BROWSER_BOX_SEAT="$ME"
+# DIVE-8354: root reads the box seat's viewer ticket for a link no agent asked for.
+export FIVEDIVE_BROWSER_PROFILE_ROOT="$TMP/profiles"
+ticket() {  # <site> <bind> <state>: the box seat's viewer ticket, as `viewer` writes it
+  mkdir -p "$TMP/profiles/$ME/$1"
+  printf 'hash=x\nexpires_at=4070908800\nbind=%s\nstate=%s\nminted_at=1\nport=6080\n' "$2" "$3" >"$TMP/profiles/$ME/$1/.5dive-viewer.ticket"
+}
 cat >"$TMP/fake-5dive" <<'SH'
 #!/usr/bin/env bash
 { printf 'ARGS %s\n' "$*"; cat; printf '\n'; } >>"$SENT_LOG"
@@ -236,6 +246,46 @@ t  "C1 a challenge Done from the viewer: carrying on" "result=carryon" "$out"
 tc "C1 ... the agent gets the chat Done's challenge note" "[browser challenge] The owner tapped Done for futuretools.io. The box browser for futuretools.io is back in your hands. What it shows now:" "$(cat "$SENT_LOG")"
 t  "C1 ... and the chat says so" "✅ Thanks. The agent is carrying on with futuretools.io." "$(edits | jq -r .text)"
 
+# ---- S: a link no agent asked for (DIVE-8354) ----------------------------------
+# The settings screen's Connect: serve, `viewer --bind=<its own>`, a person redeems it.
+# No connect-request, no tap, no Done code: nothing is indexed under the bind.
+SB=$(printf 'c%.0s' $(seq 32))
+reset; : >"$TMP/ctl.broken"; ticket booking.com "$SB" consumed
+out=$(vd booking.com "$SB"); rc=$?
+tc "S1 not signed in, on a link no agent asked for: not signed in yet" "result=notyet" "$out"
+tn "S1 ... NOT 'already finished'" "result=gone" "$out"
+t  "S1 ... checked the way the settings screen's Done checks" "viewer-revoke booking.com|serve booking.com --stop|status booking.com" "$(grep -v '^serve booking.com --login\|^viewer booking.com' "$FAKE_LOG" | paste -sd'|')"
+AGAIN=$(sed -n 's/^again=//p' <<<"$out")
+t  "S2 ... with a way back into the same window: a fresh link" 1 "$([[ "$AGAIN" =~ ^https://box\.example\.5dive\.ai/browser/viewer/booking\.com/[0-9a-f]{64}$ ]] && echo 1)"
+t  "S2 ... opened on the box (served for a person, then viewed)" 1 "$(grep -q '^serve booking.com --login' "$FAKE_LOG" && grep -q '^viewer booking.com --bind=' "$FAKE_LOG" && echo 1)"
+t  "S3 no agent is told (there is no ask)" "" "$(cat "$SENT_LOG")"
+t  "S3 ... and no chat is edited" "" "$(edits)"
+reset; ticket booking.com "$SB" consumed
+out=$(vd booking.com "$SB")
+t  "S4 signed in, on a link no agent asked for: saved" "result=saved" "$out"
+t  "S4 ... still no agent told" "" "$(cat "$SENT_LOG")"
+reset; ticket booking.com "$SB" open
+t  "S5 a link nobody redeemed finishes nothing" "result=gone" "$(vd booking.com "$SB")"
+t  "S5 ... and runs nothing" "" "$(cat "$FAKE_LOG")"
+reset; ticket booking.com "$SB" revoked
+t  "S6 a view the settings screen already closed: already finished" "result=gone" "$(vd booking.com "$SB")"
+t  "S6 ... runs nothing" "" "$(cat "$FAKE_LOG")"
+reset; ticket booking.com "$SB" consumed
+t  "S7 another bind than the ticket's finishes nothing" "result=gone" "$(vd booking.com "$(printf 'd%.0s' $(seq 32))")"
+t  "S7 ... nor this bind on another site" "result=gone" "$(vd example.org "$SB")"
+t  "S7 ... and nothing ran" "" "$(cat "$FAKE_LOG")"
+# An ASK's link whose Done was used in chat: its ticket is revoked by that Done.
+reset
+"$BROWSER" connect-request booking.com --reason="r" >/dev/null 2>&1
+out=$(priv tap "$(last_code)" "$OWNER" 2>&1); DONE=$(sed -n 's/^done=//p' <<<"$out"); BIND=$(last_bind)
+ticket booking.com "$BIND" consumed
+priv done "$DONE" "$OWNER" >/dev/null 2>&1
+ticket booking.com "$BIND" revoked
+: >"$FAKE_LOG"; : >"$SENT_LOG"
+t  "S8 an ask that really ended still reads 'already finished'" "result=gone" "$(vd booking.com "$BIND")"
+t  "S8 ... and runs nothing" "" "$(cat "$FAKE_LOG")"
+rm -f "$TMP/profiles/$ME/booking.com/.5dive-viewer.ticket"
+
 # ---- E: end to end through the self-hosted server and the page's button --------
 command -v node >/dev/null || { echo "SKIP E: needs node"; printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"; exit $(( FAIL > 0 )); }
 SERVER="$ROOT/browser/lib/login-link-server.py"
@@ -301,6 +351,16 @@ out=$(e2e "$TMP/viewer-ui-mutant.mjs")
 t  "E5 MUTANT (button's handler removed): the page shows nothing" '{"label":"Done","shown":[],"disabled":false}' "$out"
 t  "E5 ... and NOTHING reaches the agent" "" "$(cat "$SENT_LOG")"
 t  "E5 ... nothing was run" 0 "$(grep -v '^serve booking.com --login\|^viewer booking.com\|^serve booking.com$' "$FAKE_LOG" | grep -c 'revoke\|--stop\|^status')"
+
+# E6 (DIVE-8354): the settings screen's link, through the server and the page's button.
+reset; : >"$TMP/ctl.broken"
+ticket booking.com "$SB" consumed
+printf 'bind=%s\nexpires_at=%s\n' "$SB" "$(( $(date +%s) + 600 ))" >"$TMP/s/binds/booking.com"
+j=$(curl -s -X POST -H "origin: https://$LHOST" -H 'x-5dive-viewer: 1' "$B/browser/viewer/booking.com/$(printf 'a%.0s' $(seq 64))/redeem")
+out=$(node "$TMP/press.mjs" "$TMP/viewer-ui.mjs" "$B" "https://$LHOST" "$(jq -r .done <<<"$j")")
+tc "E6 a link no agent asked for, not signed in: the page says so" '"Checking the sign-in…","Not signed in yet.' "$out"
+tn "E6 ... and never 'already finished'" "already finished" "$out"
+t  "E6 ... no agent told" "" "$(cat "$SENT_LOG")"
 
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 exit $(( FAIL > 0 ))
