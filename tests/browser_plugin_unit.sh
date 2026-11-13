@@ -2034,6 +2034,17 @@ tc 'T14c ...never guessing between two accounts' 'never guess' "$UTXT"
 tc 'T14c ...checking every part of the job before done' 'Before you say done: check EVERY part of the job' "$UTXT"
 tc 'T14c ...on the page as it is NOW, not as it was set' 'on the page as it is NOW' "$UTXT"
 tc 'T14c ...and answering with the facts, not the page' 'Asked for information? Answer with it' "$UTXT"
+# DIVE-8281: BrowserOS won Best Buy by stating a default for two grading questions the task left
+# open; 5dive stopped ("you didn't tell me"). Harmless choices are defaulted AND disclosed; money,
+# a person's details and a send never are. And a blocked or empty first site gets one second source.
+UFLAT="$(tr -s '[:space:]' ' ' <<<"$UTXT")"
+tc 'T14c ...a harmless unnamed choice is picked, said and finished' 'A choice the job did not name and that harms no one: pick it, say it, finish.' "$UFLAT"
+tc 'T14c ...and named in the answer' 'name it in the answer: "assumed: Good condition' "$UFLAT"
+tc 'T14c ...never a default for money, a person or a send' 'Never a default for money, a person or a send' "$UFLAT"
+tc 'T14c ...naming payment and personal data' 'a payment, a purchase, a price or amount you set, a name, email, address, phone or date of birth' "$UFLAT"
+tc 'T14c ...one other source before not possible' 'Try one other source before "not possible."' "$UFLAT"
+tc 'T14c ...and the source is named' 'name that source in the answer' "$UFLAT"
+tc 'T14c ...read --grep for a few lines of a big page' "read <url> --grep=" "$UFLAT"
 tn 'T14c connect-site no longer sends agents to a normal fetch' 'use a normal fetch' "$SKILLTXT"
 tc 'T14c ...and points web work at use-browser instead' 'use-browser skill' "$SKILLTXT"
 

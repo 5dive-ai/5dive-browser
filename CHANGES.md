@@ -8,6 +8,23 @@ that file stays where it is.
 
 ## Unreleased
 
+### Changed — a harmless choice the job left open is picked and said, a blocked site gets a second source, and `read --grep` (DIVE-8281), 1.82.0
+- Skill, before you say done: a choice the job did not name and that harms no one (condition, size, delivery or
+  pickup, sort order, a grade) is set to the most neutral option and named in the answer ("assumed: Good condition"),
+  never a stop to ask. Never a default for money (a payment, a purchase, an amount you set), a person's details
+  (name, email, address, phone, date of birth) or anything sent: those stay the owner's.
+- Skill: a site that blocks, shows another country's data or lacks the fact gets one other public source, named in
+  the answer, before "not possible".
+- `read <url> --grep=<regex>` prints the front matter, then only the lines that match (grep -E, any case), each with
+  its page.md line number and the line around it, in the same budget. Several urls: each page its own matches. For a
+  harness with no shell, where "grep page.md" was refused (38 times in the 7804 bench).
+- Why: of BrowserOS's 3 real hard wins in DIVE-7804, Best Buy was a stated default (5dive: "you didn't tell me those
+  answers, so I didn't guess them") and IMDb a second source after a geo-block. Bench (`bench/dive-8281/`, 2 reps
+  per arm, 59 tasks): the defaults fired (12 vs 6 runs stated one) but LOST18 did not move (13 to 10 of 36, p=0.51)
+  and CONTROL41 held (22 to 25 of 82); Best Buy never loaded in either arm. Both arms ran the bench box's executor
+  1.54.0 (the bench pinned only the skill), so it measured the skill change only and `read --grep` went unbenched.
+- Tests: `browser_read_many_unit.sh` G1-G14 (10 red on 1.79.0); `browser_plugin_unit.sh` T14c skill arms.
+
 ### Fixed — an agent that finds the owner's sign-in window still open is told to ask for Done (DIVE-8331), 1.81.0
 - A brokered seat's on-demand start (`_serve-offered`) now fails, and says which state it found, when its
   `serve --no-switch` left no warm session: "<site> is still open in the owner's sign-in window: ask them to press
