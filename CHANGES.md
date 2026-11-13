@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — the viewer's Done on a link no agent asked for checks the sign-in (DIVE-8354), 1.83.0
+- A view opened from the settings screen's Connect (or a partner cabinet's) has no ask behind it, so the viewer's
+  own Done answered "This sign-in is already finished" while the site still showed its sign-in page. The person
+  closed the window and the agent later found an expired session.
+- That Done now checks the sign-in the way the settings screen's Done does (close the view, stop, probe): signed in
+  reads "Saved"; not signed in reads "Not signed in yet" with a link back into the same window. "Already finished"
+  stays for an ask that really ended. Only the window a person is in now counts: the site's viewer ticket must
+  carry this link's bind and be redeemed, not revoked or replaced; anything else runs nothing.
+
 ### Changed — a harmless choice the job left open is picked and said, a blocked site gets a second source, and `read --grep` (DIVE-8281), 1.82.0
 - Skill, before you say done: a choice the job did not name and that harms no one (condition, size, delivery or
   pickup, sort order, a grade) is set to the most neutral option and named in the answer ("assumed: Good condition"),
