@@ -186,6 +186,9 @@ jobs:
       # DIVE-8287: act --help lists every ACT_VOCAB op with its fields (upload's path and cap).
       - name: act help steps harness
         run: bash tests/browser_act_help_steps_unit.sh
+      # DIVE-8331: an agent finding the owner's sign-in window still open is told to ask for Done.
+      - name: broker login-open harness
+        run: bash tests/browser_broker_login_open_unit.sh
       - name: input paste harness
         run: bash tests/browser_input_paste_unit.sh
       - name: keep the input harness screens of a failed run
