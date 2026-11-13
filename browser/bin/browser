@@ -6014,10 +6014,11 @@ cmd_serve() {
     # lost that way on chill-gorge (2026-10-02). So the wait keys on what the
     # stop is protecting — a person was admitted to THIS serve's browser — and
     # runs BEFORE the daemon is asked to go, whichever process holds the Chrome.
-    local hpid=""
+    local hpid="" person=0
     if [[ -n "$cpid" ]] && _pid_live "$cpid"; then hpid="$cpid"
     elif [[ -n "$dpid" ]] && _pid_live "$dpid"; then hpid="$dpid"; fi
     if [[ -n "$hpid" ]] && { [[ -n "$cpid" && "$(_kv "$f" login)" == 1 ]] || _viewer_admitted_since "$dir" "$(_kv "$f" started_at)"; }; then
+      person=1
       local cs="${FIVEDIVE_BROWSER_COOKIE_SETTLE:-24}"; [[ "$cs" =~ ^[0-9]+$ ]] || cs=24
       local sref; sref=$(mktemp "${TMPDIR:-/tmp}/5dive-stop.XXXXXX" 2>/dev/null) || sref=""
       if [[ -n "$sref" ]] && (( cs > 0 )); then
@@ -6043,7 +6044,9 @@ cmd_serve() {
     if [[ -n "$dpid" ]] && _pid_live "$dpid"; then
       # A swap asks the automated browser to keep the session-only logins first
       # (DIVE-7314: lib/session-keep.cjs, Chrome stores them itself).
+      # And so does the stop of a person's window (DIVE-8367), for SESSION_KEEP_SAVED_S.
       local sreq='{"op":"shutdown"}'; [[ "${_SERVE_SWAP:-}" == 1 ]] && sreq='{"op":"shutdown","keep_session":true}'
+      (( person )) && sreq='{"op":"shutdown","keep_session":true,"keep_s":'"$SESSION_KEEP_SAVED_S"'}'
       _daemon_call "$dir" "$sreq" >/dev/null 2>&1 || true
       local w=0
       while (( w < 100 )) && _pid_live "$dpid"; do sleep 0.05; w=$(( w + 1 )); done
@@ -6066,7 +6069,15 @@ cmd_serve() {
     # A swap (cmd_serve's own stop-and-start) keeps the session-only logins:
     # the daemon's keep above for the automated browser, and this file rewrite for
     # a plain Chrome's, which only helps when that Chrome wrote them to disk.
-    [[ "${_SERVE_SWAP:-}" == 1 ]] && { _session_cookies_keep "$dir" >/dev/null || true; }
+    # THE STOP OF A PERSON'S WINDOW KEEPS THEM TOO (DIVE-8367). Done stops the
+    # window and then checks the sign-in on a fresh Chrome, which drops every
+    # cookie with no expiry, so a site whose login is such a cookie read "still on
+    # the sign-in page" after every finished sign-in. Closing that window is the
+    # person saving the login, not the person closing a browser, so the login is
+    # kept for SESSION_KEEP_SAVED_S, whoever stops it (Done, the dashboard's close,
+    # the idle sweep). The automated browser's own stop still ends them.
+    if (( person )); then _session_cookies_keep "$dir" "$SESSION_KEEP_SAVED_S" >/dev/null || true
+    elif [[ "${_SERVE_SWAP:-}" == 1 ]]; then _session_cookies_keep "$dir" >/dev/null || true; fi
     local ssock; ssock="$(_kv "$f" sock)"
     rm -f "$f" "${ssock:-$dir/.5dive-session.sock}" "$(_viewer_admitted_file "$dir")"
     _rv_alias_sweep
@@ -6383,9 +6394,22 @@ cmd_serve() {
   local errlog; errlog="$dir/.5dive-serve.err"
   ( umask 077; : > "$errlog" ) 2>/dev/null || true
   _mark_clean_exit "$dir"
+  # A PERSON'S SIGN-IN WINDOW WRITES ITS SESSION-ONLY LOGINS TO DISK (DIVE-8367).
+  # Chrome keeps a cookie with no expiry in memory only, unless it was started to
+  # restore the last session, so the stop below had nothing on disk to keep and
+  # the check after Done read the site signed out (a site whose login cookie has no expiry).
+  # --restore-last-session makes this Chrome store them; the stop then gives them
+  # an expiry (_session_cookies_keep). The tabs of an earlier session are deleted
+  # first, so the person sees one tab, the sign-in page, and none pile up.
+  local -a keepargs=()
+  if (( plain )); then
+    keepargs=(--restore-last-session)
+    rm -rf -- "$dir/Default/Sessions" "$dir/Default/Current Session" "$dir/Default/Current Tabs" \
+      "$dir/Default/Last Session" "$dir/Default/Last Tabs" 2>/dev/null || true
+  fi
   DISPLAY=":$disp" _tmp_exec "$chrome" --user-data-dir="$dir" --no-first-run \
       --no-default-browser-check --window-size=1280,800 --hide-crash-restore-bubble \
-      --disable-features=TranslateUI "$start_url" >/dev/null 2>"$errlog" &
+      --disable-features=TranslateUI "${keepargs[@]}" "$start_url" >/dev/null 2>"$errlog" &
   local cpid=$!
 
   # WAIT FOR THE BROWSER BEFORE ADVERTISING IT. `serve` used to print success
@@ -6457,16 +6481,24 @@ _chrome_no_password_offer() {  # <profile-dir>  (no Chrome running on it)
 # the browser closing, so the cookies with no expiry are given one (SESSION_KEEP_S
 # from now) and kept: by the automated browser itself before it closes
 # (lib/session-keep.cjs, the route that works on real Chrome), and here, in the
-# file, for a plain Chrome that wrote them to disk. Only a swap does this: a real stop
-# (Done, the idle reaper, `serve --stop`) still ends them, as closing a browser
-# does. Cookies that already have an expiry are not touched.
+# file, for a plain Chrome that wrote them to disk. A swap does this, and so does
+# the stop of a window a person was in (DIVE-8367, see cmd_serve --stop): the
+# automated browser's own stop (the idle sweep, `serve --stop`) still ends them,
+# as closing a browser does. Cookies that already have an expiry are not touched.
+#
+# A PERSON'S SAVED LOGIN IS KEPT FOR 30 DAYS, NOT 12 HOURS (DIVE-8367). The keep
+# gives the cookie a fixed end, and no later swap moves it (only a cookie with no
+# expiry is kept), so 12 h would have signed the owner out every day. The cost:
+# a cookie the site meant to end when the browser closes lasts up to 30 days, in
+# the seat's 0700 profile. The site's own server-side session end still applies.
 SESSION_KEEP_S=43200
-_session_cookies_keep() {  # <profile-dir>  (its Chrome has exited) -> how many kept, on stdout
-  local d="$1" db n total=0
+SESSION_KEEP_SAVED_S=2592000
+_session_cookies_keep() {  # <profile-dir> [<seconds>]  (its Chrome has exited) -> how many kept, on stdout
+  local d="$1" keep="${2:-$SESSION_KEEP_S}" db n total=0
   command -v python3 >/dev/null 2>&1 || { printf '%s: no python3 here, so a login that lasts only while the browser runs is lost on this restart.\n' "$PROG" >&2; return 1; }
   for db in "$d/Default/Network/Cookies" "$d/Default/Cookies"; do
     [[ -f "$db" ]] || continue
-    n=$(python3 - "$db" "$SESSION_KEEP_S" 2>/dev/null <<'PY'
+    n=$(python3 - "$db" "$keep" 2>/dev/null <<'PY'
 import sqlite3, sys, time
 db, keep = sys.argv[1], int(sys.argv[2])
 c = sqlite3.connect(db, timeout=5)

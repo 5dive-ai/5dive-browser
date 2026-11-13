@@ -28,7 +28,8 @@
 #         browser to keep its session logins before it goes, and gives a session
 #         cookie already on disk an expiry ~SESSION_KEEP_S out
 #      C2 NEGATIVE CONTROL: a cookie that already had an expiry is unchanged
-#      C3 a real stop (Done, the reaper) asks for no keep and still ends a session cookie
+#      C3 the automated browser's real stop (the idle sweep) asks for no keep and still
+#         ends a session cookie (a person's window keeps them: browser_done_session_keep_unit.sh)
 #      C4 MUTANT: the pre-fix tree's same swap asks for no keep and leaves the
 #         session cookie to die
 #      C5 LIVE, when this machine has Chrome, Xvfb and playwright-core (CI): the
@@ -279,10 +280,12 @@ else
   arm 'C1c ...and the automated browser was asked to keep its session logins before it went' 'true' \
     "$(jq -s -c '[.[] | select(.op=="shutdown")] | last | .keep_session' "$DREC")"
   arm 'C2 NEGATIVE CONTROL: the cookie that had an expiry is unchanged' '1 1 13400000000000000' "$(ck "$DO/Default/Network/Cookies" __cf_bm)"
-  python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("UPDATE cookies SET is_persistent=0, has_expires=0, expires_utc=0 WHERE name=\"_digitalocean2_session_v4\""); c.commit()' "$DO/Default/Network/Cookies"
+  # The view's own stop keeps them too, for longer (DIVE-8367: browser_done_session_keep_unit.sh).
+  FIVEDIVE_BROWSER_COOKIE_SETTLE=1 "$BROWSER" serve digitalocean.com --stop >/dev/null 2>&1
+  "$BROWSER" serve digitalocean.com >/dev/null 2>&1; pids "$DO"
+  mkcookies "$DO/Default/Network/Cookies"
   "$BROWSER" serve digitalocean.com --stop >/dev/null 2>&1
-  arm 'C3 a real stop still ends a session cookie (left with no expiry for Chrome to drop)' '0 0 0' "$(ck "$DO/Default/Network/Cookies" _digitalocean2_session_v4)"
-  "$BROWSER" serve digitalocean.com >/dev/null 2>&1; pids "$DO"; "$BROWSER" serve digitalocean.com --stop >/dev/null 2>&1
+  arm 'C3 the automated browser'"'"'s real stop (the idle sweep) still ends a session cookie (left with no expiry for Chrome to drop)' '0 0 0' "$(ck "$DO/Default/Network/Cookies" _digitalocean2_session_v4)"
   arm 'C3b a real stop of the automated browser asks it for no keep' 'null' \
     "$(jq -s -c '[.[] | select(.op=="shutdown")] | last | .keep_session' "$DREC")"
   if [[ -x "$BASEDIR/browser/bin/browser" ]]; then

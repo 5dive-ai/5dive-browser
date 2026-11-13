@@ -246,6 +246,11 @@ jobs:
       # the real daemon (playwright-core) on the runner's Chrome and Xvfb.
       - name: saved login in input mode harness
         run: bash tests/browser_saved_input_unit.sh
+      # DIVE-8367: a login that lasts only while the browser runs survives Done
+      # (fake Chrome arms, the pre-fix tree as the mutant, and a LIVE arm: the
+      # sign-in window on the runner's Chrome, Done's stop, then a fresh Chrome).
+      - name: done keeps a session-only login harness
+        run: bash tests/browser_done_session_keep_unit.sh
       - name: totp harness
         run: bash tests/browser_totp_unit.sh
       # DIVE-6013: profile groups — two sites in one group share a sign-in, another
