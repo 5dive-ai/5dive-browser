@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — an agent that finds the owner's sign-in window still open is told to ask for Done (DIVE-8331), 1.81.0
+- A brokered seat's on-demand start (`_serve-offered`) now fails, and says which state it found, when its
+  `serve --no-switch` left no warm session: "<site> is still open in the owner's sign-in window: ask them to press
+  Done on <site>" when the login view is live, or "no warm session on this box: <why>" when the box cannot run one
+  (no session daemon, no Xvfb). The agent gets those words, not "it started, but no browser answers on its socket"
+  and not the advice to run `serve`, which only answers "already serving" in that state.
+- Why: box report 933 (wry-rune, 11-13). An API deploy cut the owner's Done for vk.com in half, so the sign-in
+  browser stayed up, and the agent could tell the owner neither "press Done again" nor anything else.
+- Tests: `browser_broker_login_open_unit.sh` (13 arms through the real binary; control: 1.80.0 gives the socket
+  catch-all and `_serve-offered` exits 0, 9 arms red).
+
 ### Fixed — `act --help` lists its step ops, so an agent stops concluding there is no upload (DIVE-8287), 1.80.0
 - `5dive browser act --help` prints one JSON example per step op (goto fill type click wait_for select press upload
   click_at hover_at type_at eval) with the fields it takes, e.g. `{"op":"upload","selector":"ref=…","path":"/abs/file"}`
