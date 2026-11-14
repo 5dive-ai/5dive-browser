@@ -8,6 +8,13 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a signed-in Instagram account not linked to Facebook no longer reads "sign in again" (DIVE-8477), 1.88.0
+- 1.87.0 read Instagram as signed out whenever its record of the viewer had Facebook account 0. That is true of every
+  Instagram account not linked to Facebook, signed in or not, so a partner client's real sign-in still read
+  "session expired" and Done reopened the window.
+- Signed out is now that record with both the Facebook and the Instagram id at 0, or the login form; signed in is a
+  real id in either. Measured on his signed-in page (box, probe's own dump) and on the logged-out page (curl).
+
 ### Fixed — an Instagram sign-in no longer reads "sign in again" because the page has a password field (DIVE-8457), 1.87.0
 - Instagram's check read a page as signed out whenever it held any password field. A signed-in page that carries
   one (a confirm-password box, a settings dialog) read "session expired", so the owner's Done reopened the sign-in

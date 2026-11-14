@@ -3179,7 +3179,7 @@ IMARK="$(jq -r '.probe.logged_out_when_dom_matches' "$IADP")"
 SMARK="$(jq -r '.probe.logged_out_when_dom_matches' "$SADP8258")"
 TMARK="$(jq -r '.probe.logged_out_when_dom_matches' "$TADP")"
 # Instagram's login page as the server sends it (no form yet) and as drawn.
-IG_OUT_SHELL='<script type="application/json">{"define":[["CurrentUserInitialData",[],{"ACCOUNT_ID":"0","USER_ID":"0","NAME":"","SHORT_NAME":null,"IS_BUSINESS_PERSON_ACCOUNT":false}]]}</script>'
+IG_OUT_SHELL='<script type="application/json">{"define":[["CurrentUserInitialData",[],{"ACCOUNT_ID":"0","USER_ID":"0","NAME":"","SHORT_NAME":null,"IS_BUSINESS_PERSON_ACCOUNT":false,"APP_ID":"936619743392459","IS_BUSINESS_DOMAIN":false,"NON_FACEBOOK_USER_ID":"0","IS_INSTAGRAM_USER":1}]]}</script>'
 IG_OUT_FORM='<form id="login_form" novalidate="" method="POST"><input dir="ltr" autocomplete="username webauthn" type="text" name="email" value=""><input dir="ltr" aria-invalid="false" type="password" name="pass" value=""></form>'
 IG_IN='<script type="application/json">{"define":[["CurrentUserInitialData",[],{"ACCOUNT_ID":"17841400000000001","USER_ID":"17841400000000001","NAME":"Shop","SHORT_NAME":"Shop"}]]}</script><main><h2>Edit profile</h2><textarea id="pepBio"></textarea></main>'
 t  'T21h instagram probes a page the server sends to sign-in when logged out' 'https://www.instagram.com/accounts/edit/' "$(jq -r '.probe.url' "$IADP")"
@@ -3249,6 +3249,28 @@ tc 'T21u status: the drawn login form alone (no record yet) still reads expired'
    "$(st8258 instagram.com "<html><body>$IG_OUT_FORM</body></html>")"
 tc 'T21u status: a page with neither record reads UNKNOWN, not expired' 'UNKNOWN (the page never showed either' \
    "$(FIVEDIVE_BROWSER_PROBE_WAIT_MS=400 FIVEDIVE_BROWSER_PROBE_POLL_MS=200 st8258 instagram.com "<html>$IG_ODD</html>")"
+export FIVEDIVE_BROWSER_ADAPTER_DIR="$ADPOVERRIDE"
+
+# === T21v instagram.com: an account not linked to Facebook is signed in (DIVE-8477) ===
+# 1.87.0 did not fix the partner client: his Instagram is not linked to Facebook,
+# so Meta's current-user record on his SIGNED-IN page carries ACCOUNT_ID "0" (the
+# Facebook id) and his Instagram id in NON_FACEBOOK_USER_ID — measured on his box
+# with the probe's own cold dump: record ACCOUNT_ID 0 x2, NON_FACEBOOK_USER_ID
+# non-zero x2, no login form. The logged-out page's record has BOTH ids 0 (curl,
+# 2026-11-14). The fixture is that record's shape, ids replaced.
+IG_IN_NOFB='<script type="application/json">{"define":[["CurrentUserInitialData",[],{"ACCOUNT_ID":"0","USER_ID":"0","NAME":"","SHORT_NAME":null,"IS_BUSINESS_PERSON_ACCOUNT":false,"APP_ID":"936619743392459","IS_BUSINESS_DOMAIN":false,"NON_FACEBOOK_USER_ID":"17841400000000002","IS_INSTAGRAM_USER":1}]]}</script><main><h2>Edit profile</h2></main>'
+IMARK_187='CurrentUserInitialData",\[\],\{"ACCOUNT_ID":"0"|id=["'"'"']?login_form'
+t  'T21v (control) the 1.87.0 marker read a signed-in account not linked to Facebook as signed out' 'match' \
+   "$(grep -qiE "$IMARK_187" <<<"$IG_IN_NOFB" && echo match || echo miss)"
+t  'T21v the marker does NOT match it' 'miss' "$(grep -qiE "$IMARK" <<<"$IG_IN_NOFB" && echo match || echo miss)"
+t  'T21v ...the signed-in marker MATCHES its non-zero Instagram id' 'match' "$(grep -qiE "$IPOS" <<<"$IG_IN_NOFB" && echo match || echo miss)"
+t  'T21v ...the marker still MATCHES the logged-out record (both ids 0)' 'match' "$(grep -qiE "$IMARK" <<<"$IG_OUT_SHELL" && echo match || echo miss)"
+t  'T21v ...and the signed-in marker does NOT' 'miss' "$(grep -qiE "$IPOS" <<<"$IG_OUT_SHELL" && echo match || echo miss)"
+unset FIVEDIVE_BROWSER_ADAPTER_DIR
+tc 'T21v status: a signed-in Instagram account not linked to Facebook reads authenticated' 'authenticated' \
+   "$(st8258 instagram.com "<html><head>$IG_IN_NOFB</head></html>")"
+tc 'T21v status: the logged-out record still reads expired' 'session expired' \
+   "$(st8258 instagram.com "<html><head>$IG_OUT_SHELL</head><body></body></html>")"
 export FIVEDIVE_BROWSER_ADAPTER_DIR="$ADPOVERRIDE"
 
 # --- T9x: the per-site adblock off switch (DIVE-4516) -------------------------
