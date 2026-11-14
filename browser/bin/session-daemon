@@ -1489,6 +1489,13 @@ async function planRequest(ctx, req, send, end) {
 async function sendReport(page, req, send, { failed = false, watch = null, settled = false } = {}) {
   if (!req.report) return;
   const r = req.report;
+  // A READ-ONLY ACT (DIVE-8443): only where the page is. No text, document, refs,
+  // picture or look is read, so none of it reaches the caller.
+  if (r.bare) {
+    try { send({ t: 'out', data: JSON.stringify({ act_report: true, bare: true, url: page.url() }) + '\n' }); }
+    catch (e) { send({ t: 'err', msg: `the steps ran but where the page is could not be read: ${e.message}` }); }
+    return;
+  }
   try {
     // DIVE-4983: the same wait, --expect window and refs the cold driver's report takes,
     // and nothing waited for after a failed step (DIVE-6778, as the cold driver): a

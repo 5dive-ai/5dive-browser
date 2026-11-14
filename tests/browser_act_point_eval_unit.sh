@@ -38,6 +38,8 @@
 #      L15 eval that never ends is stopped at its bound
 #      L16 a huge answer is cut, and says its full size
 #      L17 a click_at that opens a popup is followed, as a ref click is
+#      L18 (DIVE-8443) an eval-only act prints the answer and saves nothing of the page
+#      L19 (control) the same with a click step still saves page.html, tree.json, page.png
 #   M  MUTANTS (live): the gate removed -> L2 goes red (the page gets the pay click);
 #      the side-effect check removed -> L10 goes red (the page gets the click)
 #   S  SERVED, where Xvfb is present too: the same steps through bin/session-daemon
@@ -216,9 +218,10 @@ JS
   arm 'L10b ...and so is a synthetic click event' 'yes ' "$(has 'refused:' "$OUT$ERR") $(hits)"
 
   for ex in 'location.href=\"/away\"' 'history.pushState({},\"\",\"/away\")' 'window.open(\"/away\")' 'document.forms.length; document.body.insertAdjacentHTML(\"beforeend\",\"<form></form>\")'; do
-    act --steps="[{\"op\":\"eval\",\"expr\":\"$ex\"}]" --out="$TMP/l11"
+    # DIVE-8443: an eval-only act is read-only and leaves no after.json; --json says the url.
+    act --steps="[{\"op\":\"eval\",\"expr\":\"$ex\"}]" --out="$TMP/l11" --json
     arm "L11 eval that navigates or writes is refused, the page stays: $ex" "yes $U" \
-      "$(has 'refused:' "$OUT$ERR") $(jq -r .url "$TMP/l11/after.json" 2>/dev/null)"
+      "$(has 'refused:' "$OUT$ERR") $(jq -r .url <<<"$OUT" 2>/dev/null)"
   done
   act --steps='[{"op":"eval","expr":"fetch(\"/hit?eval\")"}]' --out="$TMP/l12"
   arm 'L12 eval that fetches is refused, and nothing reached the server' 'yes ' "$(has 'refused:' "$OUT$ERR") $(hits)"
@@ -242,6 +245,15 @@ JS
   act --steps='[{"op":"click_at","x":380,"y":320}]' --out="$TMP/l17"
   arm 'L17 a click_at that opens a popup is followed: the re-read is the popup' 'Details window' \
     "$(jq -r .title "$TMP/l17/after.json" 2>/dev/null)"
+
+  # DIVE-8443: an act of page scripts only is READ-ONLY in real Chrome: the answer and
+  # nothing of the page ("Place order" is the page's own text, in its html and refs).
+  act --steps='[{"op":"eval","expr":"document.querySelector(\"#data\").textContent.length"}]' --out="$TMP/l18"
+  arm 'L18 an eval-only act prints the answer and saves nothing of the page' '0 yes  no' \
+    "$RC $(has '(eval) = 34' "$OUT") $(ls "$TMP/l18" 2>/dev/null | tr '\n' ' ' | sed 's/ $//') $(has 'Place order' "$OUT$ERR")"
+  act --steps='[{"op":"click_at","x":160,"y":120},{"op":"eval","expr":"1"}]' --out="$TMP/l19"
+  arm 'L19 (control) the same with a click step still saves page.html, tree.json and page.png' 'yes yes yes yes' \
+    "$([[ -s "$TMP/l19/page.html" ]] && echo yes || echo no) $([[ -s "$TMP/l19/tree.json" ]] && echo yes || echo no) $([[ -s "$TMP/l19/page.png" ]] && echo yes || echo no) $(has 'Place order' "$(cat "$TMP/l19/page.html" 2>/dev/null)")"
 
   # ---------------------------------------------------------------- M  mutants
   cp -a "$ROOT/browser" "$TMP/mut1"
