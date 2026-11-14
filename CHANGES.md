@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — an Instagram sign-in no longer reads "sign in again" because the page has a password field (DIVE-8457), 1.87.0
+- Instagram's check read a page as signed out whenever it held any password field. A signed-in page that carries
+  one (a confirm-password box, a settings dialog) read "session expired", so the owner's Done reopened the sign-in
+  window right after a real sign-in (box reports 942, 974).
+- Signed out is now Instagram's own record of the viewer with account 0, or its login form; signed in is the same
+  record with a real account. A page that shows neither reads "could not tell", and Done hands the site to the agent
+  (1.86.0) instead of asking for the sign-in again.
+- Tilda was measured, not changed: its sign-in cookie lasts only while the browser runs, which 1.84.0 already keeps
+  across Done. Boxes got 1.84.0 only with the registry's 1.85.0 copy (2026-11-14 07:21Z), after both reports.
+
 ### Fixed — a Done that cannot confirm the login no longer locks the agent out (DIVE-8450), 1.86.0
 - The viewer's Done (on an agent's ask, and on the settings screen's or a partner cabinet's own link)
   reopened the owner's sign-in window whenever its check did not read "signed in". While that window is up,
