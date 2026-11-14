@@ -283,6 +283,13 @@ arm 'L4 "Log out" is not a sign-in control' in "$(gl '<nav><button>Log out</butt
 arm 'L5 an icon button named by aria-label' out "$(gl '<header><a href=/x aria-label="Sign in"><svg></svg></a></header>')"
 arm 'L6 role=banner with a role=button "登录 | 注册" (juejin.cn)' out "$(gl '<div role="banner"><div role="button">登录 | 注册</div></div>')"
 arm 'L7 a "Log in" outside any header is not decidable by itself' none "$(gl '<main><a>Log in</a></main>')"
+# DIVE-8483: chatplace.io's signed-out header, measured 2026-11-14: an icon link with no
+# words to app.chatplace.io/auth/sign-in/ beside 6 other controls read SIGNED IN on 1.88.0.
+arm 'L8 a wordless header link to a sign-in address (chatplace.io)' out "$(gl '<header><button aria-label="Open menu"></button><a href="/pricing"><span>Pricing</span></a><a href="https://app.chatplace.io/auth/sign-in/?locale=en&amp;fbp=x" class="ButtonLogin"><svg></svg></a><a href="https://app.chatplace.io/auth/sign-up/?locale=en"><span>Try it for free</span></a></header>')"
+arm 'L9 a WORDED link to a sign-in address is read by its words ("Add account")' in "$(gl '<header><a href=/>Home</a><a href="/login?add=1">Add another account</a></header>')"
+arm 'L10 a wordless link to /logout is not a sign-in' in "$(gl '<header><a href=/>Home</a><a href="/logout"><svg></svg></a></header>')"
+arm 'L11 a wordless link to /loginhistory is not a sign-in address' in "$(gl '<header><a href=/>Home</a><a href="/loginhistory"><svg></svg></a></header>')"
+arm 'L12 a wordless link whose QUERY names login is not a sign-in address' in "$(gl '<header><a href=/>Home</a><a href="/me?from=login"><svg></svg></a></header>')"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

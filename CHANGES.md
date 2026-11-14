@@ -8,6 +8,20 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a signed-out site whose Log in button is only an icon no longer reads connected (DIVE-8483), 1.89.0
+- The generic check (a site with no built-in check) read a header as signed in when none of its controls SAID
+  "Log in". chatplace.io's signed-out header offers its sign-in as an icon with no words, a link to
+  `app.chatplace.io/auth/sign-in/`, so the page read signed in and a partner cabinet showed it as working while nobody
+  was signed in (QA DIVE-8479). A header link with no words and no label is now read by its address: a path ending in
+  log-in, sign-in or sign-up reads signed out. A worded link keeps its words' verdict ("Add another account" to
+  `/login` is not a sign-in), and `/logout`, `/loginhistory` or a query naming login never match.
+- Measured on chatplace.io's signed-out page from 5dive-ci's Chrome, 2026-11-14: 1.88.0 reads `in` (7 header
+  controls), 1.89.0 reads `out`. Not measured: a signed-in chatplace.io page (no account).
+- NOT fixed here: vk.com's QR sign-in page has no header controls and no password field, so the generic check reads
+  "cannot tell", and the owner's Done still vouches for it (DIVE-8263). That needs a vk.com check measured on a
+  signed-in VK account.
+- Tests: `browser_served_probe_unit.sh` L8–L12 (L8 is red on 1.88.0's classifier).
+
 ### Fixed — a signed-in Instagram account not linked to Facebook no longer reads "sign in again" (DIVE-8477), 1.88.0
 - 1.87.0 read Instagram as signed out whenever its record of the viewer had Facebook account 0. That is true of every
   Instagram account not linked to Facebook, signed in or not, so a partner client's real sign-in still read
