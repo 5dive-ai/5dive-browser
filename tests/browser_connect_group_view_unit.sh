@@ -70,7 +70,8 @@ FB=business.facebook.com FBURL=https://business.facebook.com/
 FAKEBIN="$TMP/bin"; mkdir -p "$FAKEBIN"
 printf '#!/usr/bin/env bash\n: > "%s/x11/X${1#:}"\nexec sleep 300\n' "$TMP" > "$FAKEBIN/Xvfb"
 # Plain Chrome (a login view): records the URL it was opened on, then stays up.
-printf '#!/usr/bin/env bash\nprintf "plain %%s\\n" "${@: -1}" >> "%s/starts"\nexec sleep 300\n' "$TMP" > "$FAKEBIN/google-chrome"
+# The page it was asked to open: the last argument, or since DIVE-8487 the sign-in window's --app=<url>.
+printf '#!/usr/bin/env bash\nu="${@: -1}"; for a; do [[ $a == --app=* ]] && u=${a#--app=}; done\nprintf "plain %%s\\n" "$u" >> "%s/starts"\nexec sleep 300\n' "$TMP" > "$FAKEBIN/google-chrome"
 # The viewer's two programs: they only listen, on the port they were given.
 cat > "$FAKEBIN/x11vnc" <<'X'
 #!/usr/bin/env node
@@ -218,9 +219,9 @@ arm 'U4 no new tab came up: nothing typed, the record unchanged' "false ctrl+t 0
 # ================================================================ S  daemon source
 D="$REAL_DAEMON"
 arm 'S1 input front waits for a request in flight, holds the window while it types, releases it' 1 \
-  "$(awk '/if \(req.op === .front.\) \{/{p=1} p&&/while \(busy && Date.now\(\) < until\)/{w=NR} p&&/busy = \{ op: .front./{h=NR} p&&/frontRequest\(ctx, input, req, send, end, input && !held\)/{f=NR} p&&/if \(held\) busy = null/{r=NR} p&&/^      \}$/{p=0} END{print (w && h > w && f > h && r > f) ? 1 : 0}' "$D")"
+  "$(awk '/if \(req.op === .front.\) \{/{p=1} p&&/while \(busy && Date.now\(\) < until\)/{w=NR} p&&/busy = \{ op: .front./{h=NR} p&&/frontRequest\(ctx, input, req, send, end, input && !held[,)]/{f=NR} p&&/if \(held\) busy = null/{r=NR} p&&/^      \}$/{p=0} END{print (w && h > w && f > h && r > f) ? 1 : 0}' "$D")"
 arm 'S2 input frontRequest asks inputFront, and types nothing while another request drives' 1 \
-  "$(awk '/^async function frontRequest\(/{p=1} p&&/if \(inUse\)/{i=NR} p&&/frontTab\.inputFront\(ctx, url/{f=NR} p&&/frontTab\.pick\(/{k=NR} p&&/^}/{p=0} END{print (i && f > i && k > f) ? 1 : 0}' "$D")"
+  "$(awk '/^async function frontRequest\(/{p=1} p&&/if \(inUse\)/{i=NR} p&&/frontTab\.inputFront\(ctx, url/{f=NR} p&&/frontTab\.(pick|plan)\(/{k=NR} p&&/^}/{p=0} END{print (i && f > i && k > f) ? 1 : 0}' "$D")"
 arm 'S3 the window'"'"'s record: its start URL, then every goto and screen --url typed into it' 3 \
   "$(grep -c 'lastHost: /^https?:\\/\\//i.test(startUrl)\|be.lastHost = frontTab.hostOf(s.url)\|be.lastHost = frontTab.hostOf(req.url)' "$D")"
 
