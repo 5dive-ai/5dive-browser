@@ -4,7 +4,8 @@
 # as it was once the view ends.
 #
 #   U  lib/viewer-fit.cjs's rule, with no display: under 600 CSS px wide is a
-#      phone and gets a fit; 600 and wider is a desktop and gets nothing
+#      phone and gets a fit; 600 and wider is a desktop and gets nothing.
+#      U2 (DIVE-8487): a phone taller than the screen keeps its shape
 #   L  LIVE, when this machine has Xvfb and Chrome (GitHub's ubuntu runner does).
 #      The product's own plain Chrome (bin/session-daemon --input, the login
 #      view's launch: no CDP) on a 1280x800 Xvfb, showing a login page that
@@ -70,6 +71,18 @@ console.log(["390x700", "599x900", "600x900", "1440x900", "1024x768", "390", "ab
 ' "$FIT")
 arm 'U1 under 600 px wide is a phone; 600 and up, and anything malformed, is not' \
   '390x700 599x900 - - - - - - - -' "$u"
+
+# DIVE-8487: a phone taller than the screen keeps its shape (no black band under
+# the window); one that fits is asked for exactly; a desktop gets no size.
+u=$(node -e '
+const { phone, fitSize } = require(process.argv[1]);
+const r = (s) => { const f = fitSize(phone(s), 1280, 800); return f ? `${f.w}x${f.h}` : "-"; };
+console.log(["390x664", "390x800", "430x888", "412x915", "1440x900"].map(r).join(" "));
+' "$FIT")
+arm 'U2 the window fills the phone: as asked when it fits the screen, the phone'"'"'s shape cut to the screen when taller' \
+  '390x664 390x800 387x800 360x800 -' "$u"
+arm 'U2 ...and fit() asks X for that size, not a height cut alone' 1 \
+  "$(grep -c 'const want = { x: 0, y: 0, ...fitSize(p, x.width, x.height) };' "$FIT")"
 
 # ------------------------------------------------------------- B: bin/browser
 out=$("$BROWSER" viewer-redeem example.com --nonce=- --session=s1 --client='390x700;id' </dev/null 2>&1); rc=$?

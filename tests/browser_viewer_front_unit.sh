@@ -8,6 +8,8 @@
 #   U  lib/front-tab.cjs against fake pages
 #      U1 on-site: the host or one under it, www. either way, never a look-alike
 #      U2 pick: the driven tab when it is on the site, else the first on it, else none
+#      U3 (DIVE-8487) plan: keep the site's tab, else reuse a blank one; close the
+#         other blanks and second tabs of the site, never another site's or a spared one
 #   S  the real bin/session-daemon over its socket, with a several-tab stub
 #      S1 Play in front, a bing.com tab behind: `front` brings bing.com forward,
 #         opens nothing, navigates nothing
@@ -16,6 +18,11 @@
 #      S4 input mode: handed to inputFront before any tab is touched (read in
 #         the source: it needs a real window; DIVE-7674)
 #      S5 a request with no http(s) url is refused, nothing moves
+#      S6 (DIVE-8487) a blank tab and a second tab of the site: the site's tab is
+#         shown, the blank one and the duplicate are closed, Play is untouched
+#      S7 (DIVE-8487) no tab on the site but a blank one: the blank tab is sent to
+#         the site, no tab is opened
+#      S8 (DIVE-8487) a duplicate that is a popup is left open
 #   E  end to end: two sites in one group, `viewer-redeem` through the real
 #      bin/browser and daemon
 #      E1 Play in front -> redeem bing.com -> bing.com's tab is in front; the
@@ -26,6 +33,7 @@
 #         where to connect
 #      N1 control: the pre-fix tree leaves Play in front (skipped where the base
 #         commit is not in the checkout)
+#      N2 control: 1.88.0 leaves S6's blank tab and duplicate open
 set -uo pipefail
 printf 'grading tree: %s @ %s\n' "$PWD" "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" >&2
 cd "$(dirname "$0")/.."
@@ -60,6 +68,20 @@ arm 'U1 on the site: the host, one under it, www. either way; never a look-alike
   'true true true false false false' "$(jq -r .u1 <<<"$u")"
 arm 'U2 pick: the first tab on the site, the driven one when it is on it, none when only a closed one is' \
   'true true true true' "$(jq -r .u2 <<<"$u")"
+u3=$(node -e '
+const t = require(process.argv[1]);
+const pg = (u) => ({ u, url: () => u, isClosed: () => false });
+const n = (ps) => ps.map((p) => p.u).join(",") || "-";
+const blank = pg("about:blank"), ntp = pg("chrome://newtab/"), play = pg("https://play.google.com/"),
+  b1 = pg("https://bing.com/"), b2 = pg("https://www.bing.com/search");
+const a = t.plan([blank, b1, play, b2, ntp], "bing.com", play);
+const b = t.plan([play, blank, ntp], "bing.com", play);
+const c = t.plan([play], "bing.com", play);
+const d = t.plan([b1, b2], "bing.com", b1, (p) => p === b1);
+console.log([a.keep.u, n(a.close), b.reuse.u, n(b.close), String(c.keep), String(c.reuse), n(c.close), d.keep.u, n(d.close),
+  [blank, ntp, play].map((p) => t.isBlank(p.u)).join("/")].join(" "));' "$LIB")
+arm 'U3 plan: keep the site'"'"'s tab and close the blanks and its duplicate; else reuse a blank; never another site; a spared tab is neither shown nor closed' \
+  'https://bing.com/ about:blank,https://www.bing.com/search,chrome://newtab/ about:blank chrome://newtab/ null null - https://www.bing.com/search - true/true/false' "$u3"
 
 # ================================================================ the stub
 # Several tabs. PWTABS is the urls the browser opens with, PWFRONT the one in
@@ -79,6 +101,8 @@ const mk = (url) => {
     on: () => {}, off: () => {}, once: () => {},
     goto: async (x) => { rec({ call: 'goto', tab: id, url: x }); u = x; dump(); return null; },
     bringToFront: async () => { rec({ call: 'bringToFront', tab: id }); frontId = id; dump(); },
+    opener: async () => ((JSON.parse(process.env.PWPOPUPS || '[]')).includes(id) ? pages[0] : null),
+    close: async () => { rec({ call: 'close', tab: id }); const i = pages.indexOf(p); if (i >= 0) pages.splice(i, 1); dump(); },
     waitForLoadState: async () => {}, waitForTimeout: async () => {},
     title: async () => 'tab' + id, content: async () => '<html></html>',
     evaluate: async () => ({ nodes: [], marker: null }), screenshot: async () => Buffer.from('') };
@@ -134,10 +158,30 @@ arm 'S3 ...the Play tab untouched' "$PLAY https://bing.com/" "$(tabs_of s3)"
 # another site (lib/front-tab.cjs inputFront, graded in
 # browser_connect_group_view_unit.sh).
 arm 'S4 input mode: frontRequest hands it to inputFront, before it touches a Playwright tab' 1 \
-  "$(awk '/^async function frontRequest\(/{p=1} p&&/if \(input\) \{/{i=NR} p&&/frontTab\.inputFront\(/{f=NR} p&&/frontTab\.pick\(/{k=NR} p&&/^}/{p=0} END{print (i && f > i && k > f) ? 1 : 0}' "$DAEMON")"
+  "$(awk '/^async function frontRequest\(/{p=1} p&&/if \(input\) \{/{i=NR} p&&/frontTab\.inputFront\(/{f=NR} p&&/frontTab\.(pick|plan)\(/{k=NR} p&&/^}/{p=0} END{print (i && f > i && k > f) ? 1 : 0}' "$DAEMON")"
 
 o=$(node "$DAEMON" call "$TMP/s1.sock" <<<'{"op":"front","url":"javascript:alert(1)"}' 2>&1); rc=$?
 arm 'S5 a front with no http(s) url is refused (nothing ran), nothing moves' "70 1" "$rc $(front_of s1)"
+
+# DIVE-8487: one tab per Connect.
+mkdir -p "$TMP/s6"; chmod 700 "$TMP/s6"
+start_daemon "$DAEMON" "$TMP/s6" "$TMP/s6.sock" "[\"about:blank\",\"https://bing.com/\",\"$PLAY\",\"https://www.bing.com/search\"]" 2 s6 \
+  || arm 'S6 the daemon is up' yes no
+o=$(node "$DAEMON" call "$TMP/s6.sock" <<<'{"op":"front","url":"https://bing.com/"}'); rc=$?
+arm 'S6 a blank tab and a second bing.com tab: bing.com is shown, the blank and the duplicate closed, Play kept' \
+  "0 1 0 3 https://bing.com/ $PLAY|" "$rc $(front_of s6) $(calls s6 close) $(tabs_of s6)|$(calls s6 newPage)"
+mkdir -p "$TMP/s7"; chmod 700 "$TMP/s7"
+start_daemon "$DAEMON" "$TMP/s7" "$TMP/s7.sock" "[\"$PLAY\",\"about:blank\"]" 0 s7 || arm 'S7 the daemon is up' yes no
+o=$(node "$DAEMON" call "$TMP/s7.sock" <<<'{"op":"front","url":"https://bing.com/"}'); rc=$?
+arm 'S7 no bing.com tab but a blank one: the blank tab goes to the site, no tab is opened' \
+  "0 1 1@https://bing.com/ |$PLAY https://bing.com/" "$rc $(front_of s7) $(calls s7 goto) $(calls s7 newPage)|$(tabs_of s7)"
+arm 'S7 ...and says it reused one' true "$(jq -r .reused <<<"$o")"
+mkdir -p "$TMP/s8"; chmod 700 "$TMP/s8"
+PWPOPUPS='[1]' start_daemon "$DAEMON" "$TMP/s8" "$TMP/s8.sock" '["https://bing.com/","https://bing.com/oauth"]' 0 s8 \
+  || arm 'S8 the daemon is up' yes no
+o=$(node "$DAEMON" call "$TMP/s8.sock" <<<'{"op":"front","url":"https://bing.com/"}'); rc=$?
+arm 'S8 a second bing.com tab that is a popup is left open' "0 0 |https://bing.com/ https://bing.com/oauth" \
+  "$rc $(front_of s8) $(calls s8 close)|$(tabs_of s8)"
 
 # ================================================================ E  end to end
 export FIVEDIVE_BROWSER_PROFILE_ROOT="$TMP/pr" FIVEDIVE_BROWSER_ADAPTER_DIR="$TMP/ad"
@@ -210,6 +254,18 @@ if git -C "$ROOT" cat-file -e "$BASE:browser/bin/browser" 2>/dev/null; then
   arm 'N1 control: before the fix, the bing.com viewer is handed over with Play still in front' "0 0" "$rc $(front_of n1)"
 else
   SKIP=$((SKIP+1)); echo "SKIP: N1 — base $BASE is not in this checkout"
+fi
+
+BASE2=0014691   # 5dive-browser 1.88.0, before DIVE-8487
+if git -C "$ROOT" cat-file -e "$BASE2:browser/bin/session-daemon" 2>/dev/null; then
+  mkdir -p "$TMP/old2" "$TMP/n2"; chmod 700 "$TMP/n2"; git -C "$ROOT" archive "$BASE2" browser | tar -x -C "$TMP/old2"
+  start_daemon "$TMP/old2/browser/bin/session-daemon" "$TMP/n2" "$TMP/n2.sock" "[\"about:blank\",\"https://bing.com/\",\"$PLAY\",\"https://www.bing.com/search\"]" 2 n2 \
+    || arm 'N2 the 1.88.0 daemon is up' yes no
+  node "$TMP/old2/browser/bin/session-daemon" call "$TMP/n2.sock" <<<'{"op":"front","url":"https://bing.com/"}' >/dev/null; rc=$?
+  arm 'N2 control: 1.88.0 leaves the blank tab and the second bing.com tab open (S6 is red there)' \
+    "0 |4" "$rc $(calls n2 close)|$(jq -r '.tabs | length' "$TMP/n2.front")"
+else
+  SKIP=$((SKIP+1)); echo "SKIP: N2 — base $BASE2 is not in this checkout"
 fi
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
