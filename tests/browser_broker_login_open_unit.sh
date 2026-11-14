@@ -17,6 +17,8 @@
 #   L1  login serve up, its view live: the brokered snapshot exits 69 and says
 #       vk.com is still open in the owner's sign-in window, press Done
 #   L1b ...and does NOT say the socket catch-all, nor send anyone to `serve`
+#   L1c DIVE-8450: ...and names the admin stop (`serve <site> --stop`, which keeps
+#       the login), for a Done that never arrives
 #   L2  `_serve-offered` itself fails (non-zero) with the same words, instead of
 #       the 0 that started nothing
 #   L3  login serve up, NO view, no session daemon on the box: "no warm session
@@ -80,7 +82,10 @@ arm "L1 exit is 69 (unavailable)" 69 "$rc"
 arm "L1 says the owner's sign-in window is still open" yes "$(has "$SITE is still open in the owner's sign-in window" "$out")"
 arm "L1 asks for the owner's Done" yes "$(has "ask them to press Done on $SITE" "$out")"
 arm "L1b not the socket catch-all" no "$(has "no browser answers on its socket" "$out")"
-arm "L1b does not send anyone to \`serve\` (it only answers 'already serving')" no "$(has "5dive browser serve $SITE" "$out")"
+arm "L1b does not send anyone to \`serve\` (it only answers 'already serving')" no "$(has "5dive browser serve $SITE" "${out//5dive browser serve $SITE --stop/}")"
+# DIVE-8450 (report 975): a Done that never arrives must not be the only way out.
+arm "L1c names the admin stop that needs nobody at the window" yes "$(has "sudo 5dive browser serve $SITE --stop" "$out")"
+arm "L1c ... and says the login is kept" yes "$(has "the login is kept" "$out")"
 [[ "$FAIL" == 0 ]] || printf '   L1 output: %s\n' "$out"
 
 # L2: the root hop itself.
