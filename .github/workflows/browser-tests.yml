@@ -284,6 +284,11 @@ jobs:
       # mutants (no gate, no side-effect check), and the served daemon under Xvfb.
       - name: act point and eval harness
         run: bash tests/browser_act_point_eval_unit.sh
+      # DIVE-8443: an act of page scripts only is read-only — the answer, and no page.md,
+      # page.html, tree.json, page.png or page text, cold and served, on the recording
+      # stubs, with a mutant (no read-only switch) and a click-step control.
+      - name: act read-only harness
+        run: bash tests/browser_act_read_only_unit.sh
       # DIVE-6795: a served act answers with what changed (lib/look.cjs), its report
       # arrives split, and page.md is derived only for --full. Daemon on the stub.
       - name: act look harness

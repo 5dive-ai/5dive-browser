@@ -8,6 +8,19 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — an act of page scripts only saves nothing of the page (DIVE-8443), 1.85.0
+- An act whose steps are only `eval` (after a `goto` or `wait_for`) is now read-only: it prints each script's
+  answer and nothing else. No page.md, page.html, tree.json or page.png is written, no "what changed" is printed,
+  and with no `--out` no artifact folder is made. Before, every act also saved the page and its text, so an owner's
+  "read only whether each chat is muted, never a muted chat" could not be kept: the chat list's text is every
+  chat's last message (box report 970).
+- `--wait-for` on such an act becomes a wait before the first script; `--expect` is refused (check inside the
+  expression); `--full` reads the page as before. A served browser started before this version still sends the
+  whole page, and bin/browser keeps only its url.
+- New: `references/telegram-web.md` in the use-browser skill, read from Telegram Web K's source and not yet
+  measured live: whose account it is (`rootScope.myId`), which chats are muted (`is-muted`, and `backwards` while
+  it changes), and why a just-drawn row must be read twice.
+
 ### Fixed — a sign-in whose login lasts only while the browser runs survives Done (DIVE-8367), 1.84.0
 - Some sites keep their login in a cookie with no expiry. Chrome held it in memory only, Done stopped the sign-in
   window, and the check that followed started a fresh Chrome, which drops such cookies. So the site read "still on
