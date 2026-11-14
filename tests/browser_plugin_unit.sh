@@ -3221,6 +3221,36 @@ mkdir -p "$TMP/noadp8258"
 tc 'T21k (mutant) with no adapter the same signed-in Instagram is the UNKNOWN of bug 902' 'UNKNOWN (no adapter for instagram.com' \
    "$(FIVEDIVE_BROWSER_ADAPTER_DIR="$TMP/noadp8258" st8258 instagram.com "<html><head>$IG_IN</head></html>")"
 
+# === T21u instagram.com: a password field is not a sign-out (DIVE-8457) ===
+# Box reports 942/974: a partner client signs in to Instagram, taps Done, and the
+# box reads «войдите снова». The old signed-out marker's second half was ANY
+# `type=password` input in the page, so a signed-in page carrying one (a
+# confirm-password field, a settings dialog) read expired and Done reopened the
+# window. The signed-in page is now named by its own record (a non-zero account
+# id); a page that shows neither record reads UNKNOWN, not expired.
+IG_IN_PW="$IG_IN"'<div role="dialog"><label>Confirm your password</label><input type="password" name="password" autocomplete="current-password"></div>'
+IG_ODD='<title>Instagram</title><div>Something went wrong</div><input type="password" name="password">'
+IPOS="$(jq -r '.probe.logged_in_when_dom_matches // empty' "$IADP")"
+IMARK_OLD='CurrentUserInitialData",\[\],\{"ACCOUNT_ID":"0"|type=["'"'"']?password'
+t  'T21u (control) the pre-fix marker read a signed-in page with a password field as signed out' 'match' \
+   "$(grep -qiE "$IMARK_OLD" <<<"$IG_IN_PW" && echo match || echo miss)"
+t  'T21u the marker does NOT match a signed-in page with a password field' 'miss' \
+   "$(grep -qiE "$IMARK" <<<"$IG_IN_PW" && echo match || echo miss)"
+t  'T21u ...nor a bare password field on a page with no account record' 'miss' \
+   "$(grep -qiE "$IMARK" <<<"$IG_ODD" && echo match || echo miss)"
+t  'T21u the adapter names the signed-in page (it did not before)' 'yes' "$([[ -n $IPOS ]] && echo yes || echo no)"
+t  'T21u ...the signed-in marker MATCHES a real account id' 'match' "$(grep -qiE "$IPOS" <<<"$IG_IN_PW" && echo match || echo miss)"
+t  'T21u ...and NOT the logged-out record (account 0)' 'miss' "$(grep -qiE "$IPOS" <<<"$IG_OUT_SHELL" && echo match || echo miss)"
+t  'T21u ...nor the drawn login form' 'miss' "$(grep -qiE "$IPOS" <<<"$IG_OUT_SHELL$IG_OUT_FORM" && echo match || echo miss)"
+unset FIVEDIVE_BROWSER_ADAPTER_DIR
+tc 'T21u status: a signed-in Instagram page with a password field reads authenticated' 'authenticated' \
+   "$(st8258 instagram.com "<html><head>$IG_IN_PW</head></html>")"
+tc 'T21u status: the drawn login form alone (no record yet) still reads expired' 'session expired' \
+   "$(st8258 instagram.com "<html><body>$IG_OUT_FORM</body></html>")"
+tc 'T21u status: a page with neither record reads UNKNOWN, not expired' 'UNKNOWN (the page never showed either' \
+   "$(FIVEDIVE_BROWSER_PROBE_WAIT_MS=400 FIVEDIVE_BROWSER_PROBE_POLL_MS=200 st8258 instagram.com "<html>$IG_ODD</html>")"
+export FIVEDIVE_BROWSER_ADAPTER_DIR="$ADPOVERRIDE"
+
 # --- T9x: the per-site adblock off switch (DIVE-4516) -------------------------
 #
 # ONE extension is allowed in an agent profile (uBlock Origin Lite, pinned by
