@@ -8,6 +8,19 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a Done that cannot confirm the login no longer locks the agent out (DIVE-8450), 1.86.0
+- The viewer's Done (on an agent's ask, and on the settings screen's or a partner cabinet's own link)
+  reopened the owner's sign-in window whenever its check did not read "signed in". While that window is up,
+  every agent command on the site is refused, so a check that simply could not tell (a site with no adapter
+  whose header shows "Log in", a bot check met by the headless check, a browser that would not start) locked
+  the agent out of a login the owner had just made, and asked the owner for Done again and again (box report 975).
+- Done now reopens the window only on a sign-out the box saw: the adapter's signed-out marker, a sign-in form,
+  a landing on a sign-in address, or a sign-in window title. Anything else closes the window and hands the site
+  to the agent, and the chat says "connected, not confirmed". The agent's page commands still refuse a sign-in
+  page themselves, so its first real step is the test.
+- "Still open in the owner's sign-in window" now also names the way out that needs nobody at the window:
+  `sudo 5dive browser serve <site> --stop`, which keeps the login (1.84.0), so the agent's next command starts.
+
 ### Fixed — an act of page scripts only saves nothing of the page (DIVE-8443), 1.85.0
 - An act whose steps are only `eval` (after a `goto` or `wait_for`) is now read-only: it prints each script's
   answer and nothing else. No page.md, page.html, tree.json or page.png is written, no "what changed" is printed,

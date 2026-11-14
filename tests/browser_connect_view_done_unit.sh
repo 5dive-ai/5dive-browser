@@ -8,7 +8,13 @@
 #      the bind this link was minted under, once; revoke -> stop -> probe; the
 #      agent gets the chat Done's words; the chat message is edited to the
 #      verdict with no button left, and the chat's own Done is refused after it
-#   N  not signed in yet: a fresh link to the same window and a fresh Done
+#   N  not signed in yet (a sign-out the box saw): a fresh link to the same
+#      window and a fresh Done
+#   U  DIVE-8450: a check that could not confirm the login (a browser that would
+#      not start, a header "Log in" control, a bot check met by the probe) is
+#      NOT a sign-out: the window stays closed, the agent is told to carry on,
+#      and the chat says "connected, not confirmed". On the ask's Done and on a
+#      link no agent asked for. Red on the pre-fix tree (it reopened the window).
 #   C  a challenge ask: "carrying on", and the challenge note
 #   S  DIVE-8354: a link NO agent asked for (the settings screen's Connect): its
 #      Done checks the sign-in the same way and says "not signed in yet" with a
@@ -112,6 +118,19 @@ case "$1" in
       printf '\nThis box cannot start a browser as this seat, so the session states above were\nnot read. Reproduce it directly to see the\nreason:\n  google-chrome --headless --no-sandbox --disable-gpu --user-data-dir=$(mktemp -d) --dump-dom about:blank\n' >&2
       exit 69
     fi
+    # DIVE-8450: what a real `status <site>` prints for each reading. Signed out:
+    # a sign-in form seen. Header only: a "Log in" control in an app's header,
+    # which an app shows signed in too. Challenge: a bot check met by the
+    # headless probe. None of the last three is a sign-out the box saw.
+    if [[ -f "$FAKE_CTL.signedout" ]]; then
+      printf '  %-20s %s\n' "$2" 'session expired — human action required (generic check: a sign-in form on the page (<input type="password" name="password">))'; exit 75
+    fi
+    if [[ -f "$FAKE_CTL.headeronly" ]]; then
+      printf '  %-20s %s\n' "$2" 'session expired — human action required (generic check: a "Log in" control in the page header)'; exit 75
+    fi
+    if [[ -f "$FAKE_CTL.challenge" ]]; then
+      printf '  %-20s %s\n' "$2" 'CHALLENGE — a robot check is on the page (the agent clears it itself; it asks you first only where you turned that stop on: 5dive browser gate)'; exit 75
+    fi
     echo "$2: authenticated"; ;;
 esac
 exit 0
@@ -159,7 +178,7 @@ priv() { printf '%s\0' "$@" | "$BROWSER" _connect; }
 # exact-match arms take stdout alone; stderr goes to its own file (DIVE-7675 iteration 3: a stray
 # "Broken pipe" on stderr failed C1 through 2>&1). V3 checks its stderr refusal on purpose.
 vd() { priv view-done "$@" 2>"$TMP/vd.err"; }
-reset() { : >"$TMP/stub.log"; : >"$FAKE_LOG"; : >"$SENT_LOG"; rm -f "$TMP"/ctl.{broken,snapclear}; }
+reset() { : >"$TMP/stub.log"; : >"$FAKE_LOG"; : >"$SENT_LOG"; rm -f "$TMP"/ctl.{broken,snapclear,signedout,headeronly,challenge}; }
 last_code() { jq -r 'select(.path|test("sendMessage")) | .form.reply_markup' "$TMP/stub.log" | tail -1 | jq -r '.inline_keyboard[0][0].callback_data' | sed 's/^bconn://'; }
 last_bind() { jq -r 'select(.path=="/shell/browser-viewer-bind") | .body' "$TMP/stub.log" | tail -1 | jq -r .bind; }
 edits() { jq -c 'select(.path|test("editMessageText")) | .form' "$TMP/stub.log"; }
@@ -218,7 +237,7 @@ t  "V8 ... runs nothing" "" "$(cat "$FAKE_LOG")"
 reset
 "$BROWSER" connect-request booking.com --reason="r" >/dev/null 2>&1
 out=$(priv tap "$(last_code)" "$OWNER" 2>&1); DONE=$(sed -n 's/^done=//p' <<<"$out"); BIND=$(last_bind)
-: >"$TMP/ctl.broken"; : >"$TMP/stub.log"
+: >"$TMP/ctl.signedout"; : >"$TMP/stub.log"
 out=$(vd booking.com "$BIND"); rc=$?
 tc "N1 a login that did not take: not signed in yet" "result=notyet" "$out"
 AGAIN=$(sed -n 's/^again=//p' <<<"$out")
@@ -230,7 +249,7 @@ tc "N2 the chat says it is not confirmed" "is not confirmed logged in" "$(jq -r 
 NEW=$(jq -r '.reply_markup' <<<"$E" | jq -r '.inline_keyboard[0][0].callback_data' | sed 's/^bdone://')
 t  "N2 ... and carries a fresh Done" 1 "$([[ "$NEW" =~ ^[0-9a-f]{48}$ && "$NEW" != "$DONE" ]] && echo 1)"
 tc "N3 the agent is told, and told to wait" "wait for their next Done" "$(cat "$SENT_LOG")"
-rm -f "$TMP/ctl.broken"; : >"$SENT_LOG"
+rm -f "$TMP/ctl.signedout"; : >"$SENT_LOG"
 out=$(vd booking.com "$BIND2")
 t  "N4 the viewer's Done on the new link finishes it" "result=saved" "$out"
 out=$(priv done "$NEW" "$OWNER" 2>&1); rc=$?
@@ -250,7 +269,7 @@ t  "C1 ... and the chat says so" "✅ Thanks. The agent is carrying on with futu
 # The settings screen's Connect: serve, `viewer --bind=<its own>`, a person redeems it.
 # No connect-request, no tap, no Done code: nothing is indexed under the bind.
 SB=$(printf 'c%.0s' $(seq 32))
-reset; : >"$TMP/ctl.broken"; ticket booking.com "$SB" consumed
+reset; : >"$TMP/ctl.signedout"; ticket booking.com "$SB" consumed
 out=$(vd booking.com "$SB"); rc=$?
 tc "S1 not signed in, on a link no agent asked for: not signed in yet" "result=notyet" "$out"
 tn "S1 ... NOT 'already finished'" "result=gone" "$out"
@@ -285,6 +304,47 @@ ticket booking.com "$BIND" revoked
 t  "S8 an ask that really ended still reads 'already finished'" "result=gone" "$(vd booking.com "$BIND")"
 t  "S8 ... and runs nothing" "" "$(cat "$FAKE_LOG")"
 rm -f "$TMP/profiles/$ME/booking.com/.5dive-viewer.ticket"
+
+# ---- U: could not confirm is not signed out (DIVE-8450) ------------------------
+# Box report 975: app.chatplace.io signed in, the owner's Done, then the agent was
+# refused "still open in the owner's sign-in window" because the Done reopened it.
+for why in broken headeronly challenge; do
+  reset
+  "$BROWSER" connect-request app.chatplace.io --reason="r" >/dev/null 2>&1
+  out=$(priv tap "$(last_code)" "$OWNER" 2>&1); DONE=$(sed -n 's/^done=//p' <<<"$out"); BIND=$(last_bind)
+  : >"$TMP/ctl.$why"; : >"$TMP/stub.log"; : >"$FAKE_LOG"; : >"$SENT_LOG"
+  out=$(vd app.chatplace.io "$BIND")
+  t  "U1[$why] the ask's Done that could not confirm: handed over" "result=saved" "$out"
+  tn "U1[$why] ... no fresh link" "again=" "$out"
+  t  "U1[$why] ... the window was closed and not opened again" "viewer-revoke app.chatplace.io|serve app.chatplace.io --stop|status app.chatplace.io" "$(paste -sd'|' "$FAKE_LOG")"
+  t  "U1[$why] ... no fresh bind went to the viewer server" "" "$(jq -r 'select(.path=="/shell/browser-viewer-bind") | .body' "$TMP/stub.log")"
+  E=$(edits)
+  tc "U2[$why] the chat says connected, not confirmed" "✅ app.chatplace.io is connected, not confirmed" "$(jq -r .text <<<"$E")"
+  tn "U2[$why] ... never 'not confirmed logged in'" "not confirmed logged in" "$(jq -r .text <<<"$E")"
+  t  "U2[$why] ... and no Done button on it" "null" "$(jq -r .reply_markup <<<"$E")"
+  tc "U3[$why] the agent is told to carry on" "is yours: carry on now" "$(cat "$SENT_LOG")"
+  tn "U3[$why] ... never to wait for another Done" "wait for their next Done" "$(cat "$SENT_LOG")"
+done
+# A link no agent asked for (the partner cabinet's Connect, report 975's path).
+for why in broken headeronly challenge; do
+  reset; : >"$TMP/ctl.$why"; ticket app.chatplace.io "$SB" consumed
+  out=$(vd app.chatplace.io "$SB")
+  t  "U4[$why] the cabinet's Done that could not confirm: saved, nothing reopened" "result=saved" "$out"
+  t  "U4[$why] ... nothing served for a person again" "" "$(grep -E '^serve app.chatplace.io --login|^viewer app.chatplace.io' "$FAKE_LOG")"
+done
+rm -f "$TMP/profiles/$ME/app.chatplace.io/.5dive-viewer.ticket"
+# U6: the header reading the fake prints is the generic check's own words, so the
+# classifier's match cannot drift from what lib/generic-login.cjs really says.
+if command -v node >/dev/null; then
+  printf '<html><body><header><nav><a href="/pricing">Pricing</a><a href="/login">Log in</a></nav></header><main>x</main></body></html>' >"$TMP/hdr.html"
+  t  "U6 the generic check's header reading, word for word" 'out|a "Log in" control in the page header' "$(node "$ROOT/browser/lib/generic-login.cjs" "$TMP/hdr.html" | paste -sd'|')"
+fi
+# The pair's other half: a sign-out the box saw still reopens, on the cabinet's link too.
+reset; : >"$TMP/ctl.signedout"; ticket app.chatplace.io "$SB" consumed
+out=$(vd app.chatplace.io "$SB")
+tc "U5 a sign-in form after the cabinet's Done still reopens the window" "result=notyet" "$out"
+tc "U5 ... with a fresh link" "again=https://box.example.5dive.ai/browser/viewer/app.chatplace.io/" "$out"
+rm -f "$TMP/profiles/$ME/app.chatplace.io/.5dive-viewer.ticket"
 
 # ---- E: end to end through the self-hosted server and the page's button --------
 command -v node >/dev/null || { echo "SKIP E: needs node"; printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"; exit $(( FAIL > 0 )); }
@@ -353,7 +413,7 @@ t  "E5 ... and NOTHING reaches the agent" "" "$(cat "$SENT_LOG")"
 t  "E5 ... nothing was run" 0 "$(grep -v '^serve booking.com --login\|^viewer booking.com\|^serve booking.com$' "$FAKE_LOG" | grep -c 'revoke\|--stop\|^status')"
 
 # E6 (DIVE-8354): the settings screen's link, through the server and the page's button.
-reset; : >"$TMP/ctl.broken"
+reset; : >"$TMP/ctl.signedout"
 ticket booking.com "$SB" consumed
 printf 'bind=%s\nexpires_at=%s\n' "$SB" "$(( $(date +%s) + 600 ))" >"$TMP/s/binds/booking.com"
 j=$(curl -s -X POST -H "origin: https://$LHOST" -H 'x-5dive-viewer: 1' "$B/browser/viewer/booking.com/$(printf 'a%.0s' $(seq 64))/redeem")
