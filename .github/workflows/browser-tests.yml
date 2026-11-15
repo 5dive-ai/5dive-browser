@@ -33,6 +33,10 @@ jobs:
       # "Continue with Google" is handed back for that button. Pure node, real captures.
       - name: page check harness
         run: bash tests/browser_page_check_unit.sh
+      # DIVE-8523: a change-password form on a signed-in page is not a sign-in, and the
+      # served browser opens at 1280x800. Pure node + the real bin/browser on a fake Chrome.
+      - name: sign-in form harness
+        run: bash tests/browser_signin_form_unit.sh
       # DIVE-6965: the ref walk enters shadow roots and offers role-less clickables.
       # A DOM shim with an inherited cursor, pure node, three mutants.
       - name: page map harness

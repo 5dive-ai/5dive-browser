@@ -1,0 +1,19 @@
+<!-- DIVE-8523: the shape measured in box report 1004's act dumps (wappi.pro/dashboard/<uuid>,
+     2026-11-15): a signed-in cabinet with a change-password dialog (change-password-current|new|repeat,
+     the first autocomplete=current-password), a hidden name=fake_pass anti-autofill decoy, no login form.
+     Rebuilt from the marker counts and ids, not copied: the dump is a customer's page. -->
+<html><head><title>Личный кабинет пользователя - Wappi</title></head><body>
+<header><nav><a href="/dashboard">Главная</a><a href="/dashboard/agents">ИИ-Агенты</a><a href="/logout">Выйти</a></nav></header>
+<input type="password" name="fake_pass" style="display:none" tabindex="-1" autocomplete="off">
+<main><h1>Профили</h1><div id="feed">profiles</div></main>
+<div class="modal fade" id="changePasswordModal" tabindex="-1" role="dialog">
+  <div class="modal-dialog"><div class="modal-content">
+    <form id="change-password-form" method="post" action="/api/user/password">
+      <input type="password" id="change-password-current" autocomplete="current-password" class="form-control">
+      <input type="password" id="change-password-new" class="form-control">
+      <input type="password" id="change-password-repeat" class="form-control">
+      <button type="submit">Сохранить</button>
+    </form>
+  </div></div>
+</div>
+</body></html>
