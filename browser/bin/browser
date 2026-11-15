@@ -147,7 +147,13 @@ PUBLIC_SITE="_public"
 # would approve whatever the page became.
 APPROVAL_TTL=1800
 
-die() { printf '%s: %s\n' "$PROG" "$2" >&2; exit "$1"; }
+die() {
+  local msg="$2"
+  # DIVE-8546: any refusal that carries snap-confine's words says what they mean.
+  [[ "$msg" == *"not a snap cgroup"* && "$msg" != *"is a snap, which cannot start"* ]] \
+    && msg+=" [this box's Chromium is a snap, which cannot start from an agent. Fix: sudo 5dive browser setup]"
+  printf '%s: %s\n' "$PROG" "$msg" >&2; exit "$1"
+}
 
 # as_root <what needs root> — DIVE-7183 (DIVE-7172's voice fix): a box-wide
 # change is root's, and the reader of a refusal is an AGENT whose owner has no
@@ -2085,13 +2091,15 @@ _stack_install_chrome() {
     _chrome >/dev/null && { _stack_say "installed google-chrome-stable"; return 0; }
     g_err="$_STACK_APT_ERR"
   fi
-  # Ubuntu's chromium deb is only a shim that installs the snap: with no snapd
-  # it cannot work, and that is worth one line rather than a silent try.
-  if grep -qs '^ID=ubuntu' "$STACK_ROOT/etc/os-release" && ! _have snap; then
-    _stack_say "installing chromium (apt, the fallback; on Ubuntu it is a snap and this box has no snapd, so it will likely fail)..."
-  else
-    _stack_say "installing chromium (apt, the fallback)..."
+  # Ubuntu's chromium deb is only a shim that installs the snap, and a snap cannot
+  # start from an agent (DIVE-8546, see _chrome), so on Ubuntu it is not a fallback.
+  if grep -qs '^ID=ubuntu' "$STACK_ROOT/etc/os-release"; then
+    local arch; arch=$(dpkg --print-architecture 2>/dev/null)
+    _stack_warn "$([[ "$arch" == amd64 ]] && echo "could not install google-chrome-stable" || echo "Google Chrome has no build for this box (${arch:-unknown})"), and $(_chrome_snap_only && echo "$SNAP_CHROME_LINE" || echo "Ubuntu's Chromium is a snap, which cannot start from an agent, so it is not installed instead")"
+    _stack_apt_said "install google-chrome-stable" "$g_err"
+    return 1
   fi
+  _stack_say "installing chromium (apt, the fallback)..."
   _stack_apt_update; _stack_apt install chromium
   _chrome >/dev/null && { _stack_say "installed chromium (fallback: no google-chrome-stable for this box)"; return 0; }
   _stack_warn "could not install a chrome (google-chrome-stable, or chromium as fallback)"
@@ -2451,12 +2459,47 @@ _setup_not_ready() {
 }
 
 # ------------------------------------------------------------------------ auth
+# A SNAP IS NOT A CHROME HERE (DIVE-8546). On Ubuntu `chromium` is /snap/bin/chromium
+# (a link to /usr/bin/snap) and `chromium-browser` is a deb shim script that execs
+# it. A seat's service runs in system.slice with no user session bus, so `snap run`
+# cannot move Chrome into its snap.chromium scope and snap-confine refuses every
+# launch: "<cgroup> is not a snap cgroup for tag snap.chromium.chromium" (rapid-
+# cedar, box bug 1025). Counting one as "a chrome" meant setup said "already here:
+# chromium" and google-chrome-stable was never installed. So a snap is skipped, and
+# Google's names come first. The order and the skip are browser-stack.sh
+# `_bs_chrome` in 5dive-api, word for word: the health row and this refusal must
+# be the same fact.
+SNAP_CHROME_LINE="this box's Chromium is a snap, which cannot start from an agent"
+_chrome_is_snap() {  # <name on PATH> -> 0 when it is the snap, or a shim onto it
+  local p r
+  p=$(command -v "$1" 2>/dev/null) || return 1
+  r=$(readlink -f -- "$p" 2>/dev/null) || r="$p"
+  case "$r" in /snap/*|*/bin/snap) return 0 ;; esac
+  [[ -f "$r" && "$(head -c 2 -- "$r" 2>/dev/null)" == '#!' ]] \
+    && head -c 8192 -- "$r" 2>/dev/null | grep -qE '/snap/bin/|snap run'
+}
 _chrome() {
   local c
-  for c in google-chrome chromium chromium-browser google-chrome-stable; do
-    command -v "$c" >/dev/null 2>&1 && { echo "$c"; return 0; }
+  for c in google-chrome google-chrome-stable chromium chromium-browser; do
+    command -v "$c" >/dev/null 2>&1 || continue
+    _chrome_is_snap "$c" && continue
+    echo "$c"; return 0
   done
   return 1
+}
+# _chrome_snap_only — 0 when this box has no usable chrome and a snap one is why.
+_chrome_snap_only() {
+  local c
+  _chrome >/dev/null && return 1
+  for c in chromium chromium-browser google-chrome google-chrome-stable; do
+    _chrome_is_snap "$c" && return 0
+  done
+  return 1
+}
+# _chrome_none_why — the plain reason a box has no chrome to launch.
+_chrome_none_why() {
+  if _chrome_snap_only; then printf '%s. Fix: %s' "$SNAP_CHROME_LINE" "$SETUP_CMD"
+  else printf 'no chrome on this box'; fi
 }
 
 # A HEADLESS LAUNCH ALWAYS HAS A WALL-CLOCK CAP (DIVE-5375). --virtual-time-budget
@@ -2699,7 +2742,7 @@ cmd_auth() {
 ' \
     "$site" "$(_group_name "$joined")" "$site" >&2
 
-  local chrome; chrome=$(_chrome) || die "$E_UNAVAILABLE" "no Chrome or Chromium on this box — auth hands a real browser to a human and there is nothing to hand over."
+  local chrome; chrome=$(_chrome) || die "$E_UNAVAILABLE" "$(_chrome_none_why) — auth hands a real browser to a human and there is nothing to hand over."
 
   # NOT headless, and no automation flags: this window is for a PERSON. What this
   # capability IS, in the words the decision landed on (lodar, 2026-09-07): a
@@ -3287,7 +3330,7 @@ _probe() {
   fi
   local chrome=""
   if (( ! warm )); then
-    chrome=$(_chrome) || { echo "UNKNOWN (no chrome on this box)"; return 0; }
+    chrome=$(_chrome) || { echo "UNKNOWN ($(_chrome_none_why))"; return 0; }
   fi
   local url; url=$(_site_url "$site")
   local marker; marker=$(_site_logged_out_marker "$site")
@@ -4411,7 +4454,7 @@ cmd_run() {
     return $?
   fi
 
-  local chrome; chrome=$(_chrome) || die "$E_UNAVAILABLE" "no chrome on this box — an action needs the same browser the profile was logged in with."
+  local chrome; chrome=$(_chrome) || die "$E_UNAVAILABLE" "$(_chrome_none_why) — an action needs the same browser the profile was logged in with."
   # PLAYWRIGHT TAKES A PATH, NOT A NAME. _chrome answers with whatever `command -v`
   # found first — the bare word `google-chrome` — which bash resolves through PATH
   # at every exec and Playwright's executablePath does not. Measured on
@@ -4884,7 +4927,7 @@ cmd_capture() {
   local dir="$_SITE_DIR"
   [[ -n "$url" ]] || url="$(_site_url "$site")"
   [[ "$url" =~ ^https?://[^[:space:]]+$ ]] || die "$E_USAGE" "--url must be an http(s) URL"
-  local chrome; chrome=$(_chrome) || die "$E_UNAVAILABLE" "no chrome on this box"
+  local chrome; chrome=$(_chrome) || die "$E_UNAVAILABLE" "$(_chrome_none_why)"
   local served=0
   if _serve_running "$dir" >/dev/null; then
     _daemon_live "$dir" || die "$E_UNAVAILABLE" "$site is served and its browser holds the profile, but no session daemon answers to render through. Stop it first:  5dive browser serve $site --stop"
@@ -5881,7 +5924,7 @@ _wait_listening() {  # _wait_listening <port> <pid>
 _serve_requires() {
   local missing=()
   _have Xvfb || missing+=("Xvfb (xvfb)")
-  _chrome >/dev/null || missing+=("chromium")
+  _chrome >/dev/null || { if _chrome_snap_only; then missing+=("a chrome that can start ($SNAP_CHROME_LINE)"); else missing+=("chromium"); fi; }
   (( ${#missing[@]} == 0 )) && return 0
   die "$E_UNAVAILABLE" "this box cannot run a server-mode browser: missing $(printf "%s, " "${missing[@]}" | sed "s/, $//"). A managed 5dive box installs these at provision time; on a self-hosted box install them once."
 }
@@ -7064,7 +7107,7 @@ _page_open() {  # _page_open <site> <url>
     return 0
   fi
 
-  local chrome; chrome=$(_chrome) || die "$E_UNAVAILABLE" "no chrome on this box — a render needs the same browser the profile was logged in with."
+  local chrome; chrome=$(_chrome) || die "$E_UNAVAILABLE" "$(_chrome_none_why) — a render needs the same browser the profile was logged in with."
 
   # THE WARM SESSION IS NOT CYCLED (DIVE-4621). The stop-render-restart below
   # exists for one reason — Chrome allows one instance per --user-data-dir, so a
@@ -10532,7 +10575,7 @@ _cic_connect() {
   local cl chrome; cl=$(command -v claude) || die "$E_UNAVAILABLE" "no claude command for this seat; Claude in Chrome is a Claude Code feature. Nothing changed."
   _have script || die "$E_UNAVAILABLE" "the 'script' command (util-linux) is missing, and the agent's login needs a terminal to run in. Nothing changed."
   [[ -d "$(_seat_dir)" ]] || die "$E_UNAVAILABLE" "this seat has no browser store yet. Create it once: $SETUP_CMD"
-  chrome=$(_chrome) && chrome=$(command -v "$chrome") || die "$E_UNAVAILABLE" "no Chrome on this box. Nothing changed."
+  chrome=$(_chrome) && chrome=$(command -v "$chrome") || die "$E_UNAVAILABLE" "$(_chrome_none_why). Nothing changed."
   local dir; dir="$(_own_site_dir "$CIC_SITE")"
   _ensure_profile_dir "$dir"
   _cic_link_home "$dir"
@@ -10922,7 +10965,7 @@ _totp_fill() {  # <site> <dir> [<url>]
   else
     (( ! _SITE_BROKERED )) && [[ ! -f "$dir/$TOTP_FILE_NAME" ]] && { printf '{"filled":false,"why":"no-seed"}\n'; return 1; }
     local chrome; chrome=$(_chrome) && chrome=$(command -v "$chrome" 2>/dev/null) \
-      || die "$E_UNAVAILABLE" "no chrome on this box to type the authenticator code in"
+      || die "$E_UNAVAILABLE" "$(_chrome_none_why) — nothing to type the authenticator code in"
     local driver="${FIVEDIVE_BROWSER_DRIVER:-$_SELF_DIR/driver-playwright}"
     jq -nc --arg p "$dir" --arg u "$url" --arg h "$host" '{mode:"totp", profile:$p, url:$u, host:$h}' \
       | FIVEDIVE_BROWSER_PROFILE="$dir" FIVEDIVE_BROWSER_CHROME="$chrome" \
@@ -13406,6 +13449,10 @@ _tmp_reap_cfg() {
 # launches get, its owner, and whether the per-launch claim worked and if not
 # why — so the next report carries the cause. Nothing for any other failure.
 _crash_note() {  # <chrome's words> [<status>] -> a sentence to append, or nothing
+  # DIVE-8546: snap-confine's refusal is not Chrome's words; say what it means.
+  if [[ "$1" == *"not a snap cgroup"* ]]; then
+    printf ' [%s. Fix: %s]' "$SNAP_CHROME_LINE" "$SETUP_CMD"; return 0
+  fi
   [[ "$1" == *"--database is required"* || "${2:-}" == 133 ]] || return 0
   local where e owner claim
   if [[ -z "$_TMP_CLAIM_WHY" ]]; then claim="the per-launch dir was claimed"

@@ -8,6 +8,18 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — the browser no longer picks a snap Chromium, which cannot start from an agent (DIVE-8546), 1.92.0
+- On Ubuntu, `chromium` is a snap and `chromium-browser` a shim onto it. A seat's service cannot start a snap
+  (snap-confine: "not a snap cgroup for tag snap.chromium.chromium"), so every launch failed (rapid-cedar, box
+  report 1025). Both used to count as "a chrome", so `setup` said "already here: chromium" and never installed
+  Google Chrome. A snap is now skipped, Google's names are tried first, and `setup` installs
+  google-chrome-stable beside the snap (the snap is left alone).
+- On Ubuntu, setup no longer falls back to the chromium snap. A box where only the snap exists (arm64) gets one
+  plain line: "this box's Chromium is a snap, which cannot start from an agent", in setup, `status` and every
+  refusal, and a launch error naming snap-confine says the same with the setup command.
+- The hosted nightly converger (5dive-api `browser-stack.sh` `_bs_chrome`) skips a snap the same way, so a
+  hosted box gets Google Chrome at 03:00 with nothing to press.
+
 ### Fixed — a signed-in page with a change-password form no longer reads as a sign-in, and the served browser is 1280x800 (DIVE-8523), 1.91.0
 - On a site with no adapter, `act`, `read` and `snapshot` refused any page holding a password box as "a sign-in
   form" (exit 75). A signed-in account page with a change-password dialog, or a hidden anti-autofill decoy, was
