@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a signed-in page with a change-password form no longer reads as a sign-in, and the served browser is 1280x800 (DIVE-8523), 1.91.0
+- On a site with no adapter, `act`, `read` and `snapshot` refused any page holding a password box as "a sign-in
+  form" (exit 75). A signed-in account page with a change-password dialog, or a hidden anti-autofill decoy, was
+  refused while the session was fine (wappi.pro, box report 1004). `lib/signin-form.cjs` now decides: a visible
+  password box that is not part of a change or set-password form, or a visible form posting to a login path. A
+  page whose address is a sign-in page is still refused. The same check backs `status` and the page verbs' gate.
+- The automated served browser opened at Chrome's default 800x600 window (page 800x457) while `shot` and `read`
+  render at 1280x800, so a point read off a shot was refused as outside the window. It now opens at 1280x800 at
+  0,0, like input mode and the sign-in window. An operator's own `--window-size` in
+  `FIVEDIVE_BROWSER_CHROME_ARGS` wins.
+
 ### Fixed — the sign-in window is the site, not a desktop browser squeezed onto a phone (DIVE-8487), 1.90.0
 - A person's sign-in window (`serve --login`) opened as a full Chrome window: tab strip, address bar and extension
   icons over the site, and a second Connect could leave a second tab of the site. It now opens the site as an app
