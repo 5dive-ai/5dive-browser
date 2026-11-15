@@ -473,12 +473,71 @@ t  'T21m (anchor) the call removal landed'                1 "$(grep -c 'MUTANT-N
 P0=$PASS F0=$FAIL; dpkg_arm1 T21m "$MUT6/bin/browser" >/dev/null; MUT_RED=$((FAIL-F0)); PASS=$P0; FAIL=$F0
 t  'T21m MUTANT no heal: T21a goes red (exit 69, no configure)' yes "$( (( MUT_RED >= 5 )) && [[ "$RC" == 69 ]] && echo yes)"
 
-# --- T19 Ubuntu without snapd: the chromium fallback says why it will fail ----
-nospace_box; mkdir -p "$TMP/aproot/etc"; printf 'NAME="Ubuntu"\nID=ubuntu\n' > "$TMP/aproot/etc/os-release"
-APT_FAIL="google-chrome-stable chromium" setup_go
-tc 'T19 Ubuntu, no snap: the fallback line says so'      'on Ubuntu it is a snap and this box has no snapd' "$OUT"
+# --- T19 Ubuntu: chromium is a snap, so it is no fallback (DIVE-8546) ---------
+ubuntu_os() { mkdir -p "$TMP/aproot/etc"; printf 'NAME="Ubuntu"\nID=ubuntu\n' > "$TMP/aproot/etc/os-release"; }
+nospace_box; ubuntu_os; APT_FAIL="google-chrome-stable chromium" setup_go
+tc 'T19 Ubuntu, Google failed: says why there is no fallback' "Ubuntu's Chromium is a snap, which cannot start from an agent, so it is not installed instead" "$ERR"
+tn 'T19 ...apt is never asked for the chromium snap shim' 'install chromium' "$LOG"
+t  'T19 ...a person: exits 69'                            69 "$RC"
 nospace_box; APT_FAIL="google-chrome-stable chromium" setup_go
-tn 'T19b not Ubuntu: no snap sentence'                   'snapd' "$OUT"
+tc 'T19b not Ubuntu: chromium is still the fallback'      'install chromium' "$LOG"
+tn 'T19b ...and no snap sentence'                         'snap' "$OUT$ERR"
+
+# --- T22 DIVE-8546: a snap Chromium is not a chrome (rapid-cedar, bug 1025) ---
+# Ubuntu: `chromium` is /snap/bin/chromium -> /usr/bin/snap, `chromium-browser` a
+# deb shim that execs it. snap-confine refuses both from a seat's service, so they
+# must not count: _chrome fails, setup lists chrome and installs Google's deb.
+# HERMETIC: the link points at a fixture snap binary, never the host's /usr/bin/snap
+# — a runner may lack it or ship it as a link elsewhere, and the arm would grade
+# the runner (red on GitHub at 8025f60, green here).
+FAKESNAP="$TMP/fakesnap/usr/bin/snap"; mkdir -p "${FAKESNAP%/*}"
+printf '\177ELF fixture snap, never run\n' > "$FAKESNAP"; chmod +x "$FAKESNAP"
+snap_box() {  # snap_box <box dir>
+  ln -sf "$FAKESNAP" "$1/chromium"
+  printf '#!/bin/sh\n# transitional shim\nif ! [ -x /snap/bin/chromium ]; then exit 1; fi\nexec /snap/bin/chromium "$@"\n' > "$1/chromium-browser"
+  chmod +x "$1/chromium-browser"
+}
+BROWSER_BIN="$ROOT/browser/bin/browser"
+fnenv() {  # fnenv <bin> <box> <code> — run <code> with the chrome helpers of <bin>, PATH = <box>:core
+  local fns; fns=$(awk '/^SNAP_CHROME_LINE=/{print} /^SETUP_CMD=/{print} /^_have\(\)/{print} /^_chrome_is_snap\(\) \{|^_chrome\(\) \{|^_chrome_snap_only\(\) \{|^_chrome_none_why\(\) \{|^_crash_note\(\) \{|^die\(\) \{/{f=1} f{print} f&&/^}/{f=0}' "$1")
+  env -i PATH="$2:$CORE" PROG=browser bash -c "$fns"$'\n'"$3" 2>&1
+}
+SB="$TMP/snapbin"; rm -rf "$SB"; mkdir -p "$SB"; snap_box "$SB"
+t  'T22a snap chromium + shim only: _chrome fails'        'rc=1' "$(fnenv "$BROWSER_BIN" "$SB" '_chrome; echo rc=$?' | tail -n1)"
+t  'T22a ...each is seen as the snap (link)'              yes "$(fnenv "$BROWSER_BIN" "$SB" '_chrome_is_snap chromium && echo yes')"
+t  'T22a ...each is seen as the snap (shim script)'       yes "$(fnenv "$BROWSER_BIN" "$SB" '_chrome_is_snap chromium-browser && echo yes')"
+t  'T22a ...the reason is the plain line, with the fix'   "this box's Chromium is a snap, which cannot start from an agent. Fix: sudo 5dive browser setup" "$(fnenv "$BROWSER_BIN" "$SB" '_chrome_none_why')"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SB/google-chrome-stable"; chmod +x "$SB/google-chrome-stable"
+t  'T22b ...next to google-chrome-stable: that one wins'  google-chrome-stable "$(fnenv "$BROWSER_BIN" "$SB" '_chrome')"
+rm -f "$SB/google-chrome-stable"
+NB="$TMP/realchromium"; rm -rf "$NB"; mkdir -p "$NB"; printf '#!/usr/bin/env bash\nexit 0\n' > "$NB/chromium"; chmod +x "$NB/chromium"
+t  'T22c a real (non-snap) chromium still counts'         chromium "$(fnenv "$BROWSER_BIN" "$NB" '_chrome')"
+t  'T22c ...and no chrome at all says so plainly'         'no chrome on this box' "$(fnenv "$BROWSER_BIN" "$TMP/aproot" '_chrome_none_why')"
+CGERR="/user.slice/user-1001.slice/session-3.scope is not a snap cgroup for tag snap.chromium.chromium"
+tc 'T22d a launch error naming snap-confine: the line'    "[this box's Chromium is a snap, which cannot start from an agent. Fix: sudo 5dive browser setup]" "$(fnenv "$BROWSER_BIN" "$SB" "_crash_note '$CGERR' 1")"
+tc 'T22d ...and any refusal carrying it (die)'            "is a snap, which cannot start from an agent. Fix: sudo 5dive browser setup" "$(fnenv "$BROWSER_BIN" "$SB" "die 69 'chrome exited: $CGERR'")"
+t  'T22d ...said once when the message already has it'   1 "$(fnenv "$BROWSER_BIN" "$SB" "die 69 'x $CGERR\$(_crash_note '$CGERR' 1)'" | grep -o 'is a snap, which' | wc -l)"
+# setup on that box (amd64): lists chrome, installs google-chrome-stable, never "already here: chromium"
+nospace_box; ubuntu_os; snap_box "$BOX"; setup_go
+t  'T22e snap box: setup exits 0'                         0 "$RC"
+tc 'T22e ...lists chrome as missing'                      'chrome (google-chrome-stable)' "$OUT"
+tn 'T22e ...never "already here: chromium"'               'already here: chromium' "$OUT"
+tc 'T22e ...installs Google'"'"'s deb'                    'install google-chrome-stable' "$LOG"
+tc 'T22e ...and says so'                                  'installed google-chrome-stable' "$OUT"
+t  'T22e ...the snap is left alone (it is the customer'"'"'s)' "$FAKESNAP" "$(readlink "$BOX/chromium")"
+# arm64-like: Google not possible, only the snap — one plain line, exits 69, no raw error
+nospace_box; ubuntu_os; snap_box "$BOX"; APT_FAIL="google-chrome-stable" setup_go
+tc 'T22f snap only, Google failed: the plain line'        "could not install google-chrome-stable, and this box's Chromium is a snap, which cannot start from an agent" "$ERR"
+t  'T22f ...NOT ready, exit 69'                           69 "$RC"
+# MUTANT: the snap skip removed — T22a/T22e go red.
+MUT7="$TMP/mutant7"; rm -rf "$MUT7"; cp -r "$ROOT/browser" "$MUT7"
+perl -pi -e 's/^    _chrome_is_snap "\$c" && continue$/    : MUTANT-NOSKIP/' "$MUT7/bin/browser"
+t  'T22m (anchor) the skip removal landed'                1 "$(grep -c 'MUTANT-NOSKIP' "$MUT7/bin/browser")"
+t  'T22m MUTANT no skip: _chrome takes the snap (T22a red)' chromium "$(fnenv "$MUT7/bin/browser" "$SB" '_chrome')"
+fresh_box; full_box; rm -f "$BOX/google-chrome-stable"; ubuntu_os; snap_box "$BOX"; cp -r "$MUT7/." "$TMP/pkg/"
+setup_go "$TMP/pkg/bin/browser"
+tn 'T22m MUTANT no skip: chrome is not listed missing (T22e red)' 'chrome (google-chrome-stable)' "$OUT"
+tn 'T22m ...and never installs Google'"'"'s deb'          'install google-chrome-stable' "$LOG"
 
 # --- T20 MUTANTS: the stderr capture and the seat-path exit, each reverted ----
 MUT4="$TMP/mutant4"; rm -rf "$MUT4"; cp -r "$ROOT/browser" "$MUT4"
