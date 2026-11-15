@@ -487,8 +487,13 @@ tn 'T19b ...and no snap sentence'                         'snap' "$OUT$ERR"
 # Ubuntu: `chromium` is /snap/bin/chromium -> /usr/bin/snap, `chromium-browser` a
 # deb shim that execs it. snap-confine refuses both from a seat's service, so they
 # must not count: _chrome fails, setup lists chrome and installs Google's deb.
+# HERMETIC: the link points at a fixture snap binary, never the host's /usr/bin/snap
+# — a runner may lack it or ship it as a link elsewhere, and the arm would grade
+# the runner (red on GitHub at 8025f60, green here).
+FAKESNAP="$TMP/fakesnap/usr/bin/snap"; mkdir -p "${FAKESNAP%/*}"
+printf '\177ELF fixture snap, never run\n' > "$FAKESNAP"; chmod +x "$FAKESNAP"
 snap_box() {  # snap_box <box dir>
-  ln -sf /usr/bin/snap "$1/chromium"
+  ln -sf "$FAKESNAP" "$1/chromium"
   printf '#!/bin/sh\n# transitional shim\nif ! [ -x /snap/bin/chromium ]; then exit 1; fi\nexec /snap/bin/chromium "$@"\n' > "$1/chromium-browser"
   chmod +x "$1/chromium-browser"
 }
@@ -519,7 +524,7 @@ tc 'T22e ...lists chrome as missing'                      'chrome (google-chrome
 tn 'T22e ...never "already here: chromium"'               'already here: chromium' "$OUT"
 tc 'T22e ...installs Google'"'"'s deb'                    'install google-chrome-stable' "$LOG"
 tc 'T22e ...and says so'                                  'installed google-chrome-stable' "$OUT"
-t  'T22e ...the snap is left alone (it is the customer'"'"'s)' /usr/bin/snap "$(readlink "$BOX/chromium")"
+t  'T22e ...the snap is left alone (it is the customer'"'"'s)' "$FAKESNAP" "$(readlink "$BOX/chromium")"
 # arm64-like: Google not possible, only the snap — one plain line, exits 69, no raw error
 nospace_box; ubuntu_os; snap_box "$BOX"; APT_FAIL="google-chrome-stable" setup_go
 tc 'T22f snap only, Google failed: the plain line'        "could not install google-chrome-stable, and this box's Chromium is a snap, which cannot start from an agent" "$ERR"
