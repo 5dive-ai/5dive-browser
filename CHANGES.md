@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — the sign-in window is the site, not a desktop browser squeezed onto a phone (DIVE-8487), 1.90.0
+- A person's sign-in window (`serve --login`) opened as a full Chrome window: tab strip, address bar and extension
+  icons over the site, and a second Connect could leave a second tab of the site. It now opens the site as an app
+  window (`--app=<url>`): one page, no tabs, no address bar, no toolbar. `FIVEDIVE_BROWSER_LOGIN_WINDOW=tab` gives
+  back the old window. A link the site opens in a new tab opens in a normal Chrome window, as from any app window.
+- A Connect shown in the automated browser (a seat with a proxy, a warm session) sends a blank tab to the site
+  instead of opening another, and closes the other blank tabs and second tabs of the same site once the site's tab
+  is in front. Tabs of the group's other sites, a tab a check is running in, and popups are never closed.
+- A phone taller than the box's 1280x800 screen got a window cut to the screen's height and a black band under it.
+  The window now keeps the phone's shape when cut (430x888 becomes 387x800), so it fills the page both ways.
+
 ### Fixed — a signed-out site whose Log in button is only an icon no longer reads connected (DIVE-8483), 1.89.0
 - The generic check (a site with no built-in check) read a header as signed in when none of its controls SAID
   "Log in". chatplace.io's signed-out header offers its sign-in as an icon with no words, a link to

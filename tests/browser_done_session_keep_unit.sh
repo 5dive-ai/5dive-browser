@@ -17,6 +17,8 @@
 #      K5 MUTANT: the pre-fix tree (BASE) starts the window without the flag and
 #         its stop leaves the session cookie with no expiry, for Chrome to drop
 #      K6 the session daemon honours keep_s, bounded to 30 days
+#      K7 (DIVE-8487) the window opens the site as an app window (one page, no
+#         tabs, no address bar); FIVEDIVE_BROWSER_LOGIN_WINDOW=tab is the way back
 #   L  LIVE, when this machine has Chrome and Xvfb (CI): a local site whose
 #      sign-in page sets a cookie with no expiry and one with an expiry; the
 #      sign-in window opens it, is stopped the way Done stops it, and a fresh
@@ -140,6 +142,18 @@ read -r p e x <<<"$(ck "$D/Default/Network/Cookies" login_session)"
 arm 'K2a the stop Done runs stops the window' '0 no' "$STRC $(yn test -f "$D/.5dive-serve")"
 arm 'K2b ...and keeps the session-only login: persistent, with an expiry ~30 days out' '1 1 yes' "$p $e $(near "${x:-0}" 2592000)"
 arm 'K3 NEGATIVE CONTROL: the cookie that had an expiry is unchanged' '1 1 13400000000000000' "$(ck "$D/Default/Network/Cookies" lasting)"
+
+# ================================================================ K7  the window is the page (DIVE-8487)
+# K1's launch line: the site opens as an app window (no tabs, no address bar),
+# at the top-left corner, and is not also a bare tab URL.
+L1=$(head -1 "$TMP/chrome-argv.log")
+arm 'K7a the sign-in window opens the site as an app window at 0,0, with no bare tab URL after it' 'yes yes --' \
+  "$(has ' --app=https://keep.example.com' " $L1") $(has ' --window-position=0,0' " $L1") $(awk '{print substr($NF,1,2)}' <<<"$L1")"
+FIVEDIVE_BROWSER_LOGIN_WINDOW=tab window "$BROWSER"
+L2=$(head -1 "$TMP/chrome-argv.log")
+arm 'K7b FIVEDIVE_BROWSER_LOGIN_WINDOW=tab gives back the tabbed window: the bare URL, no --app' 'no https' \
+  "$(has ' --app=' " $L2") $(awk '{print substr($NF,1,5)}' <<<"$L2")"
+"$BROWSER" serve "$S" --stop >/dev/null 2>&1
 
 # ================================================================ K4  the automated browser's own stop
 "$BROWSER" serve "$S" >/dev/null 2>&1; pids "$D"
