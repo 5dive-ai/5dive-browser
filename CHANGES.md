@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a site the owner just signed in to no longer reads `unconfirmed` when the check cannot look (DIVE-8595), 1.93.0
+- In input mode, `status` could not load the check page when the group's browser was on another site, a person or
+  an agent was using the window, no tab opened, or the page did not finish loading. It said `unconfirmed` even
+  minutes after the owner's Done, and the agent stopped (google.com, box report 1071).
+- With the owner's Done on file it now reads `connected (signed in by the owner <time>; not checked now — <why>; …).
+  Agents: use it.` Nothing is stamped. Without a Done it reads as before, with "last seen signed in" when known.
+- Fail-closed is unchanged: a sign-in or robot-check title in the window, or an unfinished load that landed on a
+  sign-in address, is never `connected`; a loaded sign-in title still reads expired and forgets the Done; the page
+  verbs still check every page.
+
 ### Fixed — the browser no longer picks a snap Chromium, which cannot start from an agent (DIVE-8546), 1.92.0
 - On Ubuntu, `chromium` is a snap and `chromium-browser` a shim onto it. A seat's service cannot start a snap
   (snap-confine: "not a snap cgroup for tag snap.chromium.chromium"), so every launch failed (rapid-cedar, box

@@ -3181,8 +3181,10 @@ _input_probe() {  # <site> <dir>
     # DIVE-7237 (GAP-6b): the group's browser is up as the automated one for
     # another site. A status check does not take it from them; a page verb does.
     if _daemon_live "$dir"; then
+      local why="the browser $site shares with its group is serving another site as the automated browser, and a status check does not switch it"
+      _input_unchecked_done "$site" "$dir" "$why" && return 0
       local last=""; (( _SITE_BROKERED )) || last=$(_signed_in_last "$dir" 2>/dev/null) || last=""
-      echo "unconfirmed (input mode: not checked now — the browser $site shares with its group is serving another site as the automated browser, and a status check does not switch it${last:+; last seen signed in $last}. A page verb on $site switches it: 5dive browser shot $site)"
+      echo "unconfirmed (input mode: not checked now — $why${last:+; last seen signed in $last}. A page verb on $site switches it: 5dive browser shot $site)"
       return 0
     fi
     echo "UNKNOWN (input mode, and no input-mode browser is serving $site — nothing loads a page to check it; 5dive browser serve $site)"
@@ -3222,12 +3224,26 @@ _input_probe() {  # <site> <dir>
     return 1
   fi
   if (( ! looked )); then
-    echo "unconfirmed (input mode: not checked now — $why; the window shows \"$title\"; a screen is the check: 5dive browser shot $site)"
+    # DIVE-8595: the window is whatever tab is in front, often not this site. A
+    # sign-in title there still wins over the Done (fail-closed); anything else
+    # says nothing either way, so the owner's Done stands.
+    local front_out; front_out=$(_input_title_marker "$site" logged_out); front_out="${front_out:-$INPUT_SIGNIN_TITLE}"
+    if ! grep -qiE -- "$front_out" <<<"$title"; then
+      _input_unchecked_done "$site" "$dir" "$why; the window shows \"$title\"" && return 0
+    fi
+    local last=""; (( _SITE_BROKERED )) || last=$(_signed_in_last "$dir" 2>/dev/null) || last=""
+    echo "unconfirmed (input mode: not checked now — $why; the window shows \"$title\"${last:+; last seen signed in $last}; a screen is the check: 5dive browser shot $site)"
     return 0
   fi
   # DIVE-7572: a title that is still the address says nothing about the login.
   if [[ "$(jq -r 'if .loaded == false then "no" else "yes" end' <<<"$t" 2>/dev/null)" == no ]]; then
-    echo "unconfirmed (input mode: $url did not finish loading, its title is still its address \"$title\", so the login was not checked; a screen is the check: 5dive browser shot $site)"
+    # DIVE-8595: ...so the owner's Done stands, unless that address is a sign-in
+    # page the probe url is not (the site redirected it to its sign-in).
+    if ! { grep -qiE "$GENERIC_SIGNIN_URL" <<<"$title" && ! grep -qiE "$GENERIC_SIGNIN_URL" <<<"$url"; }; then
+      _input_unchecked_done "$site" "$dir" "$url did not finish loading, its title is still its address \"$title\"" && return 0
+    fi
+    local last=""; (( _SITE_BROKERED )) || last=$(_signed_in_last "$dir" 2>/dev/null) || last=""
+    echo "unconfirmed (input mode: $url did not finish loading, its title is still its address \"$title\", so the login was not checked${last:+; last seen signed in $last}; a screen is the check: 5dive browser shot $site)"
     return 0
   fi
   local out_t in_t; out_t=$(_input_title_marker "$site" logged_out); in_t=$(_input_title_marker "$site" logged_in)
@@ -3671,6 +3687,17 @@ _owner_done_at() {  # <dir> -> the iso of the owner's Done, rc 1 when there is n
   l=$(head -1 "$f" 2>/dev/null) || return 1
   [[ "$l" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z$ ]] || return 1
   printf '%s\n' "$l"
+}
+# DIVE-8595 (box report 1071, google.com): an input-mode check that could not
+# look NOW (the group's browser is on another site, someone is driving, no tab
+# opened, the page did not finish loading) used to say `unconfirmed` minutes
+# after the owner's Done, and the agent stopped. Not looking is not a sign-out:
+# with a Done on file it leads with the Done and says why nothing was checked.
+# Nothing is stamped (the last real verdict stands) and nothing is forgotten.
+# rc 1 when there is no Done, so the caller says what it said before.
+_input_unchecked_done() {  # <site> <dir> <why>
+  local odone; odone=$(_owner_done_at "$2") || return 1
+  printf 'connected (signed in by the owner %s; not checked now — %s; a sign-in form on a page would mean signed out). Agents: use it.\n' "$odone" "$3"
 }
 # The one line a site with no adapter reads after the owner's Done. Leads with
 # the verdict an agent acts on; the caveat is the guard, said once.
