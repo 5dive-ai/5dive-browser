@@ -57,6 +57,10 @@ jobs:
       # sign-in form still reads expired and forgets it. Fake chrome.
       - name: owner done harness
         run: bash tests/browser_owner_done_unit.sh
+      # DIVE-8595: an input-mode status that cannot look now keeps the owner's
+      # Done (connected), and a sign-in or challenge title still wins. Fake daemon.
+      - name: input unchecked done harness
+        run: bash tests/browser_input_unchecked_done_unit.sh
       # DIVE-6317: Cloudflare's "Just a moment..." is watched in the same page load
       # before it is a stop. A fake page, pure node.
       - name: interstitial wait harness
