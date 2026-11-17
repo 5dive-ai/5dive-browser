@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — `always`: a kind the owner lets go ahead even right after a page was read (DIVE-8641), 1.94.0
+- Since DIVE-7972 a page the agent reads turns `send` and `publish` from allow to ask for 30 min, and only `yolo`
+  opted out. An owner who lets agents answer private messages but keeps paying on ask had every reply stop, because
+  an agent must read the chat before it answers (box report 1096).
+- `sudo 5dive browser approvals policy set send=always` (any kind): runs and is logged like `allow`, and a page read
+  does not turn it to ask. `allow` keeps the page-read guard. Same root-owned file: a seat can neither set nor forge
+  it. The default (`standard`) and `yolo` are unchanged; four kinds that are all allow or always read as `yolo`.
+
 ### Fixed — a site the owner just signed in to no longer reads `unconfirmed` when the check cannot look (DIVE-8595), 1.93.0
 - In input mode, `status` could not load the check page when the group's browser was on another site, a person or
   an agent was using the window, no tab opened, or the page did not finish loading. It said `unconfirmed` even

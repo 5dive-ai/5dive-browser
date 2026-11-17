@@ -7259,6 +7259,62 @@ t  'T7972e (anchor) the mutation landed in the copy' 'yes' "$(grep -q '^_policy_
 printf '%s https://evil.t37.test/comment\n' "$(date +%s)" > "$A37/.page-read"
 T37BIN="$MUT72/bin/browser" act37 send FIVEDIVE_BROWSER_PAGE_READ_WINDOW=1800
 t  'T7972e MUTANT (no page-read rule): the send runs after a page read — T7972b would be red, as it must' '0 1' "$RC $(clicks37)"
+# ============ T8641 the owner's `always`: a kind that goes ahead even right after a page read
+#
+# DIVE-8641 (box report 1096): an owner who lets agents answer private messages, but
+# keeps paying on ask, had every reply stop after the agent read the chat, because only
+# yolo opted out of DIVE-7972 and yolo lets paying through too. `always` is per kind.
+#   T8641a  send=always + pay=ask, a page read just now: the send runs, the pay stops (73)
+#   T8641b  send=allow, a page read just now: the send still stops (DIVE-7972 intact)
+#   T8641c  a policy file the granting uid does not own, carrying always, is ignored
+#   T8641d  the setter takes always, the view shows it, mode is custom; bogus still refused
+#   T8641e  MUTANT: _policy_allowed counting only "allow" — the always send stops again
+run t37env "$BROWSER" approvals policy set standard send=always
+t  'T8641d the setter takes send=always' 0 "$RC"
+run t37env "$BROWSER" approvals policy --json
+t  'T8641d ...the owner'"'"'s view shows it, mode custom' \
+   '{"pay":"ask","publish":"allow","send":"always","delete":"allow","mode":"custom"}' "$OUT"
+printf '%s https://chat.t37.test/dm\n' "$(date +%s)" > "$A37/.page-read"
+act37 send FIVEDIVE_BROWSER_PAGE_READ_WINDOW=1800
+t  'T8641a send=always: after a page read the send runs, no 73' '0 1' "$RC $(clicks37)"
+tc 'T8641a ...and is logged as the owner'"'"'s policy, naming always' '(send=always)' "$ERR"
+printf '%s https://chat.t37.test/dm\n' "$(date +%s)" > "$A37/.page-read"
+act37 pay FIVEDIVE_BROWSER_PAGE_READ_WINDOW=1800
+t  'T8641a ...while pay still stops: 73 before the click' '73 0' "$RC $(clicks37)"
+printf '%s https://chat.t37.test/dm\n' "$(date +%s)" > "$A37/.page-read"
+act37 publish FIVEDIVE_BROWSER_PAGE_READ_WINDOW=1800
+t  'T8641a ...and publish (still allow) asks after the read' '73 0' "$RC $(clicks37)"
+run t37env "$BROWSER" approvals policy set send=allow
+printf '%s https://chat.t37.test/dm\n' "$(date +%s)" > "$A37/.page-read"
+act37 send FIVEDIVE_BROWSER_PAGE_READ_WINDOW=1800
+t  'T8641b send=allow: after a page read the send still stops (73)' '73 0' "$RC $(clicks37)"
+run t37env "$BROWSER" approvals policy set send=always
+printf '%s https://chat.t37.test/dm\n' "$(date +%s)" > "$A37/.page-read"
+act37 send FIVEDIVE_BROWSER_PAGE_READ_WINDOW=1800 FIVEDIVE_BROWSER_GRANT_UID=0
+t  'T8641c a file the granting uid does not own, carrying always, is not a policy: 73' '73 0' "$RC $(clicks37)"
+run t37env FIVEDIVE_BROWSER_GRANT_UID=0 "$BROWSER" approvals policy --json
+t  'T8641c ...and the view reads the default' \
+   '{"pay":"ask","publish":"allow","send":"allow","delete":"allow","mode":"standard"}' "$OUT"
+run t37env SUDO_USER=agent-x "$BROWSER" approvals policy set send=always
+t  'T8641c a seat cannot set always' 77 "$RC"
+run t37env "$BROWSER" approvals policy set send=sometimes
+t  'T8641d a value outside ask|allow|always is refused' 64 "$RC"
+tc 'T8641d ...and the refusal names always' 'ask, allow or always' "$ERR"
+run t37env "$BROWSER" approvals policy set pay=always publish=always send=always delete=always
+run t37env "$BROWSER" approvals policy --json
+tc 'T8641d all four always reads as yolo (nothing asks)' '"mode":"yolo"' "$OUT"
+run t37env "$BROWSER" approvals policy --help
+tc 'T8641d the verb'"'"'s help says what always means' 'always: goes ahead even then' "$OUT$ERR"
+run bash "$BROWSER" --help
+tc 'T8641d --help names always' '=ask|allow|always' "$OUT$ERR"
+# T8641e: MUTANT
+run t37env "$BROWSER" approvals policy set standard send=always
+MUT86="$TMP/t37/mut8641"; rm -rf "$MUT86"; cp -r "$ROOT/browser" "$MUT86"
+sed -i 's/select(.value == "allow" or .value == "always")/select(.value == "allow")/' "$MUT86/bin/browser"
+t  'T8641e (anchor) the mutation landed in the copy' 'yes' "$(grep -q 'select(.value == "allow") | .key' "$MUT86/bin/browser" && echo yes || echo no)"
+printf '%s https://chat.t37.test/dm\n' "$(date +%s)" > "$A37/.page-read"
+T37BIN="$MUT86/bin/browser" act37 send FIVEDIVE_BROWSER_PAGE_READ_WINDOW=1800
+t  'T8641e MUTANT (always not counted as allowed): the send stops — T8641a would be red, as it must' '73 0' "$RC $(clicks37)"
 rm -f "$A37/.page-read" "$POL37"
 
 
