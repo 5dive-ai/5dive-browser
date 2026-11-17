@@ -306,9 +306,12 @@ usage() {
                                       # owner was handed (their Telegram Approve button).
   5dive browser approvals policy [--json]   # the four kinds, and mode: standard|yolo|careful|custom
   sudo 5dive browser approvals policy set standard|yolo|careful
-  sudo 5dive browser approvals policy set <pay|publish|send|delete>=ask|allow
+  sudo 5dive browser approvals policy set <pay|publish|send|delete>=ask|allow|always
                                       # the owner's standing answer per kind: allow (the
-                                      # step runs and is logged) or ask (73). standard =
+                                      # step runs and is logged; send and publish still
+                                      # ask right after a page was read), always (runs
+                                      # even then: send=always lets agents answer
+                                      # messages while paying asks) or ask (73). standard =
                                       # the default: paying stops for your approval,
                                       # posting, sending and deleting go ahead and are
                                       # logged. yolo = all allow, careful = all ask.
@@ -7579,9 +7582,11 @@ _look_page_md() {  # <after.json>
 # just read can be an injected order to post or message as the owner, so after a
 # page was read (any capture that wrote page.md, within PAGE_READ_WINDOW seconds,
 # the length of a working turn) `publish` and `send` ask the owner first, even
-# where the policy lets them run. The owner's one tap answers it (owner-ask). Only
-# the owner's `yolo` (all four go ahead) opts out: that is the owner saying
-# nothing asks. The mark is the seat's own file, so this is a guard against a
+# where the policy lets them run. The owner's one tap answers it (owner-ask). The
+# owner's `yolo` (all four go ahead) opts out: that is the owner saying nothing
+# asks. So does `always` on one kind (DIVE-8641): `send=always` is the owner
+# saying "messages go ahead even right after a page was read", while pay keeps
+# asking. Only `allow` is turned to ask; `always` never is. The mark is the seat's own file, so this is a guard against a
 # page steering an honest agent, not against an agent set on getting around it.
 PAGE_READ_KINDS="publish send"
 PAGE_READ_WINDOW="${FIVEDIVE_BROWSER_PAGE_READ_WINDOW:-1800}"
@@ -8514,7 +8519,9 @@ _grant_uid() { printf '%s\n' "${FIVEDIVE_BROWSER_GRANT_UID:-0}"; }
 _sudo_is_seat() { [[ "${SUDO_USER:-}" == agent-* ]]; }
 
 # THE OWNER'S POLICY PER KIND (DIVE-4982): "allow" (the step runs and is logged)
-# or "ask" (it stops, exit 73, until the owner says yes). THE DEFAULT IS PER KIND
+# or "ask" (it stops, exit 73, until the owner says yes), or "always" (DIVE-8641:
+# runs and is logged like allow, AND a page read this turn does not turn it to
+# ask, see _page_read_recent). THE DEFAULT IS PER KIND
 # (DIVE-5148): pay asks, publish, send and delete run and are logged. DIVE-5006
 # had made all four "allow", because an owner with no dashboard and no shell could
 # neither approve a step nor relax the policy and every send stopped dead; the
@@ -8539,9 +8546,9 @@ _policy_owned() {  # the owner's file as an object, {} when there is no file tha
 }
 _policy_json() {
   jq -nc --argjson c "$(_policy_owned)" --argjson d "$APPROVAL_DEFAULTS" \
-    '$d | with_entries(.value = (if $c[.key] == "ask" or $c[.key] == "allow" then $c[.key] else $d[.key] end))'
+    '$d | with_entries(.value = (if $c[.key] == "ask" or $c[.key] == "allow" or $c[.key] == "always" then $c[.key] else $d[.key] end))'
 }
-_policy_allowed() { _policy_effective | jq -c '[to_entries[] | select(.value == "allow") | .key]'; }
+_policy_allowed() { _policy_effective | jq -c '[to_entries[] | select(.value == "allow" or .value == "always") | .key]'; }
 # What an act is held to: the owner's policy, with publish and send turned to ask
 # when a page was read this turn (DIVE-7972, see _page_read_recent). The owner's
 # own view and the setter keep reading _policy_json, so this never gets written
@@ -8560,9 +8567,9 @@ _policy_effective() {
   printf '%s\n' "$eff"
 }
 # standard (the per-kind default: pay asks, the other three allow), yolo (all four
-# allow), careful (all four ask), or custom — computed, never stored.
+# allow, or always: nothing asks), careful (all four ask), or custom — computed, never stored.
 _policy_mode() { jq -r --argjson d "$APPROVAL_DEFAULTS" \
-  'if . == $d then "standard" elif ([.[]] | all(. == "allow")) then "yolo" elif ([.[]] | all(. == "ask")) then "careful" else "custom" end'; }
+  'if . == $d then "standard" elif ([.[]] | all(. == "allow" or . == "always")) then "yolo" elif ([.[]] | all(. == "ask")) then "careful" else "custom" end'; }
 
 # One line an owner can read for a request's payload, in a fixed order; empty when
 # the page gave none, and the caller then SAYS so rather than showing the label.
@@ -8675,13 +8682,13 @@ _policy_log() {  # <site> <stderr-file> <page> <screenshot>
   own="$(_policy_owned)"
   while IFS= read -r line; do
     cls="$(jq -r .cls <<<"$line")"; by=default
-    [[ "$(jq -r --arg k "$cls" '.[$k] // ""' <<<"$own")" == allow ]] && by=policy
+    case "$(jq -r --arg k "$cls" '.[$k] // ""' <<<"$own")" in allow|always) by=policy ;; esac
     jq -c --arg seat "$(_seat)" --arg site "$site" --arg page "$page" --arg shot "$shot" --argjson at "$(date +%s)" --arg by "$by" \
       '{at:$at, seat:$seat, site:$site, class:.cls, label:.label, payload:(.payload // {}), step:.step, page:$page, screenshot:$shot, allowed_by:$by}' \
       <<<"$line" >> "$ad/allowed.jsonl" 2>/dev/null || continue
     if [[ "$by" == policy ]]; then
-      printf '%s: ALLOWED by the owner'"'"'s policy (%s=allow): step %s, %s — logged in %s/allowed.jsonl\n' "$PROG" \
-        "$cls" "$(jq -r .step <<<"$line")" "$(_payload_line "$(jq -c '.payload // {}' <<<"$line")")" "$ad" >&2
+      printf '%s: ALLOWED by the owner'"'"'s policy (%s=%s): step %s, %s — logged in %s/allowed.jsonl\n' "$PROG" \
+        "$cls" "$(jq -r --arg k "$cls" '.[$k]' <<<"$own")" "$(jq -r .step <<<"$line")" "$(_payload_line "$(jq -c '.payload // {}' <<<"$line")")" "$ad" >&2
     else
       printf '%s: ALLOWED (default standard): %s, step %s, %s — logged in %s/allowed.jsonl\n' "$PROG" \
         "$cls" "$(jq -r .step <<<"$line")" "$(_payload_line "$(jq -c '.payload // {}' <<<"$line")")" "$ad" >&2
@@ -10044,28 +10051,28 @@ cmd_approvals() {
 #          -> {"pay":"ask","publish":"allow","send":"allow","delete":"allow","mode":"standard"}
 #          mode is standard (the default: pay asks, the other three allow), yolo (all four allow),
 #          careful (all four ask) or custom, computed from the four
-#   write: sudo 5dive browser approvals policy set standard|yolo|careful [<kind>=ask|allow ...]   (the owner only)
-#          sudo 5dive browser approvals policy set <kind>=ask|allow [...]
+#   write: sudo 5dive browser approvals policy set standard|yolo|careful [<kind>=ask|allow|always ...]   (the owner only)
+#          sudo 5dive browser approvals policy set <kind>=ask|allow|always [...]
 # The 5dive CLI strips --json before a plugin verb runs and sets FIVEDIVE_JSON_MODE=1,
 # so that variable is JSON too, not only the literal flag.
 cmd_approval_policy() {
   local json=0 set=0 preset="" a
   [[ "${FIVEDIVE_JSON_MODE:-0}" == 1 ]] && json=1
   local -a pairs=()
-  local usage="approvals policy [--json] | approvals policy set standard|yolo|careful | approvals policy set <kind>=ask|allow"
+  local usage="approvals policy [--json] | approvals policy set standard|yolo|careful | approvals policy set <kind>=ask|allow|always"
   for a in "$@"; do
     case "$a" in
       --json) json=1 ;;
       set) set=1 ;;
       standard|yolo|careful) [[ -z "$preset" ]] || die "$E_USAGE" "approvals policy set takes one preset: standard, yolo or careful"; preset="$a" ;;
       *=*) pairs+=("$a") ;;
-      -h|--help) printf 'usage: 5dive browser approvals policy [--json]\n       sudo 5dive browser approvals policy set standard|yolo|careful\n       sudo 5dive browser approvals policy set <%s>=ask|allow ...\n\n       standard (the default): paying stops for your approval; posting, sending and\n       deleting go ahead and are logged. yolo: all four go ahead. careful: all four ask.\n' "${APPROVAL_KINDS// /|}"; return 0 ;;
+      -h|--help) printf 'usage: 5dive browser approvals policy [--json]\n       sudo 5dive browser approvals policy set standard|yolo|careful\n       sudo 5dive browser approvals policy set <%s>=ask|allow|always ...\n\n       standard (the default): paying stops for your approval; posting, sending and\n       deleting go ahead and are logged. yolo: all four go ahead. careful: all four ask.\n       allow: goes ahead, but asks right after the agent read a page this turn (a page can\n       carry hidden orders). always: goes ahead even then, e.g. send=always to let agents\n       answer private messages while paying still asks.\n' "${APPROVAL_KINDS// /|}"; return 0 ;;
       *) die "$E_USAGE" "approvals policy: unexpected '$a' — usage: $usage" ;;
     esac
   done
-  (( set )) || [[ -z "$preset" && ${#pairs[@]} -eq 0 ]] || die "$E_USAGE" "a preset or <kind>=ask|allow goes after set — usage: $usage"
+  (( set )) || [[ -z "$preset" && ${#pairs[@]} -eq 0 ]] || die "$E_USAGE" "a preset or <kind>=ask|allow|always goes after set — usage: $usage"
   if (( set )); then
-    [[ -n "$preset" ]] || (( ${#pairs[@]} )) || die "$E_USAGE" "approvals policy set standard|yolo|careful or <kind>=ask|allow — kinds: $APPROVAL_KINDS"
+    [[ -n "$preset" ]] || (( ${#pairs[@]} )) || die "$E_USAGE" "approvals policy set standard|yolo|careful or <kind>=ask|allow|always — kinds: $APPROVAL_KINDS"
     [[ "$(id -u)" == "$(_grant_uid)" ]] || die "$E_PERM" "only the box owner sets the approval policy: sudo 5dive browser approvals policy set ${preset:-${pairs[0]}}"
     _sudo_is_seat && die "$E_PERM" "an agent seat ($SUDO_USER) cannot change what it has to ask about. The owner sets it, from their own shell or the dashboard."
     local cur k v; cur="$(_policy_json)"
@@ -10077,7 +10084,7 @@ cmd_approval_policy() {
     for a in "${pairs[@]}"; do
       k="${a%%=*}"; v="${a#*=}"
       [[ " $APPROVAL_KINDS " == *" $k "* ]] || die "$E_USAGE" "'$k' is not a kind; the kinds are: $APPROVAL_KINDS"
-      [[ "$v" == ask || "$v" == allow ]] || die "$E_USAGE" "$k=$v: the value is ask or allow"
+      [[ "$v" == ask || "$v" == allow || "$v" == always ]] || die "$E_USAGE" "$k=$v: the value is ask, allow or always (always: goes ahead even right after a page was read)"
       cur=$(jq -c --arg k "$k" --arg v "$v" '.[$k] = $v' <<<"$cur")
     done
     local f d tmp; f="$(_policy_file)"; d="$(dirname "$f")"
