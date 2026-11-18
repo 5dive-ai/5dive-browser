@@ -197,6 +197,10 @@ jobs:
       # DIVE-8331: an agent finding the owner's sign-in window still open is told to ask for Done.
       - name: broker login-open harness
         run: bash tests/browser_broker_login_open_unit.sh
+      # DIVE-8696 (report 1134): a box browser whose plugin version was pruned steps
+      # aside, and a brokered caller restarts it instead of reading a false busy/free.
+      - name: daemon updated-away harness
+        run: bash tests/browser_daemon_updated_away_unit.sh
       - name: input paste harness
         run: bash tests/browser_input_paste_unit.sh
       - name: keep the input harness screens of a failed run

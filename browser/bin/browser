@@ -4123,6 +4123,25 @@ _lease_and_serve_release() { _lease_release; _shot_restore; }
 # side: the daemon serialises one request at a time anyway, and a fair queue
 # needs a ticket file in the same unreachable directory. A brokered caller that
 # loses the race retries on the same one-second cadence and says who has it.
+# A daemon call's stderr, as one line of reason: the client's own prefix off,
+# blank lines dropped, the last three kept.
+_broker_err() {  # _broker_err <stderr-file>
+  local e; e=$(grep -v '^[[:space:]]*$' "$1" 2>/dev/null | tail -n 3)
+  e="${e//"session-daemon: "/}"; printf '%s' "${e//$'\n'/ }"
+}
+
+# DIVE-8696: the box browser said its install was updated away and is stepping
+# aside. Wait for its socket to go (it goes after Chrome has written the profile
+# out), then start the current version the way any brokered verb does.
+_broker_restart_after_update() {  # <site> <dir>
+  local i=0
+  while _daemon_live "$2" && (( i < ${FIVEDIVE_BROWSER_STEP_ASIDE_WAIT:-30} )); do sleep 1; i=$(( i + 1 )); done
+  _daemon_live "$2" && { echo "the old browser has not stopped after ${i}s."; return 1; }
+  local why; why=$(_broker_wake "$1") || { printf '%s\n' "$why"; return 1; }
+  _daemon_live "$2" || { echo "it started, but no browser answers on its socket."; return 1; }
+  printf '%s: %s was updated; started the current box browser for it as %s.\n' "$PROG" "$1" "$_SITE_OWNER" >&2
+}
+
 _lease_take_brokered() {  # <site> <dir> <purpose> <wait> <ttl>
   local site="$1" d="$2" purpose="$3" wait="$4" ttl="$5" token="" waited=0 req
   # THE ANCHOR IS THIS PROCESS (DIVE-4927). The lease is written by a
@@ -4134,15 +4153,35 @@ _lease_take_brokered() {  # <site> <dir> <purpose> <wait> <ttl>
   # KERNEL says belongs to the connected seat, so this cannot pin someone else.
   req=$(jq -nc --arg p "$purpose" --argjson t "$ttl" --argjson a "$$" \
         '{op:"lease", act:"acquire", purpose:$p, ttl:$t, anchor:$a}')
+  local ef rc err restarted=0 why
   while :; do
-    token=$(_daemon_call "$d" "$req" 2>/dev/null) || token=""
+    ef=$(mktemp); rc=0
+    token=$(_daemon_call "$d" "$req" 2>"$ef") || { rc=$?; token=""; }
+    err=$(_broker_err "$ef"); rm -f "$ef"
     [[ -n "$token" ]] && break
+    # THE BOX BROWSER OUTLIVED ITS OWN INSTALL (DIVE-8696): it has stepped aside,
+    # so start the current version and ask again, once.
+    if [[ "$err" == *"updated away"* ]] && (( ! restarted )); then
+      restarted=1
+      why=$(_broker_restart_after_update "$site" "$d") \
+        || die "$E_UNAVAILABLE" "the $site box browser did not answer: $err
+Starting the current version for '$(_seat)' did not work: $why"
+      continue
+    fi
+    # NOT AN ANSWER IS NOT "BUSY" (DIVE-8696). A lease refusal names its holder;
+    # a daemon call that failed with nothing to say, or with a reason that is not
+    # a holder, is a browser that did not answer, and it is said as one.
+    if [[ "$err" != *"busy: "* ]]; then
+      die "$E_UNAVAILABLE" "the $site box browser did not answer with a lease: ${err:-no reason given (exit $rc)}
+Nothing was taken. Stop it and let the next call start it again:  sudo 5dive browser serve $site --stop"
+    fi
     [[ "$wait" == no ]] && break
     (( waited >= wait )) && break
     sleep 1; waited=$(( waited + 1 ))
   done
   if [[ -z "$token" ]]; then
     local who; who=$(_daemon_call "$d" '{"op":"lease","act":"status"}' 2>/dev/null)
+    [[ -n "$who" ]] || who="$err"
     die "$E_UNAVAILABLE" "${who:-busy: somebody else holds it}$(_lease_own_note "$who")
 Another caller holds the $site browser on this box. Refusing rather than joining them in it: two callers in
 one logged-in profile overwrite each other's drafts and read as site flakiness, not as a collision.
@@ -4214,8 +4253,16 @@ cmd_lease() {
   if (( _SITE_BROKERED )); then
     case "$action" in
       status)
-        local bl; bl=$(_daemon_call "$dir" '{"op":"lease","act":"status"}' 2>/dev/null)
+        local bl brc=0 bef berr; bef=$(mktemp)
+        bl=$(_daemon_call "$dir" '{"op":"lease","act":"status"}' 2>"$bef") || brc=$?
+        berr=$(_broker_err "$bef"); rm -f "$bef"
         [[ -n "$bl" ]] && { printf '%s' "$bl"; return 0; }
+        # FREE ONLY WHEN THE DAEMON SAID SO (DIVE-8696): the owner's status exits
+        # 1 with nothing to say when no lease is live. Anything else is a browser
+        # that did not answer, which an empty answer used to read as "free".
+        if (( brc > 1 )) || [[ -n "$berr" ]]; then
+          die "$E_UNAVAILABLE" "the $site box browser did not answer: ${berr:-no reason given (exit $brc)}"
+        fi
         printf 'free: nothing holds the %s browser (the box login, held by %s)\n' "$site" "$_SITE_OWNER"
         return 0 ;;
       release)
@@ -4236,8 +4283,13 @@ cmd_lease() {
 That holder is still alive. Not releasing it: the lease is the only thing keeping a second caller out
 of that browser, and a forced release puts one there. Stop the holding process, or wait for its TTL."
       fi
-      _lease_reap "$dir"
-      printf 'released the stale %s lease\n' "$site"; return 0 ;;
+      # SAY WHAT HAPPENED (DIVE-8696): "released the stale lease" with no lease
+      # there sent box 1134's operator looking for a lease that never existed.
+      if [[ ! -e "$(_lease_dir "$dir")" ]]; then
+        printf 'nothing to release: no lease is held on the %s browser\n' "$site"
+      elif _lease_reap "$dir"; then printf 'released the stale %s lease\n' "$site"
+      else printf 'nothing released: another release of the %s lease is in progress\n' "$site"; fi
+      return 0 ;;
     take)
       _lease_take "$site" "$dir" "$purpose" "${wait:-no}"
       printf 'holding the %s browser as %s until %s\n' "$site" "$(_seat)" \
