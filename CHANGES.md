@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — after a nightly update, other seats no longer get a false "busy" from the shared box browser (DIVE-8696), 1.94.1
+- The box browser ran from its own version's folder. Once the update pruned that version, every lease call from
+  another seat failed with no words: they read "busy: somebody else holds it" while `lease --status` read "free",
+  until someone stopped the browser by hand (box report 1134, ~4 days).
+- The daemon now notices its install is gone, says "updated away", keeps the session logins and steps aside. A
+  brokered lease restarts the current version and asks once more. A daemon call that fails is said as "did not
+  answer", never as busy or free. An owner `lease --release` with no lease says "nothing to release".
+
 ### Added — `always`: a kind the owner lets go ahead even right after a page was read (DIVE-8641), 1.94.0
 - Since DIVE-7972 a page the agent reads turns `send` and `publish` from allow to ask for 30 min, and only `yolo`
   opted out. An owner who lets agents answer private messages but keeps paying on ask had every reply stop, because
