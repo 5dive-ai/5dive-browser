@@ -8,6 +8,19 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — before it answers, the agent checks once that every filter and sort the job names is applied (DIVE-8755), 1.95.0
+- On the nightly bench a filter or sort the task names was never applied in 51 of 137 misses (48% of those that were
+  not a robot wall). The skill already asked for that check, and 1.94.0's better dropdown tool plus two more skill
+  lines scored 4/28 against 4/28 for the control: the agent rarely tried, so a better tool had nothing to act on.
+- The plugin now ships a Claude Code Stop hook (`browser/hooks/`). When the agent drove the browser since the owner's
+  last message and goes to answer, it is stopped ONCE with a checklist: list each filter, sort and condition the job
+  names, find where the page shows it applied now (a chip, the sort label, a URL parameter, the results header), read
+  in place with no URL, set what is missing, then answer naming each one. A job that names none answers at once.
+- Once per owner message, never on a turn with no browser call, and it fails open. Three guards stop a loop: Claude
+  Code's `stop_hook_active`, the check's own tag in the turn, a per-session state file.
+  `FIVEDIVE_BROWSER_APPLIED_CHECK=0` turns it off. Other harnesses (Codex, Pi) do not run Claude Code hooks and are
+  unchanged. Ships only if the paired bench rerun clears its bars on DIVE-8755.
+
 ### Fixed — after a nightly update, other seats no longer get a false "busy" from the shared box browser (DIVE-8696), 1.94.1
 - The box browser ran from its own version's folder. Once the update pruned that version, every lease call from
   another seat failed with no words: they read "busy: somebody else holds it" while `lease --status` read "free",

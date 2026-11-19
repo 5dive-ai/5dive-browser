@@ -1,0 +1,16 @@
+{
+  "description": "5dive browser (DIVE-8755): before the agent answers a job it did in the browser, it checks once that every filter, sort and condition the job names is visibly applied on the page.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/applied-check.cjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

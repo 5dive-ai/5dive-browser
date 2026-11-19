@@ -27,6 +27,10 @@ jobs:
         run: bash tests/browser_plugin_unit.sh
       # DIVE-6228: one answer per Google sign-in page (chooser allowed; password,
       # code, robot check, adding an account stop; a wider grant asks). Pure node.
+      # DIVE-8755: the Stop hook that makes the agent check every named filter and sort is
+      # applied before it answers. Pure node on JSONL transcripts; two mutant arms.
+      - name: applied-check hook harness
+        run: bash tests/browser_applied_check_unit.sh
       - name: google sign-in classifier harness
         run: bash tests/browser_google_signin_unit.sh
       # DIVE-6241: a challenge needs a page check, and a login page offering
