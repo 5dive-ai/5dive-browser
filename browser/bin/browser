@@ -944,14 +944,29 @@ cmd_serve_offered() {
 _serve_offered_cold() {  # <site>; _SITE_DIR is the owner's profile
   _daemon_live "$_SITE_DIR" && return 0
   _serve_running "$_SITE_DIR" >/dev/null || return 0   # nothing up: the caller's own words stand
-  if [[ "$(_kv "$(_serve_pidfile "$_SITE_DIR")" login)" == 1 ]] && _viewer_live "$_SITE_DIR"; then
+  local pf; pf="$(_serve_pidfile "$_SITE_DIR")"
+  if [[ "$(_kv "$pf" login)" == 1 ]] && _viewer_live "$_SITE_DIR"; then
     # DIVE-8450 (box report 975): a Done that never arrives (a lost tap, an
     # update that restarted the viewer, a Done that reopened this window) left
     # "ask them to press Done" as the agent's only words, again and again. The
     # admin stop is the way out that needs nobody at the window: since 1.84.0 a
     # person's window stops WITH its login kept (DIVE-8367), so the next command
     # starts the agent's browser on it.
-    die "$E_UNAVAILABLE" "$1 is still open in the owner's sign-in window: ask them to press Done on $1, then try again. Until they do, that window is theirs and no browser for the agent can start beside it. If they already pressed Done, or nobody is at that window, close it without them (the login is kept, and your next command starts your browser):  sudo 5dive browser serve $1 --stop"
+    #
+    # DIVE-8793 (box report 1173): in a group every site shares one profile, so
+    # the window may be ANOTHER site's Connect. Naming the agent's site sent the
+    # owner to press Done on a window that did not exist. The pidfile records
+    # the window's own site; that is the one the owner and the stop must name.
+    local win; win=$(_kv "$pf" site); [[ -n "$win" ]] || win="$1"
+    local head="$1 is still open in the owner's sign-in window"
+    [[ "$win" == "$1" ]] || head="$1 shares its browser with $win, and $win is still open in the owner's sign-in window"
+    # A link nobody opened is a different wait from a person mid-sign-in.
+    local tf unopened="" exp; tf="$(_viewer_ticket "$_SITE_DIR")"
+    if [[ "$(_kv "$tf" state)" == open && ! -f "$(_viewer_admitted_file "$_SITE_DIR")" ]]; then
+      exp=$(_kv "$tf" expires_at)
+      [[ "$exp" =~ ^[0-9]+$ ]] && unopened=" The sign-in link for it was never opened; it expires at $(date -u -d "@$exp" +%H:%MZ 2>/dev/null)."
+    fi
+    die "$E_UNAVAILABLE" "$head: ask them to press Done on $win, then try again.$unopened Until they do, that window is theirs and no browser for the agent can start beside it. If they already pressed Done, or nobody is at that window, close it without them (the login is kept, and your next command starts your browser):  sudo 5dive browser serve $win --stop"
   fi
   local why=""
   if [[ -n "${FIVEDIVE_BROWSER_NO_DAEMON:-}" ]]; then why="the session daemon is turned off on this box (FIVEDIVE_BROWSER_NO_DAEMON)"
