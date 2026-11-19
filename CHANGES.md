@@ -11,7 +11,7 @@ that file stays where it is.
 ### Fixed — the "still open in the owner's sign-in window" refusal names the window that is actually open (DIVE-8793), 1.95.1
 - Every site of a group shares one browser. When the owner's sign-in window was open for one site and the agent
   asked for another, the agent was told to have the owner "press Done" on the agent's site: a window that did not
-  exist (box report 1173, mail.yandex.ru vs an unopened app.chatplace.io Connect).
+  exist (box report 1173: the agent asked for a mail site, the window was an unopened Connect for another site).
 - The refusal now names the window's own site, says the agent's site shares its browser, and the `--stop` way out
   names that site too. When the sign-in link was never opened it says so, with its expiry. Same site: unchanged.
 

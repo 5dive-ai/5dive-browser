@@ -115,7 +115,7 @@ arm "L4 does not claim a sign-in window" no "$(has "sign-in window" "$o4")"
 # G: DIVE-8793 (box report 1173). Every site of a group shares one profile, so
 # the sign-in window may be ANOTHER site's Connect. The owner was told to press
 # Done on the agent's site, a window that did not exist.
-GA=app.chatplace.io GB=mail.yandex.ru
+GA=app.example.com GB=mail.example.org
 GD="$FIVEDIVE_BROWSER_PROFILE_ROOT/$ME/.group-main"
 mkdir -p "$GD"; chmod 700 "$GD"; printf 'Main\n' > "$GD/.5dive-group-name"
 ln -s .group-main "$FIVEDIVE_BROWSER_PROFILE_ROOT/$ME/$GA"
