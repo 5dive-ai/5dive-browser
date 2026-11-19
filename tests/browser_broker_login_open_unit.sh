@@ -25,6 +25,10 @@
 #       on this box: playwright-core is not installed"
 #   L4  nothing served at all and nothing can start: the old words still stand
 #       (this change only names the two states root can see)
+#   G1  DIVE-8793: a group (A, B share one profile), the sign-in window is A's,
+#       the agent asks for B: the refusal and the --stop line name A, never B
+#   G2  ...and a minted link nobody opened is named, with its expiry
+#   G3  ...a redeemed link is not; G4 asking for A itself keeps today's words
 #   N1  NEGATIVE CONTROL: origin/main's bin/browser gives L1's case the socket
 #       catch-all (run with BROKER_LOGIN_BIN=<old bin/browser>; L1/L1b/L2 go red)
 set -uo pipefail
@@ -107,6 +111,49 @@ unserve
 o4=$(snap); rc4=$?
 arm "L4 still refused (69)" 69 "$rc4"
 arm "L4 does not claim a sign-in window" no "$(has "sign-in window" "$o4")"
+
+# G: DIVE-8793 (box report 1173). Every site of a group shares one profile, so
+# the sign-in window may be ANOTHER site's Connect. The owner was told to press
+# Done on the agent's site, a window that did not exist.
+GA=app.example.com GB=mail.example.org
+GD="$FIVEDIVE_BROWSER_PROFILE_ROOT/$ME/.group-main"
+mkdir -p "$GD"; chmod 700 "$GD"; printf 'Main\n' > "$GD/.5dive-group-name"
+ln -s .group-main "$FIVEDIVE_BROWSER_PROFILE_ROOT/$ME/$GA"
+ln -s .group-main "$FIVEDIVE_BROWSER_PROFILE_ROOT/$ME/$GB"
+: > "$FIVEDIVE_BROWSER_SESSION_ROOT/$ME/$GA.offered"; : > "$FIVEDIVE_BROWSER_SESSION_ROOT/$ME/$GB.offered"
+live; gx=$LIVE; live; gc=$LIVE
+printf 'site=%s\ndisplay=497\nxvfb_pid=%s\nchrome_pid=%s\nlogin=1\n' "$GA" "$gx" "$gc" > "$GD/.5dive-serve"
+live; printf 'vnc_pid=%s\n' "$LIVE" > "$GD/.5dive-viewer"
+gsnap() { FIVEDIVE_BROWSER_SEAT="$AG" timeout 60 "$BROWSER" snapshot "$1" "https://$1/" --no-shot 2>&1; }
+
+og=$(gsnap "$GB"); rcg=$?
+arm "G1 exit is 69" 69 "$rcg"
+arm "G1 names the window's own site as the one open" yes "$(has "$GA is still open in the owner's sign-in window" "$og")"
+arm "G1 says the agent's site shares that browser" yes "$(has "$GB shares its browser with $GA" "$og")"
+arm "G1 asks for Done on the window's site" yes "$(has "ask them to press Done on $GA" "$og")"
+arm "G1 never asks for Done on the agent's site" no "$(has "press Done on $GB" "$og")"
+arm "G1 the --stop line names the window's site" yes "$(has "sudo 5dive browser serve $GA --stop" "$og")"
+arm "G1 the --stop line never names the agent's site" no "$(has "serve $GB --stop" "$og")"
+arm "G1 not the socket catch-all" no "$(has "no browser answers on its socket" "$og")"
+arm "G1 no ticket on disk: no 'never opened' claim" no "$(has "never opened" "$og")"
+[[ "$rcg" == 69 ]] || printf '   G1 output: %s\n' "$og"
+
+# G2: the link was minted and nobody opened it: say so, with its expiry.
+gexp=$(( $(date -u +%s) + 300 ))
+printf 'hash=x\nexpires_at=%s\nbind=s\nstate=open\nminted_at=1\nport=1\n' "$gexp" > "$GD/.5dive-viewer.ticket"
+og2=$(gsnap "$GB")
+arm "G2 an unopened link is named, with its expiry" yes "$(has "The sign-in link for it was never opened; it expires at $(date -u -d "@$gexp" +%H:%MZ)." "$og2")"
+# G3: a person redeemed it: no such claim.
+sed -i 's/^state=open$/state=consumed/' "$GD/.5dive-viewer.ticket"
+og3=$(gsnap "$GB")
+arm "G3 a redeemed link is not called unopened" no "$(has "never opened" "$og3")"
+arm "G3 still names the window's site" yes "$(has "ask them to press Done on $GA" "$og3")"
+
+# G4: the agent asks for the window's own site: today's words, unchanged.
+og4=$(gsnap "$GA")
+arm "G4 same site: today's head" yes "$(has "$GA is still open in the owner's sign-in window: ask them to press Done on $GA" "$og4")"
+arm "G4 same site: no 'shares its browser'" no "$(has "shares its browser" "$og4")"
+arm "L1 same site (no group): no 'shares its browser'" no "$(has "shares its browser" "$out")"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

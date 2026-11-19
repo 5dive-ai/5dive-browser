@@ -8,6 +8,13 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — the "still open in the owner's sign-in window" refusal names the window that is actually open (DIVE-8793), 1.95.1
+- Every site of a group shares one browser. When the owner's sign-in window was open for one site and the agent
+  asked for another, the agent was told to have the owner "press Done" on the agent's site: a window that did not
+  exist (box report 1173: the agent asked for a mail site, the window was an unopened Connect for another site).
+- The refusal now names the window's own site, says the agent's site shares its browser, and the `--stop` way out
+  names that site too. When the sign-in link was never opened it says so, with its expiry. Same site: unchanged.
+
 ### Fixed — the sign-in check after Done no longer looks like a different browser to the site (DIVE-8486), 1.95.0
 - The sign-in window is a normal Chrome; the check that runs after Done was a headless Chrome on the same profile,
   and it told every site it was "HeadlessChrome". A site that ties a login to the browser it was made in answers
