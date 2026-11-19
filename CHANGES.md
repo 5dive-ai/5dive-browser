@@ -8,6 +8,20 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — the sign-in check after Done no longer looks like a different browser to the site (DIVE-8486), 1.95.0
+- The sign-in window is a normal Chrome; the check that runs after Done was a headless Chrome on the same profile,
+  and it told every site it was "HeadlessChrome". A site that ties a login to the browser it was made in answers
+  such a check signed out and deletes its own login cookies, so the check ended the sign-in it was reading. On a
+  client box a Tilda sign-in read "still on the sign-in page" after Done twice, five days apart, and the login
+  cookies were gone from the profile both times.
+- The check (`status`, and both halves of `capture`) now sends the user-agent string the window's Chrome sends.
+  `FIVEDIVE_BROWSER_PROBE_UA=off` sends the headless one again.
+- A person's window stop now writes how many session-only cookies it kept to the profile's audit log
+  (`session_keep`). If a sign-in still reads signed out after Done, that line says which half lost it: 0 kept
+  means the window never wrote the login to disk; some kept means the check lost them afterwards.
+- Not yet measured on Tilda itself: no Tilda account exists to sign in with outside the client's, so the user-agent
+  is the strongest suspect, not a proven cause. The audit line settles it on the next real sign-in.
+
 ### Fixed — after a nightly update, other seats no longer get a false "busy" from the shared box browser (DIVE-8696), 1.94.1
 - The box browser ran from its own version's folder. Once the update pruned that version, every lease call from
   another seat failed with no words: they read "busy: somebody else holds it" while `lease --status` read "free",

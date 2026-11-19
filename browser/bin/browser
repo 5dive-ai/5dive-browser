@@ -2522,6 +2522,27 @@ _chrome_capped() {  # <budget-ms> <chrome> <args...>
   [[ "$slack" =~ ^[0-9]{1,4}$ ]] || slack=30
   timeout -k 5 "$(( (ms + 999) / 1000 + slack ))" "$@"
 }
+# A COLD CHECK LOOKS LIKE THE BROWSER THE PERSON SIGNED IN WITH (DIVE-8486).
+# The sign-in window is a plain Chrome; the check after Done is a headless one on
+# the same profile, and headless Chrome says "HeadlessChrome/<n>" where the window
+# said "Chrome/<n>". A site that binds its login to the browser it was made in
+# reads that as a different browser, answers signed out and deletes the login
+# cookies itself (Tilda's signed-out /projects/ sends Set-Cookie …=deleted for
+# every login cookie), so the check would end the very login it was reading.
+# This is the user-agent string the window's Chrome sends (Chrome's reduced form:
+# Linux is always "X11; Linux x86_64", the version is <major>.0.0.0). The major
+# is read from the profile's own "Last Version" file, which Chrome writes at every
+# start: the version the window ran, and no extra Chrome launched to ask. A profile
+# no Chrome has opened yet has no login to protect, and keeps the headless string.
+# FIVEDIVE_BROWSER_PROBE_UA=off sends Chrome's own headless string again.
+_probe_ua_args() {  # <profile-dir> -> "--user-agent=…" on stdout, or nothing
+  [[ "${FIVEDIVE_BROWSER_PROBE_UA:-}" == off ]] && return 0
+  local v="" maj
+  [[ -f "$1/Last Version" ]] && v=$(head -c 64 "$1/Last Version" 2>/dev/null)
+  maj="${v%%.*}"
+  [[ "$maj" =~ ^[0-9]{2,4}$ ]] || return 0
+  printf -- '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s.0.0.0 Safari/537.36\n' "$maj"
+}
 _chrome_cap_s() {  # <budget-ms> — the N _chrome_capped used, for a message
   local ms="$1" slack="${FIVEDIVE_BROWSER_CHROME_SLACK_S:-30}"
   [[ "$ms" =~ ^[0-9]{1,7}$ ]] || ms=8000
@@ -3384,6 +3405,8 @@ _probe() {
   # An adapter's own wait (DIVE-7648) is spent in the served browser's one tab;
   # the cold loop below launches a Chrome per look, so it keeps the box budget.
   local awaitms=""; (( warm )) && awaitms=$(_site_probe_wait_ms "$site")
+  # The cold check presents the person's own browser, not HeadlessChrome (DIVE-8486).
+  local -a uaa=(); (( warm )) || mapfile -t uaa < <(_probe_ua_args "$dir")
   local total="${FIVEDIVE_BROWSER_PROBE_WAIT_MS:-$awaitms}" poll="${FIVEDIVE_BROWSER_PROBE_POLL_MS:-400}"
   total="${total:-8000}"
   [[ "$total" =~ ^[0-9]{1,7}$ ]] || total=8000
@@ -3408,7 +3431,7 @@ _probe() {
       rc=$?
     else
       _chrome_capped 8000 "$chrome" --headless --no-sandbox --disable-gpu --user-data-dir="$dir" \
-            --virtual-time-budget=8000 --dump-dom "$url" >"$dom" 2>"$dom.err"
+            "${uaa[@]}" --virtual-time-budget=8000 --dump-dom "$url" >"$dom" 2>"$dom.err"
       rc=$?
     fi
     (( rc != 0 )) && break
@@ -5021,12 +5044,13 @@ cmd_capture() {
   chmod 700 "$out" 2>/dev/null || true
   [[ -z "$(ls -A "$out" 2>/dev/null)" ]] || die "$E_USAGE" "$out is not empty; a capture never overwrites one"
   local cold orc=0 k f
+  local -a cuaa=(); mapfile -t cuaa < <(_probe_ua_args "$dir")   # DIVE-8486: both halves as the person's browser
   for k in 1 2; do
     f="$out/signed-out.html"; (( k == 2 )) && f="$out/signed-out-2.html"
     cold=$(mktemp -d) || die "$E_UNAVAILABLE" "mktemp failed"
     ( umask 077
       _chrome_capped 8000 "$chrome" --headless --no-sandbox --disable-gpu --user-data-dir="$cold" \
-        --virtual-time-budget=8000 --dump-dom "$url" >"$f" 2>/dev/null ) || orc=$?
+        "${cuaa[@]}" --virtual-time-budget=8000 --dump-dom "$url" >"$f" 2>/dev/null ) || orc=$?
     rm -rf "$cold"
     (( orc == 0 )) || break
   done
@@ -5044,7 +5068,7 @@ cmd_capture() {
     how=cold
     ( umask 077
       _chrome_capped 8000 "$chrome" --headless --no-sandbox --disable-gpu --user-data-dir="$dir" \
-        --virtual-time-budget=8000 --dump-dom "$url" >"$out/signed-in.html" 2>/dev/null )
+        "${cuaa[@]}" --virtual-time-budget=8000 --dump-dom "$url" >"$out/signed-in.html" 2>/dev/null )
     irc=$?
     _lock_clear_dead "$dir"
   fi
@@ -6242,7 +6266,13 @@ cmd_serve() {
     # person saving the login, not the person closing a browser, so the login is
     # kept for SESSION_KEEP_SAVED_S, whoever stops it (Done, the dashboard's close,
     # the idle sweep). The automated browser's own stop still ends them.
-    if (( person )); then _session_cookies_keep "$dir" "$SESSION_KEEP_SAVED_S" >/dev/null || true
+    # THE KEEP IS RECORDED (DIVE-8486): how many session-only cookies a person's
+    # stop gave an expiry, so a sign-in that reads signed out after Done says
+    # which half lost it — 0 kept (the window never wrote it to disk) or some kept
+    # and the check then lost them (the site's own signed-out answer).
+    if (( person )); then
+      local kept; kept=$(_session_cookies_keep "$dir" "$SESSION_KEEP_SAVED_S" 2>/dev/null) || kept=failed
+      _audit_row "$dir" session_keep "a person's window stopped: ${kept:-0} session-only cookies kept for ${SESSION_KEEP_SAVED_S}s"
     elif [[ "${_SERVE_SWAP:-}" == 1 ]]; then _session_cookies_keep "$dir" >/dev/null || true; fi
     local ssock; ssock="$(_kv "$f" sock)"
     rm -f "$f" "${ssock:-$dir/.5dive-session.sock}" "$(_viewer_admitted_file "$dir")"

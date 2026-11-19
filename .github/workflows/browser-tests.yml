@@ -263,6 +263,12 @@ jobs:
       # sign-in window on the runner's Chrome, Done's stop, then a fresh Chrome).
       - name: done keeps a session-only login harness
         run: bash tests/browser_done_session_keep_unit.sh
+      # DIVE-8486: the cold check after Done reaches the site as the person's
+      # Chrome, not HeadlessChrome (fake Chrome arms, the pre-fix tree as the
+      # mutant, and a LIVE arm: the runner's Chrome against a local page that
+      # records the User-Agent it is sent).
+      - name: probe user-agent harness
+        run: bash tests/browser_probe_ua_unit.sh
       - name: totp harness
         run: bash tests/browser_totp_unit.sh
       # DIVE-6013: profile groups — two sites in one group share a sign-in, another

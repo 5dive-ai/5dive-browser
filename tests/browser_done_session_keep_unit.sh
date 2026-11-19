@@ -17,6 +17,7 @@
 #      K5 MUTANT: the pre-fix tree (BASE) starts the window without the flag and
 #         its stop leaves the session cookie with no expiry, for Chrome to drop
 #      K6 the session daemon honours keep_s, bounded to 30 days
+#      K8 (DIVE-8486) that stop writes how many it kept to the audit log
 #      K7 (DIVE-8487) the window opens the site as an app window (one page, no
 #         tabs, no address bar); FIVEDIVE_BROWSER_LOGIN_WINDOW=tab is the way back
 #   L  LIVE, when this machine has Chrome and Xvfb (CI): a local site whose
@@ -142,6 +143,10 @@ read -r p e x <<<"$(ck "$D/Default/Network/Cookies" login_session)"
 arm 'K2a the stop Done runs stops the window' '0 no' "$STRC $(yn test -f "$D/.5dive-serve")"
 arm 'K2b ...and keeps the session-only login: persistent, with an expiry ~30 days out' '1 1 yes' "$p $e $(near "${x:-0}" 2592000)"
 arm 'K3 NEGATIVE CONTROL: the cookie that had an expiry is unchanged' '1 1 13400000000000000' "$(ck "$D/Default/Network/Cookies" lasting)"
+# K8 (DIVE-8486): the person's stop records how many it kept, so a sign-in that
+# still reads signed out after Done says which half lost it.
+arm 'K8 ...and records the keep in the audit log: 1 session-only cookie kept' 'yes' \
+  "$(yn grep -q '"event":"session_keep".*: 1 session-only cookies kept' "$D/.5dive-audit.jsonl")"
 
 # ================================================================ K7  the window is the page (DIVE-8487)
 # K1's launch line: the site opens as an app window (no tabs, no address bar),
