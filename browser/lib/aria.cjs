@@ -54,7 +54,7 @@ const INTERACTIVE = [
 // UTF-16, so `.slice(0, 200)` on a name whose 200th unit is the first half of an
 // emoji keeps a lone surrogate. JSON.stringify writes it as `\ud83d`, and jq 1.7
 // refuses the WHOLE document ("Invalid \uXXXX\uXXXX surrogate pair escape"):
-// one mail subject took down a customer's entire Yandex Mail tree (box report
+// one mail subject took down a customer's entire webmail tree (box report
 // 1256). So a cut drops a trailing high surrogate, and a lone half the page drew
 // itself becomes U+FFFD. The page-side functions below cannot close over this
 // one (page.evaluate serialises them), so each carries a two-line copy named

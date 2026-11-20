@@ -3608,7 +3608,7 @@ tc 'T23a2 a name stops at 200 characters' "button/$(printf 'L%.0s' $(seq 200)) "
 tn 'T23a2 ...not one more' "button/$(printf 'L%.0s' $(seq 201))" "$WALKREFS"
 
 # --- T23i a cut never splits an emoji (DIVE-8903) ------------------------------
-# Box report 1256: a Yandex Mail subject with an emoji at its 200th unit kept a
+# Box report 1256: a webmail subject with an emoji at its 200th unit kept a
 # lone high surrogate, JSON.stringify wrote "\ud83d", and jq 1.7 refused the WHOLE
 # tree (exit 5). Every arm below feeds the emoji across the cut and asks jq.
 A199="$(printf 'A%.0s' $(seq 199))"
