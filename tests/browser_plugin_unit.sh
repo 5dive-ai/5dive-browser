@@ -3566,6 +3566,9 @@ const body = new El('body', {}, '', [
   new El('label', {}, 'Occupation ', [new El('select', {}, '', [new El('option', {}, 'Actors'), new El('option', {}, 'Actuaries')])]),
   new El('label', {}, 'Remember me ', [new El('input', { type: 'checkbox' })]),
   new El('button', { 'aria-label': 'L'.repeat(300) }),
+  // DIVE-8903: the emoji's first half is unit 200 of the name (box report 1256: a
+  // mail row's aria-label carries the whole subject).
+  new El('a', { href: '/mail', 'aria-label': 'A'.repeat(199) + '\u{1F600} subject' }, 'Mail'),
 ]);
 const all = flatten(body).slice(1);
 const doc = {
@@ -3603,6 +3606,57 @@ tn 'T23a2 ...never by the label around the list' 'option/Occupation' "$WALKREFS"
 tc 'T23a2 a control wrapped in its label still takes the label' 'checkbox/Remember me' "$WALKREFS"
 tc 'T23a2 a name stops at 200 characters' "button/$(printf 'L%.0s' $(seq 200)) " "$WALKREFS "
 tn 'T23a2 ...not one more' "button/$(printf 'L%.0s' $(seq 201))" "$WALKREFS"
+
+# --- T23i a cut never splits an emoji (DIVE-8903) ------------------------------
+# Box report 1256: a Yandex Mail subject with an emoji at its 200th unit kept a
+# lone high surrogate, JSON.stringify wrote "\ud83d", and jq 1.7 refused the WHOLE
+# tree (exit 5). Every arm below feeds the emoji across the cut and asks jq.
+A199="$(printf 'A%.0s' $(seq 199))"
+WALK8903="$(ARIA="$ARIA" node "$TMP/walk-test.js" all)"
+t  'T23i a walk with an emoji at the 200th unit parses with jq' 0 \
+   "$(jq -e . <<<"$WALK8903" >/dev/null 2>&1; echo $?)"
+t  'T23i ...and the name keeps 199 units, the emoji dropped whole' 1 \
+   "$(jq -r '.refs[]' <<<"$WALK8903" 2>/dev/null | grep -cx "link/$A199")"
+t  'T23i ...and its ref resolves back to exactly that element' 1 \
+   "$(ARIA="$ARIA" node "$TMP/walk-test.js" all "link/$A199" | jq -r '.marked' 2>/dev/null)"
+cat > "$TMP/cut-test.js" <<'CUT'
+// Every page-side copy of the cut and the module one, one JSON document per line,
+// so one bad field cannot hide behind another.
+const A = require(process.env.ARIA);
+const E = '\u{1F600}';
+const at = (n) => 'A'.repeat(n - 1) + E + ' tail';   // the emoji's first half is unit n
+const say = (k, v) => process.stdout.write(JSON.stringify({ k, v, n: String(v).length }) + '\n');
+say('cutUnits', A.cutUnits(at(200), 200));
+say('cutUnits whole emoji kept', A.cutUnits('A'.repeat(198) + E, 200));
+say('cutUnits lone half from the page', A.cutUnits('x\ud83dy', 200));
+global.document = { querySelector: () => ({ getAttribute: (n) => n === 'aria-label' ? at(160) : null,
+  innerText: '', title: '', tagName: 'BUTTON' }) };
+say('_labelIn', A._labelIn({ sel: '#x', op: 'click' }));
+const node = (t) => ({ innerText: t, textContent: t, value: '', getAttribute: () => null });
+global.document = { querySelector: () => null, querySelectorAll: () => [node(at(280))], location: { hostname: 'x' } };
+say('_payloadIn publish', A._payloadIn({ op: 'click', cls: 'publish' }).text);
+global.document.querySelectorAll = () => [node(at(200))];
+say('_payloadIn send', A._payloadIn({ op: 'click', cls: 'send' }).first_line);
+global.document.querySelectorAll = () => [node(at(160))];
+say('_payloadIn delete', A._payloadIn({ op: 'click', cls: 'delete' }).item);
+global.document = { body: { tagName: 'P', textContent: at(80), children: [], scrollIntoView() {},
+  getBoundingClientRect: () => ({ width: 10, height: 10, top: -100, bottom: -50 }) } };
+global.window = { innerHeight: 800 };
+global.getComputedStyle = () => ({ visibility: 'visible', display: 'block' });
+say('_showIn', (A._showIn({ expect: 'AAA' }) || {}).text);
+CUT
+CUTS="$(ARIA="$ARIA" node "$TMP/cut-test.js" 2>&1)"
+t  'T23i every cut ran (8 of them)' 8 "$(grep -c '^{' <<<"$CUTS")"
+while IFS= read -r line; do
+  k="$(jq -r .k <<<"$line" 2>/dev/null)"; [[ -n "$k" ]] || k="(unparsed) ${line:0:40}"
+  t  "T23i $k: jq parses it" 0 "$(jq -e . <<<"$line" >/dev/null 2>&1; echo $?)"
+done <<<"$CUTS"
+t  'T23i a cut across the emoji keeps the 199 units before it' 199 \
+   "$(jq -r 'select(.k=="cutUnits")|.n' <<<"$CUTS" 2>/dev/null)"
+t  'T23i ...a whole emoji that fits is kept (198 + 2)' 200 \
+   "$(jq -r 'select(.k=="cutUnits whole emoji kept")|.n' <<<"$CUTS" 2>/dev/null)"
+t  'T23i ...and a lone half the page drew becomes U+FFFD' "x$(printf '\xef\xbf\xbd')y" \
+   "$(jq -r 'select(.k=="cutUnits lone half from the page")|.v' <<<"$CUTS" 2>/dev/null)"
 t  'T23a --interactive drops the non-actionable roles' 'no' \
    "$(ARIA="$ARIA" node "$TMP/walk-test.js" interactive | jq -r '.refs|join(" ")' | grep -q 'label/' && echo yes || echo no)"
 # MARKING IS THE SAME WALK. One element, and exactly one.
@@ -3676,6 +3730,21 @@ t  'T23b ...and settles on a bounded timer rather than network idle' 'yes' \
 run env NODE_PATH="$PWROOT/node_modules" PWREC="$PWREC" PWWALK="$WALKJSON" \
     "$BROWSER" tree "$TREESITE" "https://$TREESITE/inbox" --json
 t  'T23b --json is machine-readable' 'button/Send' "$(jq -r '.nodes[1].ref' <<<"$OUT")"
+
+# --- T23j a tree jq cannot parse is a FAILURE, not an empty success (DIVE-8903)
+# The script runs without -e: on 1.95.1 the plain branch's jq failed, the footer's
+# count came out empty, and its printf made `tree` exit 0 (box report 1256). --json
+# handed the bytes over unchecked.
+printf '%s' '{"nodes":[{"ref":"link/\ud83d","role":"link","name":"\ud83d","tag":"a"}],"marker":"r1"}' > "$TMP/walk-lone.json"
+run env NODE_PATH="$PWROOT/node_modules" PWREC="$PWREC" PWWALK="$TMP/walk-lone.json" \
+    "$BROWSER" tree "$TREESITE" "https://$TREESITE/inbox"
+t  'T23j a tree jq refuses exits non-zero' 69 "$RC"
+tc 'T23j ...and says the tree did not parse' 'did not parse as JSON' "$ERR"
+tn 'T23j ...and prints no footer with an empty count' 'addressable node(s)' "$ERR"
+run env NODE_PATH="$PWROOT/node_modules" PWREC="$PWREC" PWWALK="$TMP/walk-lone.json" \
+    "$BROWSER" tree "$TREESITE" "https://$TREESITE/inbox" --json
+t  'T23j --json refuses it too' 69 "$RC"
+t  'T23j ...and hands no unparseable bytes to the caller' '' "$OUT"
 
 # --- T23c ONE WALK, TWO MODES -------------------------------------------------
 : > "$PWREC"

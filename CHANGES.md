@@ -8,6 +8,13 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a page with an emoji at the end of a long name no longer breaks `tree`, and a tree that cannot be read now fails out loud (DIVE-8903), 1.95.2
+- A name is cut at 200 characters. On a mail page whose subject had an emoji right at that point, the cut kept half of
+  the emoji, and jq refused the whole tree: no refs at all, so the agent's mail check stopped (box report 1256). Every
+  cut of page text now keeps whole characters, and a broken character the page drew itself reads as `�`.
+- `tree` used to exit 0 when its output could not be parsed, printing jq's errors and nothing else. It now exits 69
+  with "the page's tree did not parse as JSON", in plain and `--json` mode alike, and prints nothing half-made.
+
 ### Fixed — the "still open in the owner's sign-in window" refusal names the window that is actually open (DIVE-8793), 1.95.1
 - Every site of a group shares one browser. When the owner's sign-in window was open for one site and the agent
   asked for another, the agent was told to have the owner "press Done" on the agent's site: a window that did not
