@@ -4863,9 +4863,18 @@ cmd_tree() {
   # not a reason for the next caller to wait.
   _shot_restore; _lease_release; trap - EXIT
 
+  # A TREE THAT DOES NOT PARSE IS A FAILURE, IN BOTH BRANCHES (DIVE-8903). This
+  # script runs without -e, so a jq that refused the document used to be followed
+  # by a footer with an empty count, and its printf made the verb exit 0: box
+  # report 1256 got two jq errors, no refs and a success. --json used to pass the
+  # bytes through unchecked, so the caller's own jq was the first thing to fail.
+  local n
+  n=$(jq -er '.nodes | length' <<<"$out") \
+    || die "$E_UNAVAILABLE" "the page's tree did not parse as JSON (jq's reason is above); nothing was printed."
   if (( json )); then printf '%s\n' "$out"; return 0; fi
-  jq -r '.nodes[] | "  \(.role)  \"\(.name)\"\n      ref=\(.ref)"' <<<"$out"
-  printf '\n%s: %s addressable node(s) on %s\n' "$PROG" "$(jq -r '.nodes|length' <<<"$out")" "$url" >&2
+  jq -r '.nodes[] | "  \(.role)  \"\(.name)\"\n      ref=\(.ref)"' <<<"$out" \
+    || die "$E_UNAVAILABLE" "the page's tree could not be printed (jq refused it above)."
+  printf '\n%s: %s addressable node(s) on %s\n' "$PROG" "$n" "$url" >&2
   printf 'Use one as a selector, in an adapter step or on the command line: ref=<role>/<name>\n' >&2
   printf 'A ref is re-derived from the page each time, so it still works after a reload.\n' >&2
 }
