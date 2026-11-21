@@ -87,6 +87,12 @@ case "$1" in
       echo "browser: the executor could not capture $u (its own reason is above)." >&2; exit 69
     fi
     [[ -f "$FAKE_CTL.snapslow" ]] && sleep 5
+    # DIVE-9003: a bare URL whose host two saved logins cover is refused by the
+    # real router (_route_site), in its words; a named profile is not routed.
+    if [[ -f "$FAKE_CTL.snaptwo" && "$2" =~ ^https?:// ]]; then
+      h="${2#*://}"; h="${h%%/*}"
+      echo "browser: $h has 2 connected accounts: example.com sub.example.com. Which one acts is the owner's call — ask them, then name it: 5dive browser <verb> <profile> $2" >&2; exit 64
+    fi
     if [[ -f "$FAKE_CTL.snapstop" ]]; then
       echo "browser: futuretools.io is presenting a security challenge, so anything rendered now is the challenge page and not the page you asked for. A person clears it. Ask your owner to, then carry on after their Done: 5dive browser connect-request futuretools.io --challenge --url=<the page you asked for>" >&2; exit 75
     fi
@@ -129,9 +135,12 @@ export FIVEDIVE_TELEGRAM_API="http://127.0.0.1:$PORT"
 export FIVEDIVE_BROWSER_CONNECT_SELF="$TMP/fake-browser"
 export FIVEDIVE_BROWSER_CONNECT_PRIV="$BROWSER"
 export FAKE_LOG="$TMP/fake.log" FAKE_CTL="$TMP/ctl"
+# DIVE-9003: where the asking seat's saved logins live, and the box's offers.
+# Empty until T9003: every earlier arm is a site with no saved login.
+export FIVEDIVE_BROWSER_PROFILE_ROOT="$TMP/profiles" FIVEDIVE_BROWSER_SESSION_ROOT="$TMP/sessions"
 
 priv() { printf '%s\0' "$@" | "$BROWSER" _connect; }
-reset() { : >"$TMP/stub.log"; : >"$FAKE_LOG"; rm -f "$TMP"/ctl.{noprofile,authed,bind500,tgfail,badpath,servefail,broken,novline,snap404,snapneterr,snapsoft404,snapclear,snapstop,snapslow}; }
+reset() { : >"$TMP/stub.log"; : >"$FAKE_LOG"; rm -f "$TMP"/ctl.{noprofile,authed,bind500,tgfail,badpath,servefail,broken,novline,snap404,snapneterr,snapsoft404,snapclear,snapstop,snapslow,snaptwo}; }
 binds() { grep -c '"/shell/browser-viewer-bind"' "$TMP/stub.log" 2>/dev/null || true; }
 last_code() { jq -r 'select(.path|test("sendMessage")) | .form.reply_markup' "$TMP/stub.log" | tail -1 | jq -r '.inline_keyboard[0][0].callback_data' | sed 's/^bconn://'; }
 
@@ -727,6 +736,43 @@ out=$("$BROWSER" login-ask github.com --url=https://evil.test/login 2>&1); rc=$?
 t  "LA14 --url on another site is refused, nobody asked" "64 0" "$rc $(jq -c 'select(.path|test("sendMessage"))' "$TMP/stub.log" | wc -l)"
 lareset
 unset FIVEDIVE_BROWSER_SAVED_CLI
+
+# ---- T9003: two saved logins cover the page (box report 1323) --------------------
+# rutube.ru answers for *.rutube.ru and studio.rutube.ru for itself, so a bare URL
+# on studio.rutube.ru is refused by the router as "2 connected accounts". The
+# challenge ask's look passed only the URL, so the site the agent named was
+# dropped and the ask died 69 before anyone was asked.
+T_PAGE="https://sub.example.com/x"
+reset; rm -rf "$TMP/req"/* "$TMP/profiles" "$TMP/sessions"; : >"$TMP/ctl.snaptwo"
+mkdir -p "$TMP/profiles/$ME/example.com" "$TMP/profiles/$ME/sub.example.com"
+out=$("$BROWSER" connect-request sub.example.com --challenge --url="$T_PAGE" 2>&1); rc=$?
+t  "T9003a two logins cover the page: the ask is sent, not refused" "0 1" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+t  "T9003a ... the look ran in the named site's profile" "snapshot sub.example.com $T_PAGE --json --no-shot" "$(head -1 "$FAKE_LOG")"
+tn "T9003a ... and no '2 connected accounts' reached the agent" "connected accounts" "$out"
+# The wider login, named, is the one looked through.
+reset; rm -rf "$TMP/req"/*; : >"$TMP/ctl.snaptwo"
+out=$("$BROWSER" connect-request example.com --challenge --url="$T_PAGE" 2>&1); rc=$?
+t  "T9003b the parent login, named, is the one looked through" "0 snapshot example.com $T_PAGE --json --no-shot" "$rc $(head -1 "$FAKE_LOG")"
+# The box's offered login counts as the seat's (the brokered case _resolve_site reads).
+reset; rm -rf "$TMP/req"/* "$TMP/profiles"; : >"$TMP/ctl.snaptwo"
+mkdir -p "$TMP/profiles/$ME" "$TMP/sessions/t9003-box"; : >"$TMP/sessions/t9003-box/sub.example.com.offered"
+out=$(FIVEDIVE_BROWSER_BOX_SEAT=t9003-box "$BROWSER" connect-request sub.example.com --challenge --url="$T_PAGE" 2>&1); rc=$?
+t  "T9003c a login the box offers is named too" "0 snapshot sub.example.com $T_PAGE --json --no-shot" "$rc $(head -1 "$FAKE_LOG")"
+# A site with no saved login keeps the bare URL: snapshot refuses a profile name
+# it does not have, so naming it would break every captcha on a public page.
+reset; rm -rf "$TMP/req"/* "$TMP/profiles" "$TMP/sessions"; mkdir -p "$TMP/profiles/$ME/sub.example.com"
+out=$("$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" 2>&1); rc=$?
+t  "T9003d no saved login for the named site: the look keeps the bare URL" "0 snapshot $PAGE --json --no-shot" "$rc $(head -1 "$FAKE_LOG")"
+# MUTANT: the pre-fix call (URL only) is refused exactly as box report 1323 was.
+MUT="$TMP/browser.mut"
+grep -v '^    _connect_has_profile "\$caller" "\$site" && look=("\$site" "\$url")$' "$BROWSER" >"$MUT"; chmod +x "$MUT"
+t  "T9003e the mutant differs from the real file by exactly that line" 1 "$(diff "$BROWSER" "$MUT" | grep -c '^<')"
+reset; rm -rf "$TMP/req"/* "$TMP/profiles" "$TMP/sessions"; : >"$TMP/ctl.snaptwo"
+mkdir -p "$TMP/profiles/$ME/example.com" "$TMP/profiles/$ME/sub.example.com"
+out=$("$MUT" connect-request sub.example.com --challenge --url="$T_PAGE" 2>&1); rc=$?
+t  "T9003e MUTANT (URL alone): dies 69, nobody asked" "69 0" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+tc "T9003e MUTANT ... with the box report's refusal" "has 2 connected accounts" "$out"
+reset; rm -rf "$TMP/req"/* "$TMP/profiles" "$TMP/sessions"
 
 # ---- S: the seams are not a door under root -------------------------------------------
 # EVERY top-level non-root block, not the first one: the on-demand serve's seams

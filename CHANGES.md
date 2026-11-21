@@ -8,6 +8,12 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — an agent can ask its owner to clear a captcha on a site that two saved logins cover (DIVE-9003), 1.95.3
+- With rutube.ru and studio.rutube.ru both saved, `connect-request studio.rutube.ru --challenge --url=<page>` died with
+  "2 connected accounts … name it" although the site was named (box report 1323). The look at the page before the ask
+  passed only the address, and the address alone fits both logins. The look now runs in the named site's profile when
+  the agent has that login (its own or the box's). A site with no saved login is looked at as before.
+
 ### Fixed — a page with an emoji at the end of a long name no longer breaks `tree`, and a tree that cannot be read now fails out loud (DIVE-8903), 1.95.2
 - A name is cut at 200 characters. On a mail page whose subject had an emoji right at that point, the cut kept half of
   the emoji, and jq refused the whole tree: no refs at all, so the agent's mail check stopped (box report 1256). Every
