@@ -11422,6 +11422,13 @@ _connect_page_ok() {  # <site> <url>
 # back in the browser it hands over. What the box saw decides the words.
 # A title that is the site saying "no such page" while answering 200.
 CONNECT_ERROR_TITLE='(^|[^0-9])(404|410)([^0-9]|$)|page not found|^not found|that.s an error|page (does not|doesn.t) exist|page (can.t|cannot) be found'
+# Whether <seat> can open <site> as a profile: its own, or the box's offered
+# one (the two places _route_site and _resolve_site read). DIVE-9003.
+_connect_has_profile() {  # <seat> <site>
+  _is_public "$2" && return 1
+  [[ -d "$PROFILE_ROOT/$1/$2" ]] && return 0
+  [[ "$1" != "$BOX_SEAT" && -f "$(_rv_offer "$BOX_SEAT" "$2")" ]]
+}
 # Returns 1 when the page could not be loaded (LOOK_WHY says why), 2 when the
 # look ran out of time: that is not an answer about the page either way.
 _connect_look() {  # <seat> <site> <seconds> <snapshot args...>  -> LOOK_{HTTP,TITLE,PAGE,CHECK,WHY}
@@ -12096,7 +12103,14 @@ _connect_request() {  # <caller> <site> <reason> [challenge <url> | handoff]
   # DIVE-6725: look at the page before anyone is asked. An error page is not
   # sent at all; a page with no check on it is not called a captcha.
   if [[ "$kind" == challenge ]]; then
-    local lrc=0; _connect_look "$caller" "$site" "$CONNECT_LOOK_TIMEOUT" "$url" || lrc=$?
+    # DIVE-9003: the look runs in the named site's profile when the asking seat
+    # has one. A bare URL is routed by host, and two saved logins covering it
+    # (example.com + studio.example.com) refuse it as "2 connected accounts", which
+    # dropped the site the agent named and killed the ask. A site with no saved
+    # login keeps the bare URL: snapshot refuses a profile name it does not have.
+    local -a look=("$url")
+    _connect_has_profile "$caller" "$site" && look=("$site" "$url")
+    local lrc=0; _connect_look "$caller" "$site" "$CONNECT_LOOK_TIMEOUT" "${look[@]}" || lrc=$?
     (( lrc == 1 )) \
       && die "$E_UNAVAILABLE" "nothing was sent: the box browser could not open $url ($LOOK_WHY). The owner would only have seen an error. Check the address, open it yourself (5dive browser snapshot <url>), then ask again."
     # A look that ran out of time is most often a check the load sat waiting on,
