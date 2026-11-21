@@ -769,7 +769,10 @@ grep -v '^    _connect_has_profile "\$caller" "\$site" && look=("\$site" "\$url"
 t  "T9003e the mutant differs from the real file by exactly that line" 1 "$(diff "$BROWSER" "$MUT" | grep -c '^<')"
 reset; rm -rf "$TMP/req"/* "$TMP/profiles" "$TMP/sessions"; : >"$TMP/ctl.snaptwo"
 mkdir -p "$TMP/profiles/$ME/example.com" "$TMP/profiles/$ME/sub.example.com"
-out=$("$MUT" connect-request sub.example.com --challenge --url="$T_PAGE" 2>&1); rc=$?
+# Both halves mutated: the seat half pipes the ask to CONNECT_PRIV (root's
+# _connect, where the look runs), so the mutant must BE that half too, or it
+# grades the fixed file. The prefix scopes the override to this one call.
+out=$(FIVEDIVE_BROWSER_CONNECT_PRIV="$MUT" "$MUT" connect-request sub.example.com --challenge --url="$T_PAGE" 2>&1); rc=$?
 t  "T9003e MUTANT (URL alone): dies 69, nobody asked" "69 0" "$rc $(grep -c sendMessage "$TMP/stub.log")"
 tc "T9003e MUTANT ... with the box report's refusal" "has 2 connected accounts" "$out"
 reset; rm -rf "$TMP/req"/* "$TMP/profiles" "$TMP/sessions"
