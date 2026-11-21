@@ -278,6 +278,15 @@ jq -nc '{url:"u", title:"t", nodes:[range(134) | {ref:"link/l\(.)", role:"link"}
 t  'R1 134 refs: an interactive snapshot prints every one' 134 "$(_inline_page "$RD" "$INLINE_SNAP_REFS_MAX" | grep -c '^  ref=')"
 t  'R1 ...the default (page text and act) still stops at 60' 0 "$(_inline_page "$RD" | grep -c '^  ref=')"
 tc 'R1 ...and cmd_snapshot passes the cap on --interactive' 'if (( interactive )); then _inline_page "$out" "$INLINE_SNAP_REFS_MAX"' "$(cat "$BROWSER")"
+# DIVE-9011: past the cap an interactive snapshot printed NO refs and no word why
+# (recreation.gov, 512-2,087 refs: the "Rules & Cancellations" tab was never seen).
+jq -nc '{url:"u", title:"t", nodes:([range(40) | {ref:"link/h\(.)", role:"link"}] + [{ref:"tab/Rules & Cancellations", role:"tab"}] + [range(2046) | {ref:"button/d\(.)", role:"button"}])}' > "$RD/tree.json"
+OUT="$(_inline_page "$RD" "$INLINE_SNAP_REFS_MAX")"
+t  'R2 2,087 refs: the interactive snapshot prints the first 300' 300 "$(grep -c '^  ref=' <<<"$OUT")"
+tc 'R2 ...a tab near the top is among them' '  ref=tab/Rules & Cancellations' "$OUT"
+tc 'R2 ...the header says it is a cut' 'the first 300 of 2087' "$OUT"
+tc 'R2 ...and the rest is one grep away, in that tree.json' "… 1787 more: jq -r '.nodes[].ref' $RD/tree.json | grep -i '<word>'" "$OUT"
+t  'R2 ...the default (page text and act) still prints none past 60' 0 "$(_inline_page "$RD" | grep -c 'ref=')"
 
 # ============================================================= K  snapshot <site> with no url
 eval "$(awk '/^FLOW_CRUMB_TTL=/||/^_flow_crumb_file\(\)/{print} /^_page_crumb\(\) \{/{f=1} /^_crumb_url\(\) \{/{f=1} f{print} f&&/^}/{f=0}' "$BROWSER")"

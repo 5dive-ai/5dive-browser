@@ -99,5 +99,27 @@ t 'S20 a fill (it opens no window) waits nothing' '0' "$(node -e '
   const t0 = Date.now(); f.sync("fill", async () => true).then(() => console.log(Math.round((Date.now() - t0) / 100) * 100));')"
 t 'S21 the daemon skips the re-read settle only when the page settled AND no --settle was asked' 1 "$(grep -c 'settled && req.settle === undefined ? 0' browser/bin/session-daemon)"
 
+# DIVE-9011: a snapshot whose settle ends with the page still busy gets up to
+# SNAP_BUSY_MS more, ending at quiet; no watch waits nothing extra.
+# b <watch: none|idle|busy:<ms>> <dom: still|busy> [SNAP_BUSY_MS] -> "<elapsed ms, to 100> <went quiet>"
+b() { FIVEDIVE_BROWSER_SNAP_BUSY_MS="${3:-3000}" node -e '
+  const aria = require("./browser/lib/aria.cjs");
+  const [w, dom] = process.argv.slice(1);
+  const sleep = (n) => new Promise((r) => setTimeout(r, n));
+  const t0 = Date.now();
+  const page = { waitForTimeout: sleep, evaluate: async (fn, q) => { await sleep(q); return dom === "still"; } };
+  const busyMs = w.startsWith("busy:") ? Number(w.slice(5)) : 0;
+  const watch = w === "none" ? null : { inflight: () => (Date.now() - t0 < busyMs ? 1 : 0), stop: () => {} };
+  aria.settleBusy(page, watch).then((q) => console.log(Math.round((Date.now() - t0) / 100) * 100, q));
+' "$1" "$2"; }
+t 'S22 settleBusy: a page that went quiet costs one quiet look' '500 true' "$(b idle still)"
+t 'S23 settleBusy: a request in flight 1.5 s more (recreation.gov hydrating) is waited out' '1800 true' "$(b busy:1500 still)"
+t 'S24 settleBusy: a page that never goes quiet costs the bound once, and says so' '3000 false' "$(b busy:99999 still)"
+t 'S25 settleBusy: a DOM that never stops changing, the bound, never more' '3000 false' "$(b idle busy)"
+t 'S26 settleBusy: no watch (a stub) waits nothing' '0 false' "$(b none still)"
+t 'S27 settleBusy: FIVEDIVE_BROWSER_SNAP_BUSY_MS=0 turns it off' '0 false' "$(b busy:99999 still 0)"
+t 'S28 the cold snapshot keeps its fixed floor, then waits while busy, and reports still_loading' 3 "$(grep -c -E 'aria.settleBusy\(page, watch\)|still_loading: true|aria.requestWatch\(page.context\(\)\)' browser/bin/driver-playwright)"
+t 'S29 the daemon snapshot waits on past its bound only while busy' 1 "$(grep -c 'settleQuiet(page, settle, watch)) && !!watch && !(await aria.settleBusy(page, watch))' browser/bin/session-daemon)"
+
 echo "settle: $PASS passed, $FAIL failed"
 (( FAIL == 0 ))

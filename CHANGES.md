@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a snapshot of a big or still-loading page now shows its tabs and buttons (DIVE-9011), 1.96.0
+- On the 30-task bench, recreation.gov's campground page lost 6 runs: agents answered the site-wide policy, never the
+  campground's own "Rules & Cancellations" tab. Two reasons. A page with more than 300 refs printed none at all, and
+  said nothing; it now prints the first 300 and how to find the rest. And the snapshot looked at 1.2 s, the very moment
+  that page draws its tabs; a page still loading then now gets up to 3 s more, and stops waiting the moment it is done.
+- The skill says where a chart's numbers are (in the page's source, next to their dates; Google Finance) and that a
+  tab's text shows only after a click on it.
+
 ### Fixed — an agent can ask its owner to clear a captcha on a site that two saved logins cover (DIVE-9003), 1.95.3
 - With example.com and studio.example.com both saved, `connect-request studio.example.com --challenge --url=<page>` died with
   "2 connected accounts … name it" although the site was named (box report 1323). The look at the page before the ask

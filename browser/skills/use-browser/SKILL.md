@@ -103,9 +103,14 @@ Agents stop early: right site, one filter missing. So before you report, and bef
 - **Looking for a few lines in a big page** (one title in a list of 250, a price, a date)?
   `read <url> --grep='trade-in value|\$[0-9]'` prints only the lines that match, with the
   line around each, instead of the head of the page.
-- `snapshot --interactive` prints every ref (up to 300) and a small page's text; `cat page.md`
-  only for a big one. `snapshot _public` with no URL reads the page the browser is on.
+- `snapshot --interactive` prints the refs (the first 300 on a big page; grep tree.json for
+  the rest) and a small page's text; `cat page.md` only for a big one. A tab's text (Fees,
+  Rules, Reviews) is on the page only after a click on its `ref=tab/…`. `snapshot _public` with no URL reads the page the browser is on.
 - `links <url>` gives a page's links, `shot <url>` a picture of it.
+- **Numbers only drawn in a chart** (a month of prices, a graph) are not in page.md, and a
+  click on the chart's range tab already shown does nothing. Sites embed the chart's data in
+  the page: grep `page.html` for a date on the chart's axis, e.g.
+  `grep -oE '.{0,60}2026-10-2[0-9].{0,20}' page.html`, and read the values beside each date.
 - **To save a PDF or any file at a URL, use `download <url>`**, never the PDF viewer's buttons.
   It prints `downloaded: <path> (…)`. `--out=<dir>/` or `--out=<file>` chooses where.
 
