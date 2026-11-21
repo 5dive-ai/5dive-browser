@@ -8510,8 +8510,9 @@ INLINE_REFS_MAX="${FIVEDIVE_BROWSER_INLINE_REFS_MAX:-60}"
 # for exactly to get them, and past 60 the agent Read tree.json instead, 20-42 KB
 # of JSON per page on the bench, where the refs alone are a line each.
 INLINE_SNAP_REFS_MAX="${FIVEDIVE_BROWSER_INLINE_SNAP_REFS_MAX:-300}"
-_inline_page() { # _inline_page <artifact dir> [<refs cap>]
-  local out="$1" body n refs_max="${2:-$INLINE_REFS_MAX}"
+_inline_page() { # _inline_page <artifact dir> [<refs cap>]: a cap given prints the first ones past it
+  local out="$1" body n refs_max="${2:-$INLINE_REFS_MAX}" cut=0
+  [[ -n "${2:-}" ]] && cut=1
   [[ "$INLINE_MD_MAX" =~ ^[0-9]{1,7}$ && "$refs_max" =~ ^[0-9]{1,5}$ ]] || return 0
   if [[ -s "$out/page.md" ]]; then
     # The body without the front matter: url and title are already the two lines above.
@@ -8525,6 +8526,17 @@ _inline_page() { # _inline_page <artifact dir> [<refs cap>]
     if (( n > 0 && n <= refs_max )); then
       printf '  --- refs (tree.json: act on these) ---\n'
       jq -r '.nodes[] | "  ref=\(.ref)"' "$out/tree.json" 2>/dev/null
+    elif (( n > refs_max && cut )); then
+      # A BIG PAGE'S REFS ARE CUT, NOT DROPPED (DIVE-9011). Past the cap this
+      # printed nothing and said nothing: on the DIVE-9006 bench every snapshot of
+      # recreation.gov's campground page (512-2,087 refs) came back with no refs at
+      # all, and the runs that failed answered the site-wide policy instead of the
+      # "Rules & Cancellations" tab they never saw. The first refs in page order are
+      # the header, the tabs and the filters;
+      # the rest is one line away.
+      printf '  --- refs (tree.json: act on these), the first %s of %s ---\n' "$refs_max" "$n"
+      jq -r --argjson m "$refs_max" '.nodes[:$m][] | "  ref=\(.ref)"' "$out/tree.json" 2>/dev/null
+      printf '  … %s more: jq -r '"'"'.nodes[].ref'"'"' %s/tree.json | grep -i '"'"'<word>'"'"'\n' "$(( n - refs_max ))" "$out"
     fi
   fi
   return 0
