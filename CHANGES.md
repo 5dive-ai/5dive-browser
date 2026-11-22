@@ -8,6 +8,13 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — a site task becomes a tool every agent on the box can call, with no model (DIVE-9033), 1.97.0
+- `5dive browser mint <url-with-{{input}}> <tool> --task="…" --inputs=… --outputs=… --example=…` turns a task an agent
+  did once into a tool with named, typed inputs and typed outputs. Mint runs the example and keeps the tool only if every
+  output came back with its type. `replay <site> <tool> --input='{…}'` runs it with no snapshot and no model, and
+  `tools` lists what is minted here, for every seat. A read tool that reaches a pay, post, send or delete step stops; a
+  write tool that stops part-way says `possible_commit`. The idea is Pomerado's (MIT); no code was copied.
+
 ### Fixed — a snapshot of a big or still-loading page now shows its tabs and buttons (DIVE-9011), 1.96.0
 - On the 30-task bench, recreation.gov's campground page lost 6 runs: agents answered the site-wide policy, never the
   campground's own "Rules & Cancellations" tab. Two reasons. A page with more than 300 refs printed none at all, and

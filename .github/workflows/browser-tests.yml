@@ -307,6 +307,12 @@ jobs:
       # stubs, with a mutant (no read-only switch) and a click-step control.
       - name: act read-only harness
         run: bash tests/browser_act_read_only_unit.sh
+      # DIVE-9033: mint a site task into a tool with named, typed inputs and outputs,
+      # replay it with new inputs and no model, on the recording stub: refusals,
+      # percent-encoding, another seat calling the shelf's tool, a read tool that
+      # reaches a pay step, and a mutant (no output check).
+      - name: mint tool harness
+        run: bash tests/browser_mint_tool_unit.sh
       # DIVE-6795: a served act answers with what changed (lib/look.cjs), its report
       # arrives split, and page.md is derived only for --full. Daemon on the stub.
       - name: act look harness
@@ -378,3 +384,8 @@ jobs:
         run: npm install --prefix browser --no-audit --no-fund
       - name: run 1 vs run 3 on en.wikipedia.org
         run: bash tests/browser_routine_bench.sh
+      # DIVE-9033's live arm: mint one read tool on en.wikipedia.org in real Chrome,
+      # replay it twice with other inputs, 0 model calls.
+      - name: mint a tool and replay it twice on en.wikipedia.org
+        if: ${{ !cancelled() }}
+        run: bash tests/browser_mint_live.sh

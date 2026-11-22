@@ -10,6 +10,9 @@ owner's one login for that site, or the public profile (nothing logged in). **St
 verb.** Never run `--help`, `status` or setup first: this page is the manual, and a public page
 needs nothing connected. A connected site that reads `connected` is usable; `unconfirmed` is not
 a stop sign either: read, links, snapshot and act check each page for a sign-in form themselves.
+**A lookup or check you (or another agent) will run again with new values:** `5dive browser tools
+<site>` lists the tools minted on this box; one answers in one call, with no snapshot and no model
+(`references/repeat.md` says how to mint one).
 
 ## The loop: ONE snapshot per decision
 
@@ -176,5 +179,5 @@ These files sit next to this one, in `references/`:
 - `references/input-mode.md`: a verb says "INPUT mode", the site is tiktok.com or cjdropshipping.com,
   a new API key shows only a Copy button, code to paste, or the box's window is stuck.
 - `references/paying.md`: the whole pay/post/send/delete rule, when an act exits 73.
-- `references/repeat.md`: a flow you will run again (`--record`, `replay`, `--delta`).
+- `references/repeat.md`: a flow you or another agent will run again (`mint`, `tools`, `--record`, `replay`, `--delta`).
 - `references/telegram-web.md`: reading Telegram Web without reading messages (own account, muted chats).
