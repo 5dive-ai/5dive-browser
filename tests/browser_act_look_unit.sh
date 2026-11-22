@@ -213,11 +213,13 @@ t  'N3 NEGATIVE: an aborted load that never left its page is still that error, n
 # DIVE-9042: the first mint on a cold box. The act that starts the served browser
 # starts it ON its url (not awaited), then its own goto loads that url too, on the
 # same tab. Each shape, through the act path the mint took (a plan, not a snapshot,
-# which skips a goto to the page it is on):
+# which skips a goto to the page it is on). A mint's acts are read-only, so the
+# act asks for the bare report (only where the page is), as bin/browser sends it;
+# without a report the daemon sends no url at all:
 abortact() {  # <mode> <url> [VAR=value]... -> rc, then the url the act ended on or the error
   local m="$1" u="$2"; shift 2
   fresh "x-$m" DPWGOTO_ABORT="$m" "$@"
-  local o rc; o=$(node "$DAEMON" call "$TMP/x-$m.sock" <<<"$(jq -nc --arg u "$u" '{op:"plan", steps:[{op:"goto", url:$u}], args:{}, literal:true}')" 2>&1); rc=$?
+  local o rc; o=$(node "$DAEMON" call "$TMP/x-$m.sock" <<<"$(jq -nc --arg u "$u" '{op:"plan", steps:[{op:"goto", url:$u}], args:{}, literal:true, report:{bare:true}}')" 2>&1); rc=$?
   printf '%s %s' "$rc" "$( (( rc )) && grep -o 'net::ERR_ABORTED' <<<"$o" | head -1 || jq -r 'select(.act_report) | .url // empty' <<<"$o" 2>/dev/null | tail -1)"
 }
 W=https://en.wikipedia.test/wiki/Grace_Hopper
