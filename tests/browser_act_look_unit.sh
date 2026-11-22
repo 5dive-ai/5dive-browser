@@ -210,6 +210,34 @@ t  'N2 ...after waiting for that load' yes "$(grep -q '"call":"waitForLoadState"
 t  'N3 NEGATIVE: an aborted load that never left its page is still that error, not that page read as new' \
    '70 net::ERR_ABORTED' "$(abortd stay https://warm.test/file.pdf)"
 
+# DIVE-9042: the first mint on a cold box. The act that starts the served browser
+# starts it ON its url (not awaited), then its own goto loads that url too, on the
+# same tab. Each shape, through the act path the mint took (a plan, not a snapshot,
+# which skips a goto to the page it is on). A mint's acts are read-only, so the
+# act asks for the bare report (only where the page is), as bin/browser sends it;
+# without a report the daemon sends no url at all:
+abortact() {  # <mode> <url> [VAR=value]... -> rc, then the url the act ended on or the error
+  # stdout and stderr apart: the plan logs "  step 1 (goto) ok" on stderr, and one
+  # line of that in jq's input made the whole read come back empty (1396c0b).
+  local m="$1" u="$2"; shift 2
+  fresh "x-$m" DPWGOTO_ABORT="$m" "$@"
+  local rc got
+  node "$DAEMON" call "$TMP/x-$m.sock" <<<"$(jq -nc --arg u "$u" '{op:"plan", steps:[{op:"goto", url:$u}], args:{}, literal:true, report:{bare:true}}')" \
+    >"$TMP/x-$m.out" 2>"$TMP/x-$m.err"; rc=$?
+  if (( rc )); then got=$(grep -o 'net::ERR_ABORTED' "$TMP/x-$m.err" | head -1)
+  else got=$(jq -Rr 'fromjson? | select(.act_report) | .url // empty' "$TMP/x-$m.out" | tail -1); fi
+  [[ "$got" == "$u" ]] || { printf '  abortact %s: rc %s, raw stdout / stderr:\n' "$m" "$rc"; sed 's/^/    out| /' "$TMP/x-$m.out"; sed 's/^/    err| /' "$TMP/x-$m.err"; } >&2
+  printf '%s %s' "$rc" "$got"
+}
+W=https://en.wikipedia.test/wiki/Grace_Hopper
+t  'N4 cold start, the start load committed first: the tab is ON the url, only the act'"'"'s goto aborted -> that is the load' \
+   "0 $W" "$(abortact same "$W" FIVEDIVE_BROWSER_START_URL="$W")"
+t  'N5 cold start, the start load commits after the abort (the tab still showed about:blank) -> waited for, the load' \
+   "0 $W" "$(abortact late "$W")"
+t  'N5 ...it waited for the tab to reach the site' yes "$(grep -q '"call":"waitForURL"' "$TMP/rec-x-late.jsonl" && echo yes || echo no)"
+t  'N6 cold start, both loads dropped (the tab stays blank) -> the one goto again, which lands' \
+   "0 $W 2" "$(abortact drop "$W") $(grep -c '"call":"goto"' "$TMP/rec-x-drop.jsonl")"
+
 # DIVE-7303: snapshot --wait-for gives up at the act step bound (step_ms), not 30 s.
 fresh never DPWLATE_MS=99999999
 call3() { node "$DAEMON" call "$TMP/never.sock" <<<"$1"; }
