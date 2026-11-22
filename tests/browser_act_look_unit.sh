@@ -217,10 +217,17 @@ t  'N3 NEGATIVE: an aborted load that never left its page is still that error, n
 # act asks for the bare report (only where the page is), as bin/browser sends it;
 # without a report the daemon sends no url at all:
 abortact() {  # <mode> <url> [VAR=value]... -> rc, then the url the act ended on or the error
+  # stdout and stderr apart: the plan logs "  step 1 (goto) ok" on stderr, and one
+  # line of that in jq's input made the whole read come back empty (1396c0b).
   local m="$1" u="$2"; shift 2
   fresh "x-$m" DPWGOTO_ABORT="$m" "$@"
-  local o rc; o=$(node "$DAEMON" call "$TMP/x-$m.sock" <<<"$(jq -nc --arg u "$u" '{op:"plan", steps:[{op:"goto", url:$u}], args:{}, literal:true, report:{bare:true}}')" 2>&1); rc=$?
-  printf '%s %s' "$rc" "$( (( rc )) && grep -o 'net::ERR_ABORTED' <<<"$o" | head -1 || jq -r 'select(.act_report) | .url // empty' <<<"$o" 2>/dev/null | tail -1)"
+  local rc got
+  node "$DAEMON" call "$TMP/x-$m.sock" <<<"$(jq -nc --arg u "$u" '{op:"plan", steps:[{op:"goto", url:$u}], args:{}, literal:true, report:{bare:true}}')" \
+    >"$TMP/x-$m.out" 2>"$TMP/x-$m.err"; rc=$?
+  if (( rc )); then got=$(grep -o 'net::ERR_ABORTED' "$TMP/x-$m.err" | head -1)
+  else got=$(jq -Rr 'fromjson? | select(.act_report) | .url // empty' "$TMP/x-$m.out" | tail -1); fi
+  [[ "$got" == "$u" ]] || { printf '  abortact %s: rc %s, raw stdout / stderr:\n' "$m" "$rc"; sed 's/^/    out| /' "$TMP/x-$m.out"; sed 's/^/    err| /' "$TMP/x-$m.err"; } >&2
+  printf '%s %s' "$rc" "$got"
 }
 W=https://en.wikipedia.test/wiki/Grace_Hopper
 t  'N4 cold start, the start load committed first: the tab is ON the url, only the act'"'"'s goto aborted -> that is the load' \
