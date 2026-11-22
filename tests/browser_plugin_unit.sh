@@ -3990,7 +3990,9 @@ const fakeDownload = (d) => ({
   failure: async () => d.fail || null,
   cancel: async () => rec({ call: 'cancelDownload', name: d.name }),
 });
-const mkpage = (kind) => { let clock = 0, keydowns = 0, lastGoto = '';
+const mkpage = (kind) => { let clock = 0, keydowns = 0, pendingLand = null;
+  // DIVE-9042: `late` and `drop` start on a blank tab, as a fresh served browser does.
+  let lastGoto = /^(late|drop)$/.test(process.env.DPWGOTO_ABORT || '') ? 'about:blank' : '';
   const late = () => !!process.env.DPWLATE_MS && clock >= Number(process.env.DPWLATE_MS);
   const listeners = {};
   const fireDownloads = () => { let list = [];
@@ -4002,21 +4004,31 @@ const mkpage = (kind) => { let clock = 0, keydowns = 0, lastGoto = '';
   setDefaultTimeout: (t) => rec({ call: 'setDefaultTimeout', t, kind }),
   // DPWGOTO_MS: a page that takes real time to load, so two requests can
   // overlap in the daemon (DIVE-4927, T27m). Unset, a goto is instant as before.
-  goto: async (url) => { clock = 0; keydowns = 0; lastGoto = url; rec({ call: 'goto', url, kind });
+  goto: async (url) => { const was = lastGoto; clock = 0; keydowns = 0; lastGoto = url; rec({ call: 'goto', url, kind });
     if (process.env.DPWGOTO_MS) await new Promise((r) => setTimeout(r, Number(process.env.DPWGOTO_MS)));
     // DIVE-6795: the site's own redirect interrupts this goto, once.
     if (process.env.DPWGOTO_INTERRUPT && !gotoInterrupted) { gotoInterrupted = true;
       throw new Error(`page.goto: Navigation to "${url}" is interrupted by another navigation to "${url}home"`); }
     // DIVE-7303: Chrome drops the load with net::ERR_ABORTED, once. `land`: the tab
     // is on the url anyway (the served browser was already loading it); `stay`: it
-    // never left the page it was on (a download aborts so).
-    if (process.env.DPWGOTO_ABORT && !gotoInterrupted) { gotoInterrupted = true;
+    // never left the page it was on (a download aborts so). DIVE-9042, the served
+    // browser's start load on either side of the act's goto: `same`: the tab was ON
+    // the url already (the start load committed first), and only that goto aborts;
+    // `late`: the tab still shows about:blank and the start load commits after
+    // (at waitForURL); `drop`: both loads were dropped, the tab stays blank.
+    if (process.env.DPWGOTO_ABORT && !gotoInterrupted && (process.env.DPWGOTO_ABORT !== 'same' || was === url)) { gotoInterrupted = true;
       if (process.env.DPWGOTO_ABORT === 'stay') lastGoto = null;
+      if (process.env.DPWGOTO_ABORT === 'late') { pendingLand = url; lastGoto = 'about:blank'; }
+      if (process.env.DPWGOTO_ABORT === 'drop') lastGoto = 'about:blank';
       throw new Error(`page.goto: net::ERR_ABORTED at ${url}`); }
     // DIVE-7646: a URL DPWFETCH names answers the goto too (a PDF the act lands on).
     if (process.env.DPWFETCH) { let m = {}; try { m = JSON.parse(fs.readFileSync(process.env.DPWFETCH, 'utf8')); } catch (e) { /* none */ }
       if (m[url]) return dfetch(url); } },
   waitForLoadState: async (state) => { rec({ call: 'waitForLoadState', state, kind }); },
+  waitForURL: async (pred) => { rec({ call: 'waitForURL', kind });
+    if (pendingLand) { lastGoto = pendingLand; pendingLand = null; }
+    const at = lastGoto || 'https://warm.test/after';
+    if (!pred(new URL(at))) throw new Error('page.waitForURL: Timeout 10000ms exceeded.'); },
   // DPWHANG_URL: a page whose script never yields, so content() never answers
   // (DIVE-6778, T34i). Unset, content answers as it always did.
   content: async () => { rec({ call: 'content', kind });

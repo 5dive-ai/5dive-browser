@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — the first mint (or act) on a cold box no longer dies with net::ERR_ABORTED (DIVE-9042), 1.97.1
+- The act that starts a served browser starts it ON its URL, and that start load is not waited for. The act then loads
+  the same URL on the same tab, and Chrome drops one of the two. A dropped load whose tab still showed `about:blank`, or
+  was already on the URL, read as a failure: the first `mint` on lodar's box failed, and the same call a minute later
+  minted. Now the act waits for the tab to reach the site. If both loads were dropped it loads the page once more, and a
+  tab already on the URL counts as loaded. A same-site download that never left its page is still an error. The live
+  CI arm now mints three times from a profile that does not exist yet, with the real served browser: until now it ran
+  with no served browser, so it never took this path.
+
 ### Added — a site task becomes a tool every agent on the box can call, with no model (DIVE-9033), 1.97.0
 - `5dive browser mint <url-with-{{input}}> <tool> --task="…" --inputs=… --outputs=… --example=…` turns a task an agent
   did once into a tool with named, typed inputs and typed outputs. Mint runs the example and keeps the tool only if every

@@ -210,6 +210,25 @@ t  'N2 ...after waiting for that load' yes "$(grep -q '"call":"waitForLoadState"
 t  'N3 NEGATIVE: an aborted load that never left its page is still that error, not that page read as new' \
    '70 net::ERR_ABORTED' "$(abortd stay https://warm.test/file.pdf)"
 
+# DIVE-9042: the first mint on a cold box. The act that starts the served browser
+# starts it ON its url (not awaited), then its own goto loads that url too, on the
+# same tab. Each shape, through the act path the mint took (a plan, not a snapshot,
+# which skips a goto to the page it is on):
+abortact() {  # <mode> <url> [VAR=value]... -> rc, then the url the act ended on or the error
+  local m="$1" u="$2"; shift 2
+  fresh "x-$m" DPWGOTO_ABORT="$m" "$@"
+  local o rc; o=$(node "$DAEMON" call "$TMP/x-$m.sock" <<<"$(jq -nc --arg u "$u" '{op:"plan", steps:[{op:"goto", url:$u}], args:{}, literal:true}')" 2>&1); rc=$?
+  printf '%s %s' "$rc" "$( (( rc )) && grep -o 'net::ERR_ABORTED' <<<"$o" | head -1 || jq -r 'select(.act_report) | .url // empty' <<<"$o" 2>/dev/null | tail -1)"
+}
+W=https://en.wikipedia.test/wiki/Grace_Hopper
+t  'N4 cold start, the start load committed first: the tab is ON the url, only the act'"'"'s goto aborted -> that is the load' \
+   "0 $W" "$(abortact same "$W" FIVEDIVE_BROWSER_START_URL="$W")"
+t  'N5 cold start, the start load commits after the abort (the tab still showed about:blank) -> waited for, the load' \
+   "0 $W" "$(abortact late "$W")"
+t  'N5 ...it waited for the tab to reach the site' yes "$(grep -q '"call":"waitForURL"' "$TMP/rec-x-late.jsonl" && echo yes || echo no)"
+t  'N6 cold start, both loads dropped (the tab stays blank) -> the one goto again, which lands' \
+   "0 $W 2" "$(abortact drop "$W") $(grep -c '"call":"goto"' "$TMP/rec-x-drop.jsonl")"
+
 # DIVE-7303: snapshot --wait-for gives up at the act step bound (step_ms), not 30 s.
 fresh never DPWLATE_MS=99999999
 call3() { node "$DAEMON" call "$TMP/never.sock" <<<"$1"; }

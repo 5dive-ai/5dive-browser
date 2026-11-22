@@ -40,6 +40,35 @@ run() { "$BROWSER" "$@" >"$TMP/out" 2>"$TMP/err"; RC=$?; OUT=$(cat "$TMP/out"); 
 OUTS='{"title":"document.querySelector(\"#firstHeading\").textContent.trim()",
        "paragraphs":{"type":"integer","read":"document.querySelectorAll(\"#mw-content-text p\").length","description":"paragraphs in the article"}}'
 
+# DIVE-9042: THE COLD BOX. Everything below runs with no session daemon, so no
+# act ever starts a served browser, and this arm stayed green while the first mint
+# on lodar's box died: the act that "started a served browser for the public
+# profile" lost its goto to that browser's own start load (net::ERR_ABORTED). Here
+# the real daemon is on, and each mint starts from a public profile that does not
+# exist yet and no browser running: the first use a box ever makes. Three times,
+# because the race is timing; each must start a served browser and mint first time.
+if command -v Xvfb >/dev/null 2>&1; then
+  COLD_ENV=(env -u FIVEDIVE_BROWSER_SESSION_DAEMON -u FIVEDIVE_BROWSER_NO_DAEMON
+            FIVEDIVE_BROWSER_SEAT="$SEAT" FIVEDIVE_BROWSER_BOX_SEAT="$SEAT"
+            FIVEDIVE_BROWSER_TMP_ROOT="$TMP/tmproot" STATE_DIR="$TMP/state")
+  mkdir -p "$TMP/tmproot" "$TMP/state" "$FIVEDIVE_BROWSER_SESSION_ROOT/$SEAT"
+  cold_stop() { "${COLD_ENV[@]}" "$BROWSER" serve _public --stop >/dev/null 2>&1; pkill -f -- "$TMP/profiles" 2>/dev/null; sleep 1; rm -rf "$FIVEDIVE_BROWSER_PROFILE_ROOT/$SEAT/_public"; }
+  for i in 1 2 3; do
+    cold_stop
+    echo "cold mint $i: wiki-cold-$i, a public profile that does not exist yet, the real daemon" >&2
+    "${COLD_ENV[@]}" "$BROWSER" mint 'https://en.wikipedia.org/wiki/{{topic}}' "wiki-cold-$i" --private \
+      --task="Open a Wikipedia article and read its title" --inputs='{"topic":"the article name as in its URL"}' \
+      --outputs='{"title":"document.querySelector(\"#firstHeading\").textContent.trim()"}' --example='{"topic":"Grace_Hopper"}' --json \
+      >"$TMP/out" 2>"$TMP/err"; RC=$?
+    (( RC == 0 )) || sed 's/^/    | /' "$TMP/err" | tail -30
+    arm "L0 cold box, run $i: the mint started a served browser and minted first time (Grace Hopper)" 'served|true|Grace Hopper' \
+      "$(grep -q 'started a served browser' "$TMP/err" && printf served || printf no-served-browser)|$(jq -r '"\(.minted)|\(.trial.outputs.title)"' "$TMP/out" 2>/dev/null)"
+  done
+  cold_stop
+else
+  arm 'L0 cold box: Xvfb is here to serve a browser on' yes no
+fi
+
 echo "mint: wiki-heading, example Grace_Hopper" >&2
 run mint 'https://en.wikipedia.org/wiki/{{topic}}' wiki-heading --task="Open a Wikipedia article and read its title and how many paragraphs it has" \
   --inputs='{"topic":"the article name as in its URL, e.g. Ada_Lovelace"}' --outputs="$OUTS" --example='{"topic":"Grace_Hopper"}' --json
