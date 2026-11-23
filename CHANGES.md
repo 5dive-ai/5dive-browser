@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a webmail inbox is in page.md again, not deleted as a dropdown (DIVE-9058), 1.97.2
+- The page reader dropped every list built as a selectable list or inside a form, because on an article those are a
+  search box and a dropdown. A webmail inbox is usually built one of those two ways, so a signed-in webmail read
+  had folders and file names but no senders, subjects or text (box report 1348). A list or form that holds a real
+  share of the page's text (500 characters, or 30% of it) is now kept. Small forms and dropdowns are still dropped,
+  and an ordinary article reads byte for byte as before.
+- When the reader still comes back near empty (under 50 words) on a page that plainly has text (over 300 words),
+  page.md gets that text under `## Visible text`, and page.md and page.meta.json say `thin_extract: true`.
+
 ### Fixed — the first mint (or act) on a cold box no longer dies with net::ERR_ABORTED (DIVE-9042), 1.97.1
 - The act that starts a served browser starts it ON its URL, and that start load is not waited for. The act then loads
   the same URL on the same tab, and Chrome drops one of the two. A dropped load whose tab still showed `about:blank`, or

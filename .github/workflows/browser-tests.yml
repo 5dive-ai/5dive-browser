@@ -126,6 +126,9 @@ jobs:
       # status probes side by side, snapshot/act print a small page inline.
       - name: browser read tables harness
         run: bash tests/browser_read_tables_unit.sh
+      # DIVE-9058: a webmail inbox built as a listbox or inside a form is in page.md.
+      - name: browser read-lists harness
+        run: bash tests/browser_read_lists_unit.sh
       - name: browser tmpdir harness
         run: bash tests/browser_tmpdir_unit.sh
       # DIVE-5638: a launch does not depend on the seat's $HOME — a long seat
