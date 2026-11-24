@@ -8,6 +8,14 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — an inbox row's ref says which message it is (DIVE-9179), 1.97.5
+- A webmail inbox row is one link around sender, subject, snippet and date. That is too long to be a ref's name, so
+  a 50-message inbox printed fifty `ref=link/#1` … `#50` and nothing to tell them apart (box report 1397, a
+  webmail). A ref with no name now has the row's visible text beside it in `snapshot`, `tree` and tree.json
+  (`shows: "Sam Carter Invoice for November …"`, field `text`, cut at 160 characters, never mid-emoji).
+- The refs themselves do not change, so every saved step and routine still finds what it found before.
+- Since 1.97.2 (DIVE-9058) the inbox's senders, subjects and text are in page.md.
+
 ### Fixed — a captcha ask on a page with no check sends the owner nothing (DIVE-9188), 1.97.4
 - `connect-request <site> --challenge --url=<page>` loads the page first (DIVE-6725). When the box saw no check on it,
   the ask still went out, as a "needs you to take over" message. A seat's agent used that to page its owner about a
