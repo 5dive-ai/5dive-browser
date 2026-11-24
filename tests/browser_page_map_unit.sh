@@ -130,6 +130,18 @@ const body = new El('body', {}, '', [
   new El('div', {}, 'Hidden pick', [], { cursor: 'pointer', display: 'none' }),
   // plain text, no pointer
   new El('span', {}, 'just text'),
+  // DIVE-9179: a webmail inbox, each row one link around sender, subject, snippet and
+  // date (well over 120 characters, so no name). The second row's emoji sits across
+  // unit 160, where its text is cut.
+  new El('div', { class: 'mail-list' }, '', [
+    new El('a', { href: '/m/1' }, '', [
+      new El('span', {}, 'Ivan Petrov '), new El('span', {}, 'Invoice for November '),
+      new El('span', {}, 'Hello, please find attached the invoice for the November work and confirm receipt at your earliest convenience. Best regards, Ivan. '),
+      new El('span', {}, '10:42')]),
+    new El('a', { href: '/m/2' }, '', [
+      new El('span', {}, 'Anna Smirnova '),
+      new El('span', {}, 'Re: contract ' + 'x'.repeat(159 - 'Anna Smirnova Re: contract '.length) + '\u{1F600} tail of the snippet that is cut')]),
+  ]),
   banner,
 ]);
 const page = new Root([body]);
@@ -140,6 +152,7 @@ const r = pageWalk({ interactiveOnly: mode === 'interactive', interactiveRoles: 
 const shadows = [banner.shadowRoot, ...options];
 const stamped = [...page.flat(), ...shadows.flatMap(s => s.flat())].filter(e => e.getAttribute('data-5dive-ref'));
 console.log(JSON.stringify({ refs: r.nodes.map(n => n.ref), marker: r.marker,
+  texts: r.nodes.filter(n => 'text' in n).map(n => ({ ref: n.ref, name: n.name, text: n.text })),
   marked: stamped.map(e => e.tagName.toLowerCase() + (shadows.includes(e.getRootNode()) ? '@shadow' : '')) }));
 MAP
 
@@ -197,6 +210,21 @@ t  'M18b marking the editor stamps the editing host' 'div' "$(jq -r '.marked|joi
 t  'M18c (control) M0-M14 refs are unchanged by the drawn-text read' 'link/Inbox clickable/ clickable/1 clickable/2' \
    "$(tr ' ' '\n' <<<"$REFS" | grep -E '^(link/Inbox|clickable/|clickable/[12])$' | paste -sd' ')"
 
+# DIVE-9179: a nameless inbox row says what it shows, and its ref does not move
+TX="$(ARIA="$ARIA" node "$TMP/map.js" interactive | jq -c '.texts')"
+t  'M19 an inbox row link keeps its old ref (no name, an ordinal)' 'link/#1 link/#2' \
+   "$(jq -r '[.[] | select(.ref | startswith("link/")) | .ref] | join(" ")' <<<"$TX")"
+tc 'M19b ...and carries its visible text: sender and subject' 'Ivan Petrov Invoice for November' \
+   "$(jq -r '.[] | select(.ref == "link/#1") | .text' <<<"$TX")"
+t  'M19c ...cut at 160 units with an ellipsis' '161' \
+   "$(jq -r '.[] | select(.ref == "link/#1") | .text | length' <<<"$TX")"
+t  'M19d a cut across an emoji leaves no lone surrogate (jq parses it; no smiley)' 'Anna yes' \
+   "$(jq -r '.[] | select(.ref == "link/#2") | (.text | split(" ")[0]) + " " + (if ([.text | explode[] | select(. > 65535)] | length) > 0 then "no" else "yes" end)' <<<"$TX")"
+t  'M19e a node with a name carries no text field (Inbox, Search, Draft)' '0' \
+   "$(jq -r '[.[] | select(.name != "")] | length' <<<"$TX")"
+t  'M19f a nameless node with no text carries none (the calendar arrow)' '0' \
+   "$(jq -r '[.[] | select(.ref == "clickable/")] | length' <<<"$TX")"
+
 # --wait-for=<css> looks into open shadow roots, as the step's own selector does
 cat > "$TMP/vis.js" <<'VIS'
 const { _visibleIn } = require(process.env.ARIA);
@@ -241,6 +269,11 @@ tc 'X6b without it the slotted small print is offered as its own clickable' ' cl
 sed 's/  try { els = deep(document, \[\]); } catch (e) { els = null; }/  try { els = document.querySelectorAll(t); } catch (e) { els = null; }/' "$ARIA" > "$MUT/noshadowwait.cjs"
 t  'X7 (anchor) the light-DOM-wait mutant really differs' 'yes' "$(cmp -s "$ARIA" "$MUT/noshadowwait.cjs" && echo no || echo yes)"
 t  'X7b without it the shadow-drawn field is never seen' 'false false' "$(ARIA="$MUT/noshadowwait.cjs" node "$TMP/vis.js" 2>&1)"
+
+sed '/    if (!name) { var rt = rowText(el); if (rt) o.text = rt; }/d' "$ARIA" > "$MUT/norowtext.cjs"
+t  'X8 (anchor) the no-row-text mutant really differs' 'yes' "$(cmp -s "$ARIA" "$MUT/norowtext.cjs" && echo no || echo yes)"
+t  'X8b without it the inbox rows carry nothing to tell them apart' '0' \
+   "$(ARIA="$MUT/norowtext.cjs" node "$TMP/map.js" interactive | jq -r '[.texts[] | select(.ref | startswith("link/"))] | length')"
 
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]
