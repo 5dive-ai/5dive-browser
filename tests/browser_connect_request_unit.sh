@@ -96,6 +96,12 @@ case "$1" in
     if [[ -f "$FAKE_CTL.snapstop" ]]; then
       echo "browser: futuretools.io is presenting a security challenge, so anything rendered now is the challenge page and not the page you asked for. A person clears it. Ask your owner to, then carry on after their Done: 5dive browser connect-request futuretools.io --challenge --url=<the page you asked for>" >&2; exit 75
     fi
+    # DIVE-9188: a normal-titled page whose document is the ctl file (a login
+    # form with an embedded check), written where the look reads it.
+    if [[ -f "$FAKE_CTL.snapdoc" ]]; then
+      mkdir -p "$FAKE_CTL.art" && cp "$FAKE_CTL.snapdoc" "$FAKE_CTL.art/page.html"
+      jq -nc --arg u "$u" --arg d "$FAKE_CTL.art" '{url:$u, title:"Log in | Example Launchpad", http_status:200, nodes:[], artifacts:$d}'; exit 0
+    fi
     st=403 ti="Just a moment..."
     [[ -f "$FAKE_CTL.snap404" ]] && st=404 ti="Error 404 (Not Found)!!1"
     [[ -f "$FAKE_CTL.snapsoft404" ]] && st=200 ti="Page not found | FutureTools"
@@ -140,7 +146,7 @@ export FAKE_LOG="$TMP/fake.log" FAKE_CTL="$TMP/ctl"
 export FIVEDIVE_BROWSER_PROFILE_ROOT="$TMP/profiles" FIVEDIVE_BROWSER_SESSION_ROOT="$TMP/sessions"
 
 priv() { printf '%s\0' "$@" | "$BROWSER" _connect; }
-reset() { : >"$TMP/stub.log"; : >"$FAKE_LOG"; rm -f "$TMP"/ctl.{noprofile,authed,bind500,tgfail,badpath,servefail,broken,novline,snap404,snapneterr,snapsoft404,snapclear,snapstop,snapslow,snaptwo}; }
+reset() { : >"$TMP/stub.log"; : >"$FAKE_LOG"; rm -f "$TMP"/ctl.{noprofile,authed,bind500,tgfail,badpath,servefail,broken,novline,snap404,snapneterr,snapsoft404,snapclear,snapstop,snapslow,snaptwo,snapdoc}; }
 binds() { grep -c '"/shell/browser-viewer-bind"' "$TMP/stub.log" 2>/dev/null || true; }
 last_code() { jq -r 'select(.path|test("sendMessage")) | .form.reply_markup' "$TMP/stub.log" | tail -1 | jq -r '.inline_keyboard[0][0].callback_data' | sed 's/^bconn://'; }
 
@@ -421,17 +427,29 @@ reset; rm -rf "$TMP/req"/*; : >"$TMP/ctl.snapstop"
 out=$("$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" 2>&1); rc=$?
 t  "P2 a page verb that STOPS on a check (no render at all) is a check, and is sent" "0 1" "$rc $(grep -c sendMessage "$TMP/stub.log")"
 tc "P2 ... in captcha words" "is stuck on a captcha" "$(jq -r 'select(.path|test("sendMessage")) | .form.text' "$TMP/stub.log")"
+# DIVE-9188: NO CHECK SEEN, NOBODY PAGED. chill-gorge's clicker sent its owner a
+# takeover for a page the box read as having no check ("the box reported no check
+# on load"). Such an ask is refused now, with nothing sent and nothing minted.
 reset; rm -rf "$TMP/req"/*; : >"$TMP/ctl.snapclear"
 out=$("$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" --reason="tap Got it on the tour bubble" 2>&1); rc=$?
-txt=$(jq -r 'select(.path|test("sendMessage")) | .form.text' "$TMP/stub.log")
-t  "P3 no check on the page: still sent" "0 1" "$rc $(grep -c sendMessage "$TMP/stub.log")"
-tn "P3 ... and never called a captcha" "captcha" "$txt"
-tn "P3 ... nor a check to clear" "Clear the check" "$txt"
-tc "P3 ... it asks the owner to take over, for what" "needs you to take over" "$txt"
-tc "P3 ... with what to do" "What to do: tap Got it on the tour bubble" "$txt"
-t  "P3 ... on the same Open button" "Open futuretools.io" "$(jq -r 'select(.path|test("sendMessage")) | .form.reply_markup' "$TMP/stub.log" | jq -r '.inline_keyboard[0][0].text')"
-tc "P3 the agent is told no check was seen" "no check was seen on" "$out"
-PCODE=$(last_code); reset
+t  "P3 no check on the page: refused, 0 owner messages" "69 0" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+t  "P3 ... no request code minted" "" "$(ls "$TMP/req")"
+t  "P3 ... after the box looked at the page" "snapshot $PAGE --json --no-shot" "$(head -1 "$FAKE_LOG")"
+tc "P3 ... the agent is told no check was seen, and nothing was sent" "nothing was sent: the box loaded $PAGE" "$out"
+tc "P3 ... and to do the step itself, retrying" "Do the step yourself: wait 60 s, reload the page, try again, up to 3 times" "$out"
+tc "P3 ... and how to name a step that truly needs the owner" "5dive browser handoff futuretools.io --reason=" "$out"
+# MUTANT: the pre-fix line (no check -> still ask, in takeover words) pages the owner.
+MUT9188="$TMP/browser.mut9188"
+sed -e 's|^      die "\$E_UNAVAILABLE" "nothing was sent: the box loaded \$url .*$|      check=0|' "$BROWSER" >"$MUT9188"; chmod +x "$MUT9188"
+t  "P3m the mutant differs from the real file by exactly the refusal line" 1 "$(diff "$BROWSER" "$MUT9188" | grep -c '^<')"
+reset; rm -rf "$TMP/req"/*; : >"$TMP/ctl.snapclear"
+out=$(FIVEDIVE_BROWSER_CONNECT_PRIV="$MUT9188" "$MUT9188" connect-request futuretools.io --challenge --url="$PAGE" --reason="tap Got it" 2>&1); rc=$?
+t  "P3m MUTANT (no check still asks): exits 0 and the owner IS messaged, so P3 grades the fix" "0 1" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+# A request minted before DIVE-9188 with check=0 still taps and finishes in
+# take-over words: the record says so, not the page now.
+reset; rm -rf "$TMP/req"/*
+"$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" >/dev/null 2>&1; PCODE=$(last_code)
+sed -i 's/^check=.*/check=0/' "$TMP/req/$(printf '%s' "$PCODE" | sha256sum | cut -d' ' -f1)"; reset
 out=$(priv tap "$PCODE" "$OWNER" 2>&1); rc=$?
 t  "P4 the tap tells the plugin there is no check, so its link text says take over" "0 check=0" "$rc $(grep '^check=' <<<"$out")"
 PDONE=$(sed -n 's/^done=//p' <<<"$out"); : >"$TMP/ctl.snapclear"
@@ -453,10 +471,39 @@ out=$(FIVEDIVE_BROWSER_CONNECT_LOOK_S=1 bash -c 'printf "%s\0" done "$1" "$2" | 
 t  "P7 a Done whose read-back runs out of time still completes, inside its bound" "0 check=unknown" "$rc $(grep '^check=' <<<"$out")"
 tc "P7 ... and says it is not known, never cleared" "whether a check is still on it is not known" "$out"
 
+# ---- E: a check embedded in the page (DIVE-9188) ------------------------------------
+# A login form whose robot check is a Turnstile in the form ("Please verify you
+# are a human") has a normal title and no interstitial. The site marker did not
+# name it, so the look read "no check". It is a check, and the ask goes out.
+FORM='<form action="/login" method="post"><input type="email" name="email"><input type="password" name="password">'
+TS_WAIT="<html><head><title>Log in | Example Launchpad</title></head><body>$FORM<div class=\"cf-turnstile\" data-sitekey=\"0x4AAA\"><div><input type=\"hidden\" name=\"cf-turnstile-response\" id=\"cf-chl-widget-a_response\" value=\"\"></div></div><button>Log in</button></form></body></html>"
+TS_DONE="${TS_WAIT/value=\"\"/value=\"0.tokenAbc123\"}"
+TS_BARE="<html><head><title>Log in | Example Launchpad</title></head><body>$FORM<div class=\"cf-turnstile\" data-sitekey=\"0x4AAA\"></div><button>Log in</button></form></body></html>"
+HC="<html><head><title>Log in | Example Launchpad</title></head><body>$FORM<div class=\"h-captcha\" data-sitekey=\"x\"></div></form></body></html>"
+for c in TS_WAIT:"a Turnstile still waiting for its answer" TS_BARE:"a Turnstile with no answer field yet" HC:"a visible hCaptcha"; do
+  reset; rm -rf "$TMP/req"/*; v="${c%%:*}"; printf '%s' "${!v}" >"$TMP/ctl.snapdoc"
+  out=$("$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" --reason="log in" 2>&1); rc=$?
+  t  "E1 ${c#*:} in the login form is a check: the ask goes out" "0 1" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+  tc "E1 ${c#*:}: ... in captcha words" "is stuck on a captcha" "$(jq -r 'select(.path|test("sendMessage")) | .form.text' "$TMP/stub.log")"
+done
+reset; rm -rf "$TMP/req"/*; printf '%s' "$TS_DONE" >"$TMP/ctl.snapdoc"
+out=$("$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" --reason="log in" 2>&1); rc=$?
+t  "E2 a Turnstile that already has its answer is not a check: refused, 0 owner messages" "69 0" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+tc "E2 ... with the no-check words" "saw no check on it" "$out"
+# MUTANT: the look without the page check (the site marker alone) misses the
+# waiting Turnstile. It sits beside the real lib, so only the removed call differs.
+mkdir -p "$TMP/mut/bin"; ln -sfn "$ROOT/browser/lib" "$TMP/mut/lib"; MUTE="$TMP/mut/bin/browser"
+sed -e 's/ || _connect_page_ask "\$html" "\$LOOK_PAGE"; }; then$/; }; then/' "$BROWSER" >"$MUTE"; chmod +x "$MUTE"
+t  "E1m the mutant differs from the real file by exactly the look line" 1 "$(diff "$BROWSER" "$MUTE" | grep -c '^<')"
+reset; rm -rf "$TMP/req"/*; printf '%s' "$TS_WAIT" >"$TMP/ctl.snapdoc"
+out=$(FIVEDIVE_BROWSER_CONNECT_PRIV="$MUTE" "$MUTE" connect-request futuretools.io --challenge --url="$PAGE" 2>&1); rc=$?
+t  "E1m MUTANT (marker only): the waiting Turnstile reads as no check and nobody is asked, so E1 grades the fix" "69 0" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+reset; rm -rf "$TMP/req"/* "$TMP/ctl.art"
+
 # ---- L: a tap one minute late (DIVE-6725) --------------------------------------------
 # The owner tapped at 09:32:08Z a button that had expired at 09:31:03Z and got a
 # dead end. A late tap by the owner now gets a fresh button; a very late one does not.
-reset; rm -rf "$TMP/req"/*; : >"$TMP/ctl.snapclear"
+reset; rm -rf "$TMP/req"/*
 "$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" --reason="tap Got it" >/dev/null 2>&1; LCODE=$(last_code)
 f="$TMP/req/$(printf '%s' "$LCODE" | sha256sum | cut -d' ' -f1)"; sed -i "s/^expires_at=.*/expires_at=$(( $(date -u +%s) - 65 ))/" "$f"
 reset
@@ -466,14 +513,14 @@ tc "L1 ... the owner is told a fresh button was sent" "a fresh one was just sent
 msg=$(jq -c 'select(.path|test("sendMessage"))' "$TMP/stub.log" | tail -1)
 t  "L1 ... to the owner who tapped" "$OWNER" "$(jq -r '.form.chat_id' <<<"$msg")"
 tc "L1 ... saying the last one expired" "The last button expired" "$(jq -r '.form.text' <<<"$msg")"
-tc "L1 ... with the same words as the first ask" "What to do: tap Got it" "$(jq -r '.form.text' <<<"$msg")"
+tc "L1 ... with the same words as the first ask" "Doing: tap Got it" "$(jq -r '.form.text' <<<"$msg")"
 L2CODE=$(last_code)
 t  "L1 ... carrying a NEW code" 1 "$(( ${#L2CODE} == 48 ))"
 tn "L1 ... (not the expired one)" "$LCODE" "$L2CODE"
 reset
 out=$(priv tap "$L2CODE" "$OWNER" 2>&1); rc=$?
 t  "L2 the fresh button opens the same page" "0 serve futuretools.io --login --url=$PAGE" "$rc $(head -1 "$FAKE_LOG")"
-tc "L2 ... with the same no-check wording" "check=0" "$out"
+tc "L2 ... with the same check wording" "check=1" "$out"
 reset; rm -rf "$TMP/req"/*
 "$BROWSER" connect-request futuretools.io --challenge --url="$PAGE" >/dev/null 2>&1; LCODE=$(last_code)
 f="$TMP/req/$(printf '%s' "$LCODE" | sha256sum | cut -d' ' -f1)"; sed -i "s/^expires_at=.*/expires_at=$(( $(date -u +%s) - 7300 ))/" "$f"

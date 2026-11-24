@@ -129,5 +129,18 @@ t 'V10 a plain sign-in form is none (the guard'"'"'s own refusal stands)' 'none 
 t 'V11 challenge() names the kind: a code box is code' 'code' \
   "$(printf '%s' "$CODEP" > "$TMP/p.html"; node "$LIB" challenge "$TMP/p.html" 'https://site.test/login/verify' | jq -r .kind)"
 
+# ---- A: ask (DIVE-9188) — the look before a captcha ask. challenge()'s answer, or a
+# Turnstile still waiting: an empty cf-turnstile-response, or its box with no field yet.
+a() { printf '%s' "$1" > "$TMP/p.html"; node "$LIB" ask "$TMP/p.html" "${2:-}" | jq -r '.challenge'; }
+TSF='<html><body><form action="/login"><input type="email" name="e"><div class="cf-turnstile" data-sitekey="x">'
+t 'A1 a Turnstile with an empty answer field is a check' true "$(a "$TSF"'<input type="hidden" name="cf-turnstile-response" value=""></div></form></body></html>')"
+t 'A1b ... and challenge() alone still says no (its tally.so rule stands)' false "$(c "$TSF"'<input type="hidden" name="cf-turnstile-response" value=""></div></form></body></html>')"
+t 'A2 a Turnstile box with no answer field yet is a check' true "$(a "$TSF"'</div></form></body></html>')"
+t 'A3 a Turnstile holding its answer is not a check' false "$(a "$TSF"'<input type="hidden" name="cf-turnstile-response" value="0.abc"></div></form></body></html>')"
+t 'A3b tally.so/signup, its Turnstile already passed: not a check for an ask either' false "$(node "$LIB" ask "$FX/tally-signup.html" https://tally.so/signup | jq -r .challenge)"
+t 'A4 a Turnstile inside a hidden part of the page is not a check' false "$(a '<html><body><div hidden><div class="cf-turnstile"></div></div></body></html>')"
+t 'A5 ask keeps every challenge() yes: a visible hCaptcha' true "$(a '<html><body><div class="h-captcha" data-sitekey="x"></div></body></html>')"
+t 'A6 a plain login form is not a check' false "$(a '<html><body><form action="/login"><input type="email" name="e"><button>Next</button></form></body></html>')"
+
 printf 'page-check: %d pass, %d fail\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
