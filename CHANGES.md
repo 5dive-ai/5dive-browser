@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a captcha ask on a page with no check sends the owner nothing (DIVE-9188), 1.97.4
+- `connect-request <site> --challenge --url=<page>` loads the page first (DIVE-6725). When the box saw no check on it,
+  the ask still went out, as a "needs you to take over" message. A seat's agent used that to page its owner about a
+  page the box itself read as having no check (lodar, 2026-11-24: "false takeovers"). Now no check seen means nothing
+  is sent and no code is minted: the agent is told to do the step itself (wait, reload, retry) and, for a step that
+  truly needs the owner, to name it with `handoff --reason`. The owner is asked only for a check the box saw.
+- The look before the ask also reads the page with the page check, so a check embedded in a form counts: a visible
+  hCaptcha or reCAPTCHA, a check's own words ("verify you are human"), or a Cloudflare Turnstile still waiting for its
+  answer (an empty `cf-turnstile-response`, or a `cf-turnstile` box with no answer field yet). A Turnstile that
+  already holds its answer is not a check. Page verbs' robot-check hints are unchanged.
+
 ### Fixed — a captcha ask with no page is refused, not sent to the site's sign-in page (DIVE-9152), 1.97.3
 - `connect-request <site> --challenge` with no `--url` used the site's own page: its login-probe url when it has one.
   For google.com that is the Google sign-in page, where the robot check never appears, so the box looked, saw no
