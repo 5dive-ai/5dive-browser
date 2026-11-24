@@ -257,8 +257,10 @@ t  "N4 ... and then the chat's fresh Done is spent too (one Done)" 77 "$rc"
 
 # ---- C: a challenge ask -------------------------------------------------------
 reset
-: >"$TMP/ctl.snapclear"
+# DIVE-9188: the ask is made on a page with a check (a no-check ask sends
+# nothing); the check is gone by the time the owner taps Done.
 "$BROWSER" connect-request futuretools.io --challenge --url=https://futuretools.io/tools >/dev/null 2>&1
+: >"$TMP/ctl.snapclear"
 out=$(priv tap "$(last_code)" "$OWNER" 2>&1); BIND=$(last_bind); : >"$SENT_LOG"
 out=$(vd futuretools.io "$BIND")
 t  "C1 a challenge Done from the viewer: carrying on" "result=carryon" "$out"
