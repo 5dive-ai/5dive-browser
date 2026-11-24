@@ -331,10 +331,26 @@ tc "C7 the verdict says the browser is back with the agent" "status=the view is 
 tc "C7 ... and is a challenge verdict" "kind=challenge" "$out"
 out=$(priv done "$CDONE" "$OWNER" 2>&1); rc=$?
 t  "C8 Done is one-shot" 77 "$rc"
-# no --url: the site's own page
-reset; "$BROWSER" connect-request futuretools.io --challenge >/dev/null 2>&1; CCODE=$(last_code); : >"$FAKE_LOG"
-out=$(priv tap "$CCODE" "$OWNER" 2>&1); rc=$?
-t  "C9 no --url opens the site's own front page" "serve futuretools.io --login --url=https://futuretools.io/" "$(head -1 "$FAKE_LOG")"
+# DIVE-9152: no --url is refused before anything is minted. The site's own page
+# (google.com's probe url is its sign-in page) can have no check on it, so the
+# owner was sent to a page with nothing to clear (box report 1393).
+reset; rm -rf "$TMP/req"/*; : >"$FAKE_LOG"
+out=$("$BROWSER" connect-request futuretools.io --challenge --reason="stuck on a captcha" 2>&1); rc=$?
+t  "C9 --challenge with no --url is a usage error" 64 "$rc"
+tc "C9 ... saying nothing was sent and what to pass" "nothing was sent: --challenge needs --url=<the page that showed the check>" "$out"
+t  "C9 ... no code minted, nobody messaged, no look at any page" "0 0 " "$(ls "$TMP/req" | wc -l) $(grep -c sendMessage "$TMP/stub.log") $(cat "$FAKE_LOG")"
+# root's half refuses it too: a direct _connect challenge with an empty page
+out=$(printf '%s\0' challenge futuretools.io "" "x" | "$BROWSER" _connect 2>&1); rc=$?
+t  "C9 root's _connect refuses an empty page as well: 64, no code, nobody messaged, no look" "64 0 0 " "$rc $(ls "$TMP/req" | wc -l) $(grep -c sendMessage "$TMP/stub.log") $(cat "$FAKE_LOG")"
+tc "C9 ... with the same words" "nothing was sent: --challenge needs --url=" "$out"
+# MUTANT: the pre-fix fallback to the site's own page sends the ask again.
+MUT9152="$TMP/browser.mut9152"
+sed -e 's|^    \[\[ -n "\$url" \]\] \|\| die "\$E_USAGE" "\$(_connect_challenge_needs_url "\$site")"$|    [[ -n "$url" ]] \|\| url="$(_site_url "$site")"|' "$BROWSER" >"$MUT9152"; chmod +x "$MUT9152"
+t  "C9m the mutant differs from the real file by exactly the two refusal lines" 2 "$(diff "$BROWSER" "$MUT9152" | grep -c '^<')"
+reset; rm -rf "$TMP/req"/*; : >"$FAKE_LOG"
+out=$(FIVEDIVE_BROWSER_CONNECT_PRIV="$MUT9152" "$MUT9152" connect-request futuretools.io --challenge 2>&1); rc=$?
+t  "C9m MUTANT (site page fallback): exits 0 and an ask IS sent, so C9 grades the fix" "0 1" "$rc $(grep -c sendMessage "$TMP/stub.log")"
+reset; rm -rf "$TMP/req"/*; : >"$FAKE_LOG"
 # the page must be ON the site
 reset
 for bad in "https://evil.example/futuretools.io" "javascript:alert(1)" "https://futuretools.io.evil.example/" "file:///etc/passwd" "https://futuretools.io/a b"; do
@@ -599,7 +615,7 @@ out=$("$BROWSER" connect-request booking.com --reason="to search hotels" 2>&1); 
 t  "O1 owners set: the Connect message goes to the owner only" "0 $OWNER" "$rc $(sent_to)"
 OCODE=$(last_code)
 reset
-out=$("$BROWSER" connect-request booking.com --challenge 2>&1); rc=$?
+out=$("$BROWSER" connect-request booking.com --challenge --url=https://booking.com/x 2>&1); rc=$?
 t  "O2 ... and so does a captcha request" "0 $OWNER" "$rc $(sent_to)"
 reset
 out=$(priv tap "$OCODE" "$GUEST" 2>&1); rc=$?

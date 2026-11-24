@@ -8,6 +8,13 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a captcha ask with no page is refused, not sent to the site's sign-in page (DIVE-9152), 1.97.3
+- `connect-request <site> --challenge` with no `--url` used the site's own page: its login-probe url when it has one.
+  For google.com that is the Google sign-in page, where the robot check never appears, so the box looked, saw no
+  check, and sent the owner a take-over onto a page with nothing to clear (box report 1393). Now it is refused before
+  anything is minted or sent: "nothing was sent: --challenge needs --url=<the page that showed the check>". Root's
+  half refuses an empty page too. The skill docs and the usage line now show `--url=<the page>`.
+
 ### Fixed — a webmail inbox is in page.md again, not deleted as a dropdown (DIVE-9058), 1.97.2
 - The page reader dropped every list built as a selectable list or inside a form, because on an article those are a
   search box and a dropdown. A webmail inbox is usually built one of those two ways, so a signed-in webmail read
