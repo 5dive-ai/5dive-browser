@@ -192,6 +192,10 @@ jobs:
       # site, and never switches a browser another call is using (fake daemon).
       - name: connect group view harness
         run: bash tests/browser_connect_group_view_unit.sh
+      # DIVE-9318: a second site served on its group's running browser is shown
+      # its own tab; a sign-in window open on another site is re-served (fake daemon).
+      - name: group serve front harness
+        run: bash tests/browser_group_serve_front_unit.sh
       - name: act upload harness
         run: bash tests/browser_act_upload_unit.sh
       # DIVE-8287: act --help lists every ACT_VOCAB op with its fields (upload's path and cap).
