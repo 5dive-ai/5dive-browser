@@ -8,6 +8,15 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a page still on its loading logo is "still loading", not the page (DIVE-9310), 1.97.6
+- `snapshot` of a web app that was still showing its logo splash (an SVG, no words, nothing to click) exited 0 and
+  printed "0 addressable node(s)" as if that were the page; the agent reported the site broken (box report 1453,
+  web.max.ru, which had loaded 25 s later). Now, on any site, a capture with 0 nodes AND no text exits 76
+  (not ready), says the page shows nothing yet, and marks page.meta.json and page.md `partial: true`,
+  `loading_screen: "empty"`. Snapshot again with no URL, or use `--wait-for`.
+- Same rule for `read` and for the page an `act` leaves. A plain article (text, no links) and a form whose only words
+  are a field's value are still the page (rc 0), and a met `--wait-for` turns the rule off.
+
 ### Fixed — an inbox row's ref says which message it is (DIVE-9179), 1.97.5
 - A webmail inbox row is one link around sender, subject, snippet and date. That is too long to be a ref's name, so
   a 50-message inbox printed fifty `ref=link/#1` … `#50` and nothing to tell them apart (box report 1397, a
