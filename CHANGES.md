@@ -8,6 +8,16 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — a second site of a running group browser is shown its own page (DIVE-9318), 1.97.7
+- Sites of one sign-in group share one browser. When it was already up for one site, `serve` for another only
+  linked to it and said "already serving": no tab opened on the second site. On one box the owner's sign-in window
+  for Bing showed another site's private account page, and the next act on Bing read that page.
+- Now `serve` brings the site's own tab forward (or opens one), as the sign-in window has done since 1.64.1. The
+  other sites' tabs are not navigated or closed. While someone is using the browser nothing is moved, and serve says so.
+- A sign-in window open on another site of the group (no tabs the box can move) is reopened on this site by `serve`
+  and `viewer`, and refused by name while a person or another call is using it. An agent's automatic start never
+  closes that window: it still tells the owner which site's window to finish first.
+
 ### Fixed — a page still on its loading logo is "still loading", not the page (DIVE-9310), 1.97.6
 - `snapshot` of a web app that was still showing its logo splash (an SVG, no words, nothing to click) exited 0 and
   printed "0 addressable node(s)" as if that were the page; the agent reported the site broken (box report 1453,
