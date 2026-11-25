@@ -15,7 +15,8 @@ that file stays where it is.
 - Now `serve` brings the site's own tab forward (or opens one), as the sign-in window has done since 1.64.1. The
   other sites' tabs are not navigated or closed. While someone is using the browser nothing is moved, and serve says so.
 - A sign-in window open on another site of the group (no tabs the box can move) is reopened on this site by `serve`
-  and `viewer`, and refused by name while a person or another call is using it.
+  and `viewer`, and refused by name while a person or another call is using it. An agent's automatic start never
+  closes that window: it still tells the owner which site's window to finish first.
 
 ### Fixed — an inbox row's ref says which message it is (DIVE-9179), 1.97.5
 - A webmail inbox row is one link around sender, subject, snippet and date. That is too long to be a ref's name, so
