@@ -8851,7 +8851,7 @@ run "$BROWSER" proxy clear
 
 # --- T47i MUTANT: the viewer's conversion removed — the view lands on the automated browser ---
 MUT47="$TMP/t47/mut"; rm -rf "$MUT47"; mkdir -p "$TMP/t47"; cp -r "$ROOT/browser" "$MUT47"
-perl -0pi -e 's/  if _daemon_live "\$dir"; then\n    \( cmd_serve "\$site" --login >\/dev\/null \)/  if false; then\n    ( cmd_serve "\$site" --login >\/dev\/null )/' "$MUT47/bin/browser"
+perl -0pi -e 's/  if _daemon_live "\$dir"[^\n]*; then\n    \( cmd_serve "\$site" --login >\/dev\/null \)/  if false; then\n    ( cmd_serve "\$site" --login >\/dev\/null )/' "$MUT47/bin/browser"
 t  'T47i (anchor) the mutation applied' 1 "$(grep -c '^  if false; then$' "$MUT47/bin/browser")"
 dserve "$S47" FIVEDIVE_BROWSER_SESSION_DAEMON="$MUT47/bin/session-daemon"
 DP47I="$(dkv "$P47" daemon_pid)"
