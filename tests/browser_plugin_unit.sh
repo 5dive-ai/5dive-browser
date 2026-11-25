@@ -6434,6 +6434,68 @@ run t34env PWWALK="$TMP/t34-splash-other.json" "$BROWSER" snapshot splash.test "
 t  'T34a (control) the same markup on another host is not a known splash' 0 "$RC"
 t  'T34a the table is one line per screen' 1 "$(grep -c '^  .gmail|' "$BROWSER")"
 
+# --- T34j a capture with NOTHING in it is not the page (DIVE-9310) -----------
+# Box report 1453: `snapshot` of a messaging web app came back as its logo splash (an
+# SVG, 0 nodes, word_count 0) with rc 0. No row in the table names that app, and none
+# should have to: 0 refs AND no text is NOT READY on any host. The controls keep
+# the AND honest: a plain article (text, no refs) and a page whose only words are
+# what the executor read stay rc 0, and a met --wait-for steps the rule aside.
+EMPTY_HTML='<html><head><title>Chat</title><style>.s{fill:#000}</style></head><body><svg viewBox="0 0 64 64"><text x="0" y="40">Chat</text><path d="M0 0h64v64H0z"/></svg><noscript>You need to enable JavaScript to run this app.</noscript><script>window.boot=1</script><div id="root"></div></body></html>'
+ARTICLE_HTML='<html><head><title>Note</title></head><body><main><p>Одна заметка без единой ссылки: только текст, и это вся страница.</p></main></body></html>'
+mkprofile splash-app.test "$LIVE_DOM" >/dev/null
+T34J="$TMP/t34j-empty.json"; T34JA="$TMP/t34j-article.json"
+jq -n --arg html "$EMPTY_HTML" '{nodes:[], marker:null, title:"Chat", url:"https://splash-app.test/", html:$html}' > "$T34J"
+jq -n --arg html "$ARTICLE_HTML" '{nodes:[], marker:null, title:"Note", url:"https://splash-app.test/", html:$html}' > "$T34JA"
+rm -rf "$TMP/t34j"
+run t34env PWWALK="$T34J" "$BROWSER" snapshot splash-app.test "https://splash-app.test/" --out="$TMP/t34j"
+t  'T34j an SVG-only splash on a host no table row names is NOT exit 0' 76 "$RC"
+tc 'T34j ...it says the page shows nothing yet, and why' 'shows nothing to act on yet (0 nodes, no text)' "$ERR"
+tc 'T34j ...and what to do: look again, or --wait-for' 'snapshot with no URL reads the same tab' "$ERR"
+t  'T34j page.meta.json names it and marks the capture partial' 'empty true' \
+   "$(jq -r '"\(.loading_screen) \(.partial)"' "$TMP/t34j/page.meta.json" 2>/dev/null)"
+tc 'T34j page.md says so too' 'loading_screen: "empty"' "$(cat "$TMP/t34j/page.md" 2>/dev/null)"
+tc 'T34j stdout no longer reads like a page' 'NOT the page' "$OUT"
+t  'T34j the evidence still ships' 'yes' "$([[ -s "$TMP/t34j/tree.json" && -s "$TMP/t34j/page.png" ]] && echo yes || echo no)"
+run t34env PWWALK="$T34J" "$BROWSER" snapshot splash-app.test "https://splash-app.test/" --json --out="$TMP/t34j-json"
+t  'T34j --json carries it, still 76' '76 empty true' "$RC $(jq -r '"\(.loading_screen) \(.partial)"' <<<"$OUT" 2>/dev/null)"
+rm -rf "$TMP/t34j-art"
+run t34env PWWALK="$T34JA" "$BROWSER" snapshot splash-app.test "https://splash-app.test/" --out="$TMP/t34j-art"
+t  'T34j (control) a plain article, text and no refs, is the page' '0 null' \
+   "$RC $(jq -r '.loading_screen' "$TMP/t34j-art/page.meta.json" 2>/dev/null)"
+rm -rf "$TMP/t34j-wf"
+run t34env PWWALK="$T34J" "$BROWSER" snapshot splash-app.test "https://splash-app.test/" --wait-for=svg --out="$TMP/t34j-wf"
+t  'T34j (control) a met --wait-for steps the rule aside: the agent named what the page is' '0 null' \
+   "$RC $(jq -r '.loading_screen' "$TMP/t34j-wf/page.meta.json" 2>/dev/null)"
+# read: the cold --dump-dom capture of the same splash, refs counted from page.html.
+mkprofile splashapp.read.test "$EMPTY_HTML" >/dev/null
+rm -rf "$TMP/t34j-read"
+run "$BROWSER" read splashapp.read.test "https://splashapp.read.test/" --out="$TMP/t34j-read"
+t  'T34j read of the splash is NOT READY too, and says so' '76 empty true yes' \
+   "$RC $(jq -r '"\(.loading_screen) \(.partial)"' "$TMP/t34j-read/page.meta.json" 2>/dev/null) $(grep -qF '0 nodes, no text' <<<"$ERR" && echo yes || echo no)"
+mkprofile splashapp.read.test "$ARTICLE_HTML" >/dev/null
+run "$BROWSER" read splashapp.read.test "https://splashapp.read.test/" --out="$TMP/t34j-read2"
+t  'T34j (control) read of the plain article is the page' '0 null' \
+   "$RC $(jq -r '.loading_screen' "$TMP/t34j-read2/page.meta.json" 2>/dev/null)"
+# act: the page the steps left. The executor's own text counts: a page whose only
+# words are what it read (a field's value) is not empty.
+rm -rf "$TMP/t34j-act"
+run actenv env PWHTML="$EMPTY_HTML" PWTEXT='' "$BROWSER" act "https://public-web.test/splash" \
+    --steps='[{"op":"click","selector":"#go"}]' --out="$TMP/t34j-act"
+t  'T34j act that leaves the splash is NOT READY, not executed' 76 "$RC"
+tc 'T34j ...naming the empty page' '0 nodes, no text' "$ERR"
+rm -rf "$TMP/t34j-act2"
+run actenv env PWHTML="$EMPTY_HTML" PWTEXT='3 непрочитанных чата' "$BROWSER" act "https://public-web.test/splash" \
+    --steps='[{"op":"click","selector":"#go"}]' --out="$TMP/t34j-act2"
+t  'T34j (control) the same act where the executor read text is executed (0)' 0 "$RC"
+# MUTANT: the rule taken out of a copy; the splash goes back to rc 0.
+MUT34J="$TMP/t34j-mutant"; rm -rf "$MUT34J"; cp -r "$ROOT/browser" "$MUT34J"
+sed -i 's/elif \[\[ -z "\$want" \]\] && _empty_capture "\$html" "\$tree" "\$exe"; then/elif false; then  # MUTANT (DIVE-9310)/' "$MUT34J/bin/browser"
+t  'T34j (anchor) the mutation landed in the copy, and only there' 'yes no' \
+   "$(grep -q 'MUTANT (DIVE-9310)' "$MUT34J/bin/browser" && echo yes || echo no) $(grep -q 'MUTANT (DIVE-9310)' "$BROWSER" && echo yes || echo no)"
+rm -rf "$TMP/t34j-mut"
+run t34env PWWALK="$T34J" "$MUT34J/bin/browser" snapshot splash-app.test "https://splash-app.test/" --out="$TMP/t34j-mut"
+t  'T34j MUTANT: without the rule the splash is rc 0 again, as on box 1453' 0 "$RC"
+
 # --- T34d snapshot --wait-for waits for a LATE element -----------------------
 : > "$PWREC"; rm -rf "$TMP/t34d"
 run t34env PWWALK="$T34SPLASH" PWWALK_LATE="$T34INBOX" PWLATE_MS=1500 \

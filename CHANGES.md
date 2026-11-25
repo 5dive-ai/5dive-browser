@@ -8,7 +8,7 @@ that file stays where it is.
 
 ## Unreleased
 
-### Fixed — a second site of a running group browser is shown its own page (DIVE-9318), 1.97.6
+### Fixed — a second site of a running group browser is shown its own page (DIVE-9318), 1.97.7
 - Sites of one sign-in group share one browser. When it was already up for one site, `serve` for another only
   linked to it and said "already serving": no tab opened on the second site. On one box the owner's sign-in window
   for Bing showed another site's private account page, and the next act on Bing read that page.
@@ -17,6 +17,15 @@ that file stays where it is.
 - A sign-in window open on another site of the group (no tabs the box can move) is reopened on this site by `serve`
   and `viewer`, and refused by name while a person or another call is using it. An agent's automatic start never
   closes that window: it still tells the owner which site's window to finish first.
+
+### Fixed — a page still on its loading logo is "still loading", not the page (DIVE-9310), 1.97.6
+- `snapshot` of a web app that was still showing its logo splash (an SVG, no words, nothing to click) exited 0 and
+  printed "0 addressable node(s)" as if that were the page; the agent reported the site broken (box report 1453,
+  a messaging web app that had loaded 25 s later). Now, on any site, a capture with 0 nodes AND no text exits 76
+  (not ready), says the page shows nothing yet, and marks page.meta.json and page.md `partial: true`,
+  `loading_screen: "empty"`. Snapshot again with no URL, or use `--wait-for`.
+- Same rule for `read` and for the page an `act` leaves. A plain article (text, no links) and a form whose only words
+  are a field's value are still the page (rc 0), and a met `--wait-for` turns the rule off.
 
 ### Fixed — an inbox row's ref says which message it is (DIVE-9179), 1.97.5
 - A webmail inbox row is one link around sender, subject, snippet and date. That is too long to be a ref's name, so
