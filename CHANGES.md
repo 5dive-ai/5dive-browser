@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — a page fetch that fails points the agent at 5dive browser (DIVE-9500), 1.98.0
+- Agents skipped pages they could have opened. Over 7 days on our own boxes, 38 page fetches came back blocked
+  (403, a robot check, a "just a moment" page, a JavaScript-only page) and 20 of them were dropped with no try in
+  the browser.
+- Now, when WebFetch, or a curl/wget on a web page, comes back like that, the agent is told on the spot: "This page
+  needs a real browser: run 5dive browser read <url> (or the matching verb)." A page that loaded gets nothing.
+- Left alone: API calls (an auth header, an `api.` host), local addresses, and a bare 5xx from curl (a server that
+  is down). In a loop over several pages, the line names the page that failed. No network: it reads the result only,
+  and a Bash call with no curl/wget in it does not start anything.
+- Claude Code only for now. Codex and Grok get the same line once their hooks are wired.
+
 ### Fixed — a second site of a running group browser is shown its own page (DIVE-9318), 1.97.7
 - Sites of one sign-in group share one browser. When it was already up for one site, `serve` for another only
   linked to it and said "already serving": no tab opened on the second site. On one box the owner's sign-in window

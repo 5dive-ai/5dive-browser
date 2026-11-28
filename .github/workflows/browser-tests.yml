@@ -25,6 +25,10 @@ jobs:
       # shipped script, the manifest and this repo's marketplace entry.
       - name: browser plugin harness
         run: bash tests/browser_plugin_unit.sh
+      # DIVE-9500: a failed WebFetch/curl (403, robot check, JS-only page, timeout) gets one
+      # line pointing at `5dive browser read`; a page that came back gets nothing. Pure node.
+      - name: fetch nudge hook harness
+        run: bash tests/browser_fetch_nudge_unit.sh
       # DIVE-6228: one answer per Google sign-in page (chooser allowed; password,
       # code, robot check, adding an account stop; a wider grant asks). Pure node.
       - name: google sign-in classifier harness
