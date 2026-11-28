@@ -29,6 +29,10 @@ jobs:
       # line pointing at `5dive browser read`; a page that came back gets nothing. Pure node.
       - name: fetch nudge hook harness
         run: bash tests/browser_fetch_nudge_unit.sh
+      # DIVE-9506: a turn that drove a page is sent back once, at its Stop, to check every
+      # sort, filter and answer the job named; every other stop stays silent. Pure node.
+      - name: finish check hook harness
+        run: bash tests/browser_finish_check_unit.sh
       # DIVE-6228: one answer per Google sign-in page (chooser allowed; password,
       # code, robot check, adding an account stop; a wider grant asks). Pure node.
       - name: google sign-in classifier harness
