@@ -8,7 +8,7 @@ that file stays where it is.
 
 ## Unreleased
 
-### Fixed — opening a menu card is not a payment, and the stop says a typed yes approves nothing (DIVE-9502), 1.97.8
+### Fixed — opening a menu card is not a payment, and the stop says a typed yes approves nothing (DIVE-9502), 1.98.1
 - A click is classified by what the control says it does: its accessible name (aria-label / aria-labelledby) plus
   its visible first line, or the first line alone when it has no name. A name never hides the text: a "Buy now"
   button labelled aria-label="Product image" still stops. The description printed under a card's title (its `<p>`s, the lines after the first)
@@ -19,6 +19,16 @@ that file stays where it is.
 - A stop that reached no chat now says the owner approves by pressing Approve (or Yes) on the card, that a typed yes
   in chat does not approve, and how to cite a chat answer so the buttons are sent again (`task answer … yes
   --channel-msg= --channel-proof=`). Wording only: what approves is unchanged.
+### Added — a page fetch that fails points the agent at 5dive browser (DIVE-9500), 1.98.0
+- Agents skipped pages they could have opened. Over 7 days on our own boxes, 38 page fetches came back blocked
+  (403, a robot check, a "just a moment" page, a JavaScript-only page) and 20 of them were dropped with no try in
+  the browser.
+- Now, when WebFetch, or a curl/wget on a web page, comes back like that, the agent is told on the spot: "This page
+  needs a real browser: run 5dive browser read <url> (or the matching verb)." A page that loaded gets nothing.
+- Left alone: API calls (an auth header, an `api.` host), local addresses, and a bare 5xx from curl, `-I` or `-f` (a
+  server that is down). In a loop over several pages, the line names the page that failed. No network: it reads the result only,
+  and a Bash call with no curl/wget in it does not start anything.
+- Claude Code only for now. Codex and Grok get the same line once their hooks are wired.
 
 ### Fixed — a second site of a running group browser is shown its own page (DIVE-9318), 1.97.7
 - Sites of one sign-in group share one browser. When it was already up for one site, `serve` for another only
