@@ -20,7 +20,8 @@
 #          check alone deleted, the textarea holding "Buy now" stops again.
 #   H1-H2  a stop that reached no chat names the one gate whose yes approves it
 #          (task need --browser-ask=<id>); a stop sent on Telegram does not.
-#   C1-C9  DIVE-9502: a menu card is classified by its title, not its description.
+#   C1-C11 DIVE-9502: a menu card is classified by its title, not its description;
+#          an aria-label never hides a button's visible text (C10/C11).
 #          "Automation builder" over "Accept payments, sell with Pay, upgrade any
 #          time" does not stop, by selector or by its snapshot ref (whose name is the
 #          whole card on one line); a card titled "Buy now" still stops; a ref that
@@ -167,6 +168,8 @@ const els = {
   '#lb':  mk('', DESC, { 'aria-labelledby': 'h1' }),         // named by a heading elsewhere
   '#buy': mk('Buy now', 'Ships in two days, free returns'),
   '#msg': mk('Messages', 'Your inbox'),
+  '#pi':  { tagName: 'BUTTON', innerText: 'Buy now', getAttribute: (k) => (k === 'aria-label' ? 'Product image' : null),
+            closest: () => null, matches: () => false, querySelectorAll: () => [] },  // a name that leaves the pay word out
 };
 global.document = { querySelector: (s) => els[s] || null, querySelectorAll: () => [],
   getElementById: (id) => (id === 'h1' ? { innerText: 'Automation builder' } : null),
@@ -182,17 +185,20 @@ const r = async (selector, sel) => { const x = await aria.stepRisk(page, { op: '
   out.push(await r('#buy', '#buy'));
   out.push(await r('ref=menuitem/Buy now Ships in two days, free returns', '#buy'));
   out.push(await r('ref=button/Send', '#msg'));
+  out.push(await r('#pi', '#pi'));
+  out.push(await r('ref=button/Product image', '#pi'));
   console.log(out.join(' '));
 })();
 JS
 C=$(node "$TMP/card.js" "$ARIA")
-read -r c1 c2 c3 c4 c5 c6 c7 <<<"$C"
+read -r c1 c2 c3 c4 c5 c6 c7 c10 c10r <<<"$C"
 t 'C1 a click on the "Automation builder" card, description "…sell with Pay, upgrade…", is not a payment' null "$c1"
 t 'C2 ...nor through its snapshot ref, whose name is the whole card on one line' null "$c2"
 t 'C3 ...nor when the title and the <p> description share one line' null "$c3"
 t 'C4 ...nor a card named by aria-labelledby' null "$c4"
 t 'C5 a card titled "Buy now" with a harmless description still stops as pay (by selector and by ref)' 'pay pay' "$c5 $c6"
 t 'C6 a ref that names something else ("Send") is still read whole' send "$c7"
+t 'C10 aria-label "Product image" on a "Buy now" button still stops as pay (by selector and by ref)' 'pay pay' "$c10 $c10r"
 # PRE-FIX: the lib before this change, from origin/main 330d4ee.
 if git cat-file -e 330d4ee:browser/lib/aria.cjs 2>/dev/null || git fetch -q --depth=1 origin 330d4ee 2>/dev/null; then
   git show 330d4ee:browser/lib/aria.cjs > "$TMP/aria-1.97.6.cjs"
@@ -208,6 +214,10 @@ t 'C8 MUTANT: without the title cut the builder card stops as pay again' pay "$(
 sed -e "s/norm(refName).startsWith(norm(live) + ' ')) ? '' : refName;/false) ? '' : refName;/" "$ARIA" > "$TMP/aria-mutant-ref.cjs"
 t 'C9 (precondition) the ref mutant differs from the shipped lib' yes "$(cmp -s "$ARIA" "$TMP/aria-mutant-ref.cjs" && echo no || echo yes)"
 t 'C9 MUTANT: without the ref-name cut the builder card stops as pay by ref' pay "$(node "$TMP/card.js" "$TMP/aria-mutant-ref.cjs" | cut -d' ' -f2)"
+# MUTANT: an aria-label replaces the visible text again — the "Buy now" button goes through.
+sed -e 's/return cut(\[name, line, /return cut([name || line, /' "$ARIA" > "$TMP/aria-mutant-name.cjs"
+t 'C11 (precondition) the name mutant differs from the shipped lib' yes "$(cmp -s "$ARIA" "$TMP/aria-mutant-name.cjs" && echo no || echo yes)"
+t 'C11 MUTANT: with the name hiding the text, "Buy now" under aria-label "Product image" is not stopped' null "$(node "$TMP/card.js" "$TMP/aria-mutant-name.cjs" | cut -d' ' -f8)"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
