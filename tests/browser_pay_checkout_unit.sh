@@ -20,6 +20,16 @@
 #          check alone deleted, the textarea holding "Buy now" stops again.
 #   H1-H2  a stop that reached no chat names the one gate whose yes approves it
 #          (task need --browser-ask=<id>); a stop sent on Telegram does not.
+#   C1-C11 DIVE-9502: a menu card is classified by its title, not its description;
+#          an aria-label never hides a button's visible text (C10/C11).
+#          "Automation builder" over "Accept payments, sell with Pay, upgrade any
+#          time" does not stop, by selector or by its snapshot ref (whose name is the
+#          whole card on one line); a card titled "Buy now" still stops; a ref that
+#          names something else (Send) is still read whole. PRE-FIX (330d4ee) and
+#          mutants with either cut reverted stop the card.
+#   H3     the no-chat stop says the owner approves by tapping the card, a typed yes
+#          does not, and how to cite a chat answer so the buttons are sent again;
+#          the Telegram path (buttons already sent) prints none of it.
 #
 # Run: bash tests/browser_pay_checkout_unit.sh (node, no browser, no network).
 set -uo pipefail
@@ -135,9 +145,85 @@ chmod +x "$TMP/cli-none" "$TMP/cli-tg"
 out=$(FIVEDIVE_BROWSER_CLI="$TMP/cli-none" bash -c "$fn"$'\n''_owner_ask_deliver "$1"' _ /x/agent-clicker-1870435d65c7.json 2>&1)
 tc 'H1 no chat reached the owner: the stop names the one gate whose yes approves it' \
   'task need <your row> --type=approval --browser-ask=agent-clicker-1870435d65c7' "$out"
+out_none=$out   # the no-chat stop: H3 reads it
 out=$(FIVEDIVE_BROWSER_CLI="$TMP/cli-tg" bash -c "$fn"$'\n''_owner_ask_deliver "$1"' _ /x/agent-clicker-1870435d65c7.json 2>&1)
 tn 'H2 sent on Telegram with a button: no second way is offered' '--browser-ask' "$out"
 tc 'H2 ...and the Telegram line is still shown' 'sent to the owner on Telegram' "$out"
+
+# H3 reads the no-chat stop (cli-none): the Telegram path sent the card with its
+# buttons, so it prints none of the no-chat lines (DIVE-9502).
+tc 'H3 the no-chat stop says a tap on the card approves and a typed yes does not' \
+  'A typed yes in chat does not approve.' "$out_none"
+tc 'H3 ...and how to cite a chat answer so the buttons are sent again' \
+  '5dive task answer <row> yes --channel-msg=<message_id> --channel-proof=<chat_id>' "$out_none"
+tn 'H3 ...the Telegram path, which sent the buttons, does not print that line' \
+  'A typed yes in chat does not approve.' "$out"
+
+# C: DIVE-9502 — a menu card is named by its title. The card's innerText is its
+# title and its description, one per line; the description sits in a <p>.
+cat > "$TMP/card.js" <<'JS'
+const aria = require(process.argv[2]);
+const DESC = 'Accept payments, sell with Pay, upgrade any time';
+const p = (t) => ({ innerText: t });
+const mk = (title, desc, attrs, inline) => ({ tagName: 'DIV', innerText: inline ? title + ' ' + desc : (title ? title + '\n' : '') + desc,
+  getAttribute: (k) => ((attrs || {})[k] ?? null), closest: () => null, matches: () => false,
+  querySelectorAll: (q) => (q === 'p' ? [p(desc)] : []) });
+const els = {
+  '#ab':  mk('Automation builder', DESC),
+  '#abi': mk('Automation builder', DESC, {}, true),           // title and <p> on one line
+  '#lb':  mk('', DESC, { 'aria-labelledby': 'h1' }),         // named by a heading elsewhere
+  '#buy': mk('Buy now', 'Ships in two days, free returns'),
+  '#msg': mk('Messages', 'Your inbox'),
+  '#pi':  { tagName: 'BUTTON', innerText: 'Buy now', getAttribute: (k) => (k === 'aria-label' ? 'Product image' : null),
+            closest: () => null, matches: () => false, querySelectorAll: () => [] },  // a name that leaves the pay word out
+};
+global.document = { querySelector: (s) => els[s] || null, querySelectorAll: () => [],
+  getElementById: (id) => (id === 'h1' ? { innerText: 'Automation builder' } : null),
+  innerText: '', location: { hostname: 'builder.example' } };
+const page = { evaluate: async (fn, arg) => fn(arg) };
+const r = async (selector, sel) => { const x = await aria.stepRisk(page, { op: 'click', selector }, sel); return x ? x.cls : 'null'; };
+(async () => {
+  const out = [];
+  out.push(await r('#ab', '#ab'));
+  out.push(await r('ref=menuitem/Automation builder ' + DESC, '#ab'));
+  out.push(await r('#abi', '#abi'));
+  out.push(await r('#lb', '#lb'));
+  out.push(await r('#buy', '#buy'));
+  out.push(await r('ref=menuitem/Buy now Ships in two days, free returns', '#buy'));
+  out.push(await r('ref=button/Send', '#msg'));
+  out.push(await r('#pi', '#pi'));
+  out.push(await r('ref=button/Product image', '#pi'));
+  console.log(out.join(' '));
+})();
+JS
+C=$(node "$TMP/card.js" "$ARIA")
+read -r c1 c2 c3 c4 c5 c6 c7 c10 c10r <<<"$C"
+t 'C1 a click on the "Automation builder" card, description "…sell with Pay, upgrade…", is not a payment' null "$c1"
+t 'C2 ...nor through its snapshot ref, whose name is the whole card on one line' null "$c2"
+t 'C3 ...nor when the title and the <p> description share one line' null "$c3"
+t 'C4 ...nor a card named by aria-labelledby' null "$c4"
+t 'C5 a card titled "Buy now" with a harmless description still stops as pay (by selector and by ref)' 'pay pay' "$c5 $c6"
+t 'C6 a ref that names something else ("Send") is still read whole' send "$c7"
+t 'C10 aria-label "Product image" on a "Buy now" button still stops as pay (by selector and by ref)' 'pay pay' "$c10 $c10r"
+# PRE-FIX: the lib before this change, from origin/main 330d4ee.
+if git cat-file -e 330d4ee:browser/lib/aria.cjs 2>/dev/null || git fetch -q --depth=1 origin 330d4ee 2>/dev/null; then
+  git show 330d4ee:browser/lib/aria.cjs > "$TMP/aria-1.97.6.cjs"
+  t 'C7 PRE-FIX: 1.97.6 stopped the builder card as a payment (selector and ref)' 'pay pay' "$(node "$TMP/card.js" "$TMP/aria-1.97.6.cjs" | cut -d' ' -f1-2)"
+else
+  echo "SKIP C7: 330d4ee is not reachable from this checkout"
+fi
+# MUTANT: the card cut reverted (said() reads the whole innerText) — C1 stops again.
+sed -e 's/return first(t) || first(all);/return all;/' "$ARIA" > "$TMP/aria-mutant-card.cjs"
+t 'C8 (precondition) the card mutant differs from the shipped lib' yes "$(cmp -s "$ARIA" "$TMP/aria-mutant-card.cjs" && echo no || echo yes)"
+t 'C8 MUTANT: without the title cut the builder card stops as pay again' pay "$(node "$TMP/card.js" "$TMP/aria-mutant-card.cjs" | cut -d' ' -f1)"
+# MUTANT: the ref-name cut reverted — the ref's whole-card name brings the description back.
+sed -e "s/norm(refName).startsWith(norm(live) + ' ')) ? '' : refName;/false) ? '' : refName;/" "$ARIA" > "$TMP/aria-mutant-ref.cjs"
+t 'C9 (precondition) the ref mutant differs from the shipped lib' yes "$(cmp -s "$ARIA" "$TMP/aria-mutant-ref.cjs" && echo no || echo yes)"
+t 'C9 MUTANT: without the ref-name cut the builder card stops as pay by ref' pay "$(node "$TMP/card.js" "$TMP/aria-mutant-ref.cjs" | cut -d' ' -f2)"
+# MUTANT: an aria-label replaces the visible text again — the "Buy now" button goes through.
+sed -e 's/return cut(\[name, line, /return cut([name || line, /' "$ARIA" > "$TMP/aria-mutant-name.cjs"
+t 'C11 (precondition) the name mutant differs from the shipped lib' yes "$(cmp -s "$ARIA" "$TMP/aria-mutant-name.cjs" && echo no || echo yes)"
+t 'C11 MUTANT: with the name hiding the text, "Buy now" under aria-label "Product image" is not stopped' null "$(node "$TMP/card.js" "$TMP/aria-mutant-name.cjs" | cut -d' ' -f8)"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
