@@ -91,7 +91,9 @@ Agents stop early: right site, one filter missing. So before you report, and bef
    which and why). The page must END on the result: the filtered list, the opened item, the
    chart drawn, not a menu or a home page.
 7. **Asked for information? Answer with it**: the facts, numbers or names, copied from the
-   page, not "I found the page".
+   page, not "I found the page". **Never end without the answer**: the value the job asked
+   for, or which part could not be done and why. In Claude Code a finish check sends you back
+   once to do 1-3 and this: it is the same list, not a new job.
 
 ## Reading pages
 

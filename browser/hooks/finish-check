@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# DIVE-9506: when the agent is about to stop, hand the Stop hook input to
+# finish-check.cjs, which sends it back once if this turn drove a page with
+# 5dive browser. Leaves at once, without starting node, on a second stop, when
+# turned off, or when the session never ran `5dive browser`. Always exit 0.
+in=$(cat) || exit 0
+case $in in *'"stop_hook_active":true'*|*'"stop_hook_active": true'*) exit 0 ;; esac
+case ${FIVEDIVE_BROWSER_FINISH_CHECK:-} in 0|off|false|no) exit 0 ;; esac
+command -v node >/dev/null 2>&1 || exit 0
+t=$(printf '%s' "$in" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+[ -n "$t" ] && [ -r "$t" ] || exit 0
+grep -q '5dive browser' "$t" 2>/dev/null || exit 0
+printf '%s' "$in" | node "$(dirname "$0")/finish-check.cjs" 2>/dev/null
+exit 0

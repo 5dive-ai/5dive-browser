@@ -8,6 +8,19 @@ that file stays where it is.
 
 ## Unreleased
 
+### Added — before it stops, the agent checks every sort, filter and answer the job named (DIVE-9506), 1.99.0
+- On the nightly browser bench (2026-11-28), 14 of 20 tasks were lost by the agent, not the site: 9 never applied, or
+  never showed, a sort or filter the task named ("cheapest first", "nationwide", "Steam Deck reviews"), and 5 ended
+  without the page or the answer showing the value asked for. The skill already listed these checks; the agent read
+  them at the start and skipped them at the end.
+- Now, when the agent is about to stop a turn in which it drove a page with `5dive browser`, it is sent back once
+  with the job's own words and three points: list every condition; for each sort or filter, set it with the site's
+  own control and take one snapshot that shows it applied; end with the value asked for, or say which condition
+  failed and why. Already done? It stops with its answer and sends nothing twice.
+- A turn with no page verb stops as before, without starting node; so does the second stop of a turn. Turn it off
+  with `FIVEDIVE_BROWSER_FINISH_CHECK=0`. Reads only the tail of the session transcript; no network.
+- Claude Code only (a Stop hook). Codex and Grok get it once their hooks are wired.
+
 ### Fixed — opening a menu card is not a payment, and the stop says a typed yes approves nothing (DIVE-9502), 1.98.1
 - A click is classified by what the control says it does: its accessible name (aria-label / aria-labelledby) plus
   its visible first line, or the first line alone when it has no name. A name never hides the text: a "Buy now"

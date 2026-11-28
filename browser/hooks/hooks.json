@@ -1,5 +1,5 @@
 {
-  "description": "5dive browser: when a page fetch fails (WebFetch, or curl/wget on a web page) with a block, a robot check, a JavaScript-only page or a timeout, tell the agent on the spot that 5dive browser can open it. Silent on success. No network: a regex on the tool result only.",
+  "description": "5dive browser: when a page fetch fails (WebFetch, or curl/wget on a web page) with a block, a robot check, a JavaScript-only page or a timeout, tell the agent on the spot that 5dive browser can open it. Silent on success. No network: a regex on the tool result only. And when the agent is about to stop a turn in which it drove a page with 5dive browser, it is sent back once to check that every sort and filter the job named is applied and shown on the page, and to state the answer (DIVE-9506). Turn that off with FIVEDIVE_BROWSER_FINISH_CHECK=0.",
   "hooks": {
     "PostToolUse": [
       {
@@ -21,6 +21,17 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fetch-nudge",
             "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/finish-check",
+            "timeout": 10
           }
         ]
       }
