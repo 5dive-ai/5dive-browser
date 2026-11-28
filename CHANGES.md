@@ -8,6 +8,17 @@ that file stays where it is.
 
 ## Unreleased
 
+### Fixed — opening a menu card is not a payment, and the stop says a typed yes approves nothing (DIVE-9502), 1.97.8
+- A click is classified by what the control says it does: its accessible name (aria-label / aria-labelledby) when it
+  has one, else its first line. The description printed under a card's title (its `<p>`s, the lines after the first)
+  no longer counts, and neither does the snapshot ref's name when it only adds that description to the title. A menu
+  card "Automation builder" whose description mentioned payments and upgrades stopped as a pay; it now opens. A
+  "Buy now", "Pay" or "Place your order" button still stops. Residual: a button whose pay word sits on its SECOND
+  line (a price first, then "Buy") is no longer caught.
+- A stop that reached no chat now says the owner approves by pressing Approve (or Yes) on the card, that a typed yes
+  in chat does not approve, and how to cite a chat answer so the buttons are sent again (`task answer … yes
+  --channel-msg= --channel-proof=`). Wording only: what approves is unchanged.
+
 ### Fixed — a second site of a running group browser is shown its own page (DIVE-9318), 1.97.7
 - Sites of one sign-in group share one browser. When it was already up for one site, `serve` for another only
   linked to it and said "already serving": no tab opened on the second site. On one box the owner's sign-in window
