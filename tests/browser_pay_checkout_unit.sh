@@ -27,8 +27,9 @@
 #          whole card on one line); a card titled "Buy now" still stops; a ref that
 #          names something else (Send) is still read whole. PRE-FIX (330d4ee) and
 #          mutants with either cut reverted stop the card.
-#   H3     the stop says the owner approves by tapping the card, a typed yes does
-#          not, and how to cite a chat answer so the buttons are sent again.
+#   H3     the no-chat stop says the owner approves by tapping the card, a typed yes
+#          does not, and how to cite a chat answer so the buttons are sent again;
+#          the Telegram path (buttons already sent) prints none of it.
 #
 # Run: bash tests/browser_pay_checkout_unit.sh (node, no browser, no network).
 set -uo pipefail
@@ -144,14 +145,19 @@ chmod +x "$TMP/cli-none" "$TMP/cli-tg"
 out=$(FIVEDIVE_BROWSER_CLI="$TMP/cli-none" bash -c "$fn"$'\n''_owner_ask_deliver "$1"' _ /x/agent-clicker-1870435d65c7.json 2>&1)
 tc 'H1 no chat reached the owner: the stop names the one gate whose yes approves it' \
   'task need <your row> --type=approval --browser-ask=agent-clicker-1870435d65c7' "$out"
+out_none=$out   # the no-chat stop: H3 reads it
 out=$(FIVEDIVE_BROWSER_CLI="$TMP/cli-tg" bash -c "$fn"$'\n''_owner_ask_deliver "$1"' _ /x/agent-clicker-1870435d65c7.json 2>&1)
 tn 'H2 sent on Telegram with a button: no second way is offered' '--browser-ask' "$out"
 tc 'H2 ...and the Telegram line is still shown' 'sent to the owner on Telegram' "$out"
 
-tc 'H3 the stop says a tap on the card approves and a typed yes does not' \
-  'A typed yes in chat does not approve.' "$out"
+# H3 reads the no-chat stop (cli-none): the Telegram path sent the card with its
+# buttons, so it prints none of the no-chat lines (DIVE-9502).
+tc 'H3 the no-chat stop says a tap on the card approves and a typed yes does not' \
+  'A typed yes in chat does not approve.' "$out_none"
 tc 'H3 ...and how to cite a chat answer so the buttons are sent again' \
-  '5dive task answer <row> yes --channel-msg=<message_id> --channel-proof=<chat_id>' "$out"
+  '5dive task answer <row> yes --channel-msg=<message_id> --channel-proof=<chat_id>' "$out_none"
+tn 'H3 ...the Telegram path, which sent the buttons, does not print that line' \
+  'A typed yes in chat does not approve.' "$out"
 
 # C: DIVE-9502 — a menu card is named by its title. The card's innerText is its
 # title and its description, one per line; the description sits in a <p>.
