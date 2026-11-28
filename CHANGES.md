@@ -14,8 +14,8 @@ that file stays where it is.
   the browser.
 - Now, when WebFetch, or a curl/wget on a web page, comes back like that, the agent is told on the spot: "This page
   needs a real browser: run 5dive browser read <url> (or the matching verb)." A page that loaded gets nothing.
-- Left alone: API calls (an auth header, an `api.` host), local addresses, and a bare 5xx from curl (a server that
-  is down). In a loop over several pages, the line names the page that failed. No network: it reads the result only,
+- Left alone: API calls (an auth header, an `api.` host), local addresses, and a bare 5xx from curl, `-I` or `-f` (a
+  server that is down). In a loop over several pages, the line names the page that failed. No network: it reads the result only,
   and a Bash call with no curl/wget in it does not start anything.
 - Claude Code only for now. Codex and Grok get the same line once their hooks are wired.
 

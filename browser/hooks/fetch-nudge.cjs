@@ -74,8 +74,8 @@ function webfetch(input) {
 }
 
 // Bash. Only when the command runs curl or wget on a web URL and it is not an
-// API call; then look at what came back. A bare 5xx status from curl is left
-// alone: that is a server being down or a health probe, and a browser does not
+// API call; then look at what came back. A bare 5xx status from curl (-I, or
+// -f's "(22) ... error: 503") is left alone: that is a server being down or a health probe, and a browser does not
 // fix it (a block page served with a 5xx is still caught by WALL).
 function shell(input) {
   const cmd = String(input.tool_input?.command ?? '');
@@ -89,7 +89,7 @@ function shell(input) {
   if (!out) return null;
   const m = WALL.exec(out) ||
     /^HTTP\/[\d.]+ (401|403|407|429)\b/m.exec(out) ||
-    /curl: \(22\) The requested URL returned error: (401|403|407|429|5\d\d)/.exec(out) ||
+    /curl: \(22\) The requested URL returned error: (401|403|407|429)\b/.exec(out) ||
     /curl: \(28\)|ERROR (401|403|407|429)\b/.exec(out) ||
     // curl -w '%{http_code}' printing a block code at the start of a line.
     (/http_code/.test(cmd) ? /^(401|403|429)\b/m.exec(out) : null);

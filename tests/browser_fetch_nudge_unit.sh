@@ -79,6 +79,8 @@ out=$(fixture PostToolUse Bash "{\"command\":\"for u in https://buffer.com/a htt
   '{"stdout":"200 https://buffer.com/a\n403 https://www.dscca.com/b\n","stderr":""}' | "$HOOK")
 case $out in *dscca.com/b*) ok "B13b hint names https://www.dscca.com/b" ;; *) bad "B13b wrong page named: $out" ;; esac
 expect "B14 curl -I 503 (server down, not a wall)" none PostToolUse Bash '{"command":"curl -sI https://example.org/"}' '{"stdout":"HTTP/2 503 \nserver: nginx\n","stderr":""}'
+expect "B16 curl -f 503 (server down, not a wall)" none PostToolUseFailure Bash '{"command":"curl -fsS https://example.org/x"}' \
+  '"Exit code 22\ncurl: (22) The requested URL returned error: 503"'
 expect "B15 URL built from a shell variable" none PostToolUse Bash '{"command":"for h in a b; do curl -si https://$h.example.net/; done"}' '{"stdout":"HTTP/2 403 \n","stderr":""}'
 
 # --- Cheap path: a Bash call without curl/wget never starts node --------------
@@ -88,9 +90,22 @@ fixture PostToolUse Bash '{"command":"ls -la"}' '{"stdout":"total 0","stderr":""
 [ ! -s "$FAKE/node.log" ] && ok "C1 non-curl Bash: node not started" || bad "C1 non-curl Bash started node"
 fixture PostToolUse Bash '{"command":"curl -s https://example.com/"}' '{"stdout":"ok","stderr":""}' | PATH="$FAKE:$PATH" "$HOOK" >/dev/null
 [ -s "$FAKE/node.log" ] && ok "C2 curl Bash: node started (the fake is live)" || bad "C2 fake node never ran: C1 proves nothing"
-# No node on the box (browser setup not run): silent, exit 0.
-out=$(fixture PostToolUse WebFetch "$WF" '{"code":403,"result":"x"}' | PATH=/nonexistent /bin/bash "$HOOK"); rc=$?
-[ "$rc" = 0 ] && [ -z "$out" ] && ok "C3 no node: silent, exit 0" || bad "C3 no node: rc=$rc out=$out"
+# No node on the box (browser setup not run): silent, exit 0. Hide ONLY node: a
+# PATH dir with bash and cat but no node, and the input fed from a variable (no
+# pipe), so rc is the hook's own exit and the hook really reaches its node check.
+NONODE="$FAKE/nonode"; mkdir -p "$NONODE"
+ln -s "$(command -v bash)" "$NONODE/bash"; ln -s "$(command -v cat)" "$NONODE/cat"
+in403=$(fixture PostToolUse WebFetch "$WF" '{"code":403,"result":"x"}')
+if PATH="$NONODE" command -v cat >/dev/null && ! PATH="$NONODE" command -v node >/dev/null; then
+  out=$(PATH="$NONODE" "$NONODE/bash" "$HOOK" <<<"$in403"); rc=$?
+  [ "$rc" = 0 ] && [ -z "$out" ] && ok "C3 no node: silent, exit 0" || bad "C3 no node: rc=$rc out=$out"
+else
+  bad "C3 setup: the no-node PATH must hold cat and not node"
+fi
+# Control for C3: the same input with node on PATH does give the hint, so C3's
+# silence comes from the missing node, not from the input.
+out=$("$HOOK" <<<"$in403")
+[[ "$out" == *"needs a real browser"* ]] && ok "C3b same input with node: hint" || bad "C3b control gave no hint: $out"
 # Garbage on stdin: silent, exit 0.
 out=$(printf 'not json WebFetch' | "$HOOK"); rc=$?
 [ "$rc" = 0 ] && [ -z "$out" ] && ok "C4 bad input: silent, exit 0" || bad "C4 bad input: rc=$rc out=$out"
